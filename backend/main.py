@@ -2,26 +2,33 @@
 
     GET  /surge-zone?category={0-6}   flood polygon + areas
     GET  /exposure?category={0-6}     hospitals / substations / roads_cut_off
-    GET  /routes?category={0-6}&origin={block_id}   safe route + assigned shelter
+    GET  /routes?category={0-6}&origin={locality_id}   safe route + shelter
     GET  /allocation?category={0-6}   locality -> shelter assignment
-    POST /advisory                    DistrictAdvisory (Module D — not yet built)
+    POST /advisory?category={0-6}&origin={locality_id}   DistrictAdvisory (Gemini)
 
 Plus three small helpers the app needs to drive the slider: `/categories`
 (the band table), `/localities` (the origin picker) and `/health`.
 
 **Rules this layer is built to, not retrofitted with:**
 
-- *No live network calls from a handler* (Rules.md). Every byte comes from a
-  committed file in `data/`. Overpass, IBTrACS and GEE are pre-fetch scripts
-  in `backend/data_pipeline/` and are never imported here.
+- *No live network calls from a handler* (Rules.md). Every simulation byte
+  comes from a committed file in `data/`. Overpass, IBTrACS and GEE are
+  pre-fetch scripts in `backend/data_pipeline/` and are never imported here.
+  `POST /advisory` is the single exception and it calls only Gemini — behind
+  an explicit user action, never on slider movement, because the free tier
+  would be exhausted in seconds (Rules.md).
 - *Honesty metadata is not decoration.* Each response carries the caveats its
   own numbers require — the surge estimate's provenance, the modelled-vs-drawn
   area gap, the exposure definitions, the population method, the shelter
   dataset status. A client that drops a field is making a claim the backend
   refused to make, so the fields are not optional and not stripped for tidiness.
+  The same rule extends to the AI layer: an advisory that fails
+  `ai.advisory.validate_advisory` is withheld with a 502, not returned with a
+  disclaimer bolted on.
 - *Nothing is computed twice.* Flood propagation is ~6 s at high categories
   and there are only 7 categories, so results are cached by category for the
-  life of the process. The slider is unusable without this.
+  life of the process. The slider is unusable without this. `/advisory` reuses
+  those caches rather than re-deriving its inputs.
 
 Run locally:
     venv/bin/uvicorn backend.main:app --reload --port 8000
@@ -30,6 +37,7 @@ Run locally:
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import replace
 from functools import lru_cache
 
@@ -38,6 +46,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from shapely.geometry import shape
 
+from .ai.advisory import ADVISORY_MODEL, generate_advisory, validate_advisory
 from .locations import (
     Locality,
     all_localities,
@@ -74,6 +83,11 @@ BAND_UPPER_KMPH = 250.0  # the open-ended top band's working ceiling
 # every person's demand to be met); low enough that individual shelters still
 # fill up, which is what makes the capacity/distance trade-off real.
 CAPACITY_HEADROOM = 1.10
+
+# ADVISORY_MODEL is defined in ai/advisory.py, next to the call that uses it,
+# so there is exactly one place the model string can live. Rules.md: pin it,
+# don't silently swap versions. Re-exported here because every advisory
+# response reports which model produced it.
 
 app = FastAPI(
     title="Cyclone Impact & Infrastructure Vulnerability Forecaster",
@@ -170,7 +184,7 @@ def root() -> dict:
             "GET /exposure?category={0-6}",
             "GET /routes?category={0-6}&origin={block_id}",
             "GET /allocation?category={0-6}",
-            "POST /advisory (Module D — not implemented yet)",
+            "POST /advisory?category={0-6}&origin={locality_id}  (Module D, Gemini)",
         ],
     }
 
@@ -193,7 +207,11 @@ def health() -> dict:
         "localities_excluded_by_scoping": len(all_localities()) - places,
         "building_centroids": buildings,
         "shelters_verified": len(load_shelters()),
-        "advisory_implemented": False,
+        "advisory_implemented": True,
+        # Whether POST /advisory will actually work right now, without putting
+        # the key's value anywhere near the response.
+        "advisory_ready": bool(os.environ.get("GEMINI_API_KEY")),
+        "advisory_model": ADVISORY_MODEL,
     }
 
 
@@ -470,22 +488,128 @@ def _capacity_basis(category: int) -> dict:
 
 
 @app.post("/advisory")
-def advisory() -> dict:
-    """Not built yet — Module D (the Gemini advisory layer) is next.
+def advisory(
+    category: int = Query(..., ge=0, le=6, description="IMD category index 0-6"),
+    origin: str = Query(..., description="Locality id from /localities"),
+) -> dict:
+    """Synthesise a district advisory from the simulation outputs (Module D).
 
-    Declared now, returning 501 rather than a stub, so the mobile client can
-    detect the gap instead of rendering an empty advisory. Nothing here calls
-    Gemini: Rules.md forbids calling it outside an explicit user action, and
-    the free tier would be exhausted by slider movement alone.
+    The only endpoint in this service that reaches the network, and only ever
+    because a human pressed the "Generate Advisory" button (Rules.md: never
+    call Gemini on slider `onChange`). Everything it sends to Gemini is the
+    same payload the GET endpoints return, so the numbers in the prose are the
+    numbers on the map.
+
+    Upstream failures are reported honestly rather than papered over: a missing
+    key is 503, a Gemini failure is 502, and output that fails `validate_advisory`
+    even after one retry is 502 with the violations listed. A 200 always means
+    the advisory passed every honesty check.
     """
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "The Gemini advisory layer (Module D) is not implemented yet. "
-            "See /categories and /exposure for the computed inputs it will "
-            "consume."
-        ),
-    )
+    # Request validity is settled before server configuration, so a client with
+    # a bad origin id hears about that even on an unconfigured server — the two
+    # problems are independent and reporting only the second hides the first.
+    locality = get_locality(origin)
+    if locality is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown origin '{origin}'. Call GET /localities for valid ids.",
+        )
+
+    # Read at request time, not import time: the key must be in the process
+    # environment of whoever is running this, and must never be written to a
+    # tracked file (Rules.md). Testing also depends on this.
+    if not os.environ.get("GEMINI_API_KEY"):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The advisory service is not configured: GEMINI_API_KEY is not "
+                "set in the server's environment. Set it there and restart — do "
+                "not add it to a tracked file. The computed inputs are still "
+                "available at /surge-zone, /exposure and /allocation."
+            ),
+        )
+
+    # The endpoint functions, not the raw helpers: advisory.py is written
+    # against the response shapes, and feeding it the same dicts the client
+    # already has is what guarantees the prose and the map cannot disagree.
+    surge_payload = surge_zone(category)
+    exposure_payload = exposure(category)
+    allocation_payload = allocation(category)
+
+    context = _origin_context(category, locality)
+
+    try:
+        result = generate_advisory(
+            surge_payload, exposure_payload, allocation_payload, context=context
+        )
+    except Exception as exc:  # noqa: BLE001 - any SDK failure is a 502 to the client
+        raise HTTPException(
+            status_code=502,
+            detail=f"Gemini advisory generation failed: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    violations = validate_advisory(result, allocation_payload)
+    attempts = 1
+    if violations:
+        # One retry, feeding the violations back as corrections. A schema-shaped
+        # answer that broke an honesty rule is usually a drafting slip, and a
+        # second pass with the specific failure named fixes it more often than
+        # not. Two attempts is the ceiling: this is a user-facing button, and
+        # the free tier is rate-limited (Rules.md).
+        attempts = 2
+        try:
+            result = generate_advisory(
+                surge_payload,
+                exposure_payload,
+                allocation_payload,
+                context=context,
+                corrections="\n".join(f"- {v}" for v in violations),
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Gemini advisory retry failed: {type(exc).__name__}: {exc}. "
+                    f"First attempt's violations: {'; '.join(violations)}"
+                ),
+            ) from exc
+        violations = validate_advisory(result, allocation_payload)
+
+    if violations:
+        # Still wrong after the retry. Returning it would mean shipping prose
+        # that invents a locality or quotes a real-sounding shelter occupancy
+        # figure, so the caller gets the reason instead.
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": (
+                    "The generated advisory failed its honesty checks and was "
+                    "withheld rather than returned. Re-run, or report this."
+                ),
+                "violations": violations,
+            },
+        )
+
+    return {
+        "advisory": result.model_dump(),
+        "generated_for": {
+            "category": category,
+            "imd_category": surge_payload["imd_category"],
+            "wind_kmph": surge_payload["wind_kmph"],
+            "origin": locality.to_dict(),
+            "origin_context": context,
+        },
+        "model": ADVISORY_MODEL,
+        "validated": True,
+        "validation": {
+            "checks": [
+                "sms_dispatch_draft under 160 characters",
+                "every evacuation_plan locality appears in the allocation data",
+                "demo shelter data is disclosed as provisional/placeholder",
+            ],
+            "attempts": attempts,
+        },
+    }
 
 
 # --------------------------------------------------------------------------
@@ -592,6 +716,44 @@ def shelters_for_category(category: int) -> tuple[Shelter, ...]:
 @lru_cache(maxsize=7)
 def allocation_for_category(category: int) -> dict:
     return allocate_shelters(populations_for_category(category), list(shelters_for_category(category)))
+
+
+def _origin_context(category: int, locality: Locality) -> str:
+    """The `origin` parameter, rendered for the prompt.
+
+    `/advisory` takes an origin so the advisory is written for where the person
+    asking is standing, not for an anonymous district. This is the same
+    routing result `/routes` would return, pulled from the cached helpers — no
+    second graph search, and no second opinion about reachability.
+    """
+    flood = flood_for_category(category)
+    allocation_result = allocation_for_category(category)
+    shelter, _ = _shelter_for(locality, allocation_result, shelters_for_category(category))
+    route = safe_route(
+        build_road_graph(),
+        flood.frames[-1].geometry,
+        (locality.lon, locality.lat),
+        (shelter.lon, shelter.lat),
+    )
+    if route.reachable:
+        reachability = (
+            f"has a flood-free route to its assigned shelter "
+            f"({shelter.name}), {route.to_dict()['length_km']} km"
+        )
+    else:
+        reason = route.reason
+        if route.reason and "no route:" not in reason:
+            # Reuse _diagnose_unreachable's road-data-vs-flood distinction so
+            # the advisory never tells someone to travel a road the extract
+            # simply does not contain.
+            reason = _diagnose_unreachable(route, locality, shelter, flood).reason
+        reachability = f"is UNREACHABLE at this intensity — {reason}"
+    return (
+        f"REQUESTING LOCALITY: {locality.name} ({locality.lon}, {locality.lat})\n"
+        f"IT {reachability}.\n"
+        f"Write the advisory for this locality's residents, but keep every "
+        f"figure district-wide and labelled as such."
+    )
 
 
 def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:

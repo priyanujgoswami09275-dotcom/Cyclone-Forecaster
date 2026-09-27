@@ -56,9 +56,8 @@ current-state summary.
 - [x] Implement `GET /routes` — `origin` from `/localities`; unreachable is a
       200 with a reason, never a 404
 - [x] Implement `GET /allocation` — LP solves; capacity basis disclosed
-- [x] Implement `POST /advisory` (calls Gemini) — **returns 501, not built.**
-      Module D is the next session's work. Deliberately a 501 rather than a
-      stub so the client can detect the gap instead of rendering empty copy.
+- [x] Implement `POST /advisory` (calls Gemini) — **now built (Module D).**
+      Takes `category` + `origin`; 501 replaced by the real handler.
 - [x] Decide and document whether `/routes`/`/allocation` are separate
       calls or bundled into `/exposure` — **decided: separate endpoints**,
       matching Architecture.md's numbered request sequence. Recorded in
@@ -76,13 +75,26 @@ current-state summary.
 
 ## Module D — AI advisory layer
 
-- [ ] Define the `DistrictAdvisory` pydantic schema (see CLAUDE.md for
-      the reference version)
-- [ ] Write the Gemini system prompt/instruction
-- [ ] Wire the `google-genai` SDK call with `response_schema`
-- [ ] Test advisory generation against a real exposure payload from
-      Module B/C
-- [ ] Confirm the SMS draft field stays under 160 characters in practice
+- [x] Define the `DistrictAdvisory` pydantic schema — `backend/ai/advisory.py`.
+      **Field is `locality_name`, not CLAUDE.md's `block_name`**: the demand
+      nodes are OSM localities, and `validate_advisory` has to match the names
+      in `/allocation`. CLAUDE.md left unedited and logged in MEMORY.md
+      "Flagged for review" §16.
+- [x] Write the Gemini system prompt/instruction — includes a closed pool of
+      three verified past cyclones, so `historical_context` cannot name an
+      invented storm
+- [x] Wire the `google-genai` SDK call with `response_schema` against the
+      pinned `gemini-3.7-flash` string
+- [x] Replace the `POST /advisory` 501 — takes `category` + `origin`, calls
+      the three endpoint functions so the prose and the map share one set of
+      numbers; 503 without a key, 502 on SDK failure
+- [x] Run `validate_advisory` on the result, retry once with the violations as
+      corrections, and withhold with a 502 if it still fails
+- [x] Test against a real Module B/C payload — `tests/test_module_d.py`, 30
+      tests, 28 with Gemini stubbed and 2 marked `requires_key`
+- [ ] Confirm the SMS draft field stays under 160 characters **in practice** —
+      the validator measures it and the stubbed tests cover the boundary, but
+      no live call has been made. Needs a `GEMINI_API_KEY`.
 
 ## Module E — Mobile app (Expo / React Native)
 

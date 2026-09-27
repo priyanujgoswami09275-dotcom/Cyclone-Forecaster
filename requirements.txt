@@ -16,3 +16,7 @@ osmnx
 fastapi
 uvicorn[standard]
 httpx  # fastapi.testclient dependency, for tests/test_module_c.py only
+
+# Module D — AI advisory layer
+google-genai  # Gemini call in backend/ai/advisory.py; needs GEMINI_API_KEY in
+               # the environment at runtime, never in a tracked file

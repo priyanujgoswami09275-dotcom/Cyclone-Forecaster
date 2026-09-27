@@ -63,7 +63,7 @@ step" before starting any work.
 | A. Data pipeline & surge ML model | Done | All 6 deliverables. DEM resolved (real GEE SRTM, tagged + committed). Stretch item (more RSMC points) still open. |
 | B. Simulation engine (flood propagation, routing, shelter allocation) | In progress | Engine complete and tested on real data. Only the shelter *dataset* is missing — no real locations/capacities exist to use (see blockers). |
 | C. Backend / API (FastAPI) | Done | `backend/main.py` + `backend/locations.py`. All contract endpoints live and curl-verified. `/advisory` returns 501 — that's Module D, next. |
-| D. AI advisory layer (Gemini) | Not started | **Next.** `POST /advisory` is a 501 waiting for `backend/ai/`. See "Next step". |
+| D. AI advisory layer (Gemini) | Done | `backend/ai/advisory.py` + the `POST /advisory` handler. Schema, prompt, call, and an honesty validator. 30 tests (2 skip without a key). **Never yet run against the live API — no `GEMINI_API_KEY` in this environment.** |
 | E. Mobile app (Expo / React Native) | In progress | Design system landed 2026-09-27 (`theme.ts`, fonts, font gate, 5 themed primitives); `theme.typography` added 2026-09-28. No screen logic yet — see "Module E: what is themed vs. unstyled" below. The API it will call is now real, so the map screen can be built against actual response shapes. |
 | F. Deployment | Not started | |
 
@@ -77,6 +77,16 @@ step" before starting any work.
   `/categories`, `/localities`. Per-category `lru_cache` throughout:
   flood 7.5 s cold → **0.017 s warm**. Run:
   `venv/bin/uvicorn backend.main:app --port 8000`
+- `backend/ai/advisory.py` — **Module D.** `DistrictAdvisory` /
+  `EvacuationPriority` pydantic schemas, the Gemini system prompt, the
+  `gemini-3.7-flash` call, and `validate_advisory()` — the post-hoc honesty
+  checks (SMS length, invented localities, missing demo-shelter disclosure).
+  Note the field is `locality_name`, **not** CLAUDE.md's `block_name` (§16).
+  `build_prompt`/`generate_advisory` take optional `context` and
+  `corrections` keywords; with neither, it is a single clean call.
+- `tests/test_module_d.py` — 30 tests. 28 run with Gemini stubbed and need no
+  key; 2 live tests are marked `requires_key` and skip when
+  `GEMINI_API_KEY` is unset. Suite is **148 passing, 2 skipped**.
 - `backend/locations.py` — locality list (id / name / coords / search radius),
   the building-centroid loader with a numpy bbox pre-filter, and the
   study-area scoping. Owns the origin→coordinate mapping `/routes` needs.
@@ -90,7 +100,7 @@ step" before starting any work.
   for the above. Pre-fetch only; never called from a handler (Rules.md).
 - `tests/test_module_c.py` — 37 tests on the API layer: 422 validation,
   honesty metadata present *and correct*, `/routes`↔`/allocation` agreement,
-  no-network-calls-from-a-handler. **119 tests pass in total.**
+  no-network-calls-from-a-handler. **148 tests pass in total** (2 skipped).
 - `data/dem.tif` — **real SRTM**, USGS/SRTMGL1_003 via Google Earth Engine
   (`getDownloadURL`, crs=EPSG:4326, scale=50), 2898×3117 px, ~46×50 m cells.
   Provenance stamped into the raster's own GeoTIFF tags by
@@ -140,11 +150,13 @@ step" before starting any work.
 - `data/roads.geojson` — 3712 real OSM ways (arterials)
 - `data/surge_model.pkl` — joblib dict {model, features, loo_mae}; LOOCV MAE = 2.36 m
 - `backend/data_pipeline/` — fetch_ibtracs.py, fetch_osm_infra.py (now takes dataset names as argv), fetch_dem.py, tag_dem.py, train_surge_model.py
-- `tests/` — **119 passing** (was 82): test_module_c.py (37, new),
+- `tests/` — **148 passing, 2 skipped** (was 119): test_module_d.py (30, new —
+  2 skip without `GEMINI_API_KEY`), test_module_c.py (38),
   test_flood.py (21), test_dem_and_surge.py (30), test_module_b.py (22), plus
   Module A's 9. Run `venv/bin/pytest tests/`. No network access needed.
 - `venv/` + `requirements.txt` (now includes rasterio, shapely, scipy, networkx,
-  osmnx, fastapi, uvicorn, httpx); AGENTS.md & GEMINI.md symlinked to CLAUDE.md
+  osmnx, fastapi, uvicorn, httpx, google-genai 2.25.0); AGENTS.md & GEMINI.md
+  symlinked to CLAUDE.md
 - `Design.md` — the visual system spec. **Renamed from `Design .md` on
   2026-09-28** (stray space gone, "Flagged for review" §5 resolved).
 - `mobile/theme.ts` — the `theme` object copied verbatim from `Design.md`
@@ -343,18 +355,51 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     Fixing it means a wider `data/delta_roads.geojson` fetch, not a code
     change.
 15. **`httpx` warns that `starlette.testclient` should move to `httpx2`.**
-    Harmless for the 119-test suite today. If a future Starlette/FastAPI
-    release hard-fails on it, `tests/test_module_c.py` is the only file
-    affected — the app itself never uses httpx, which is a
-    `fastapi.testclient` dependency only and is commented as such in
-    `requirements.txt`.
+    Harmless for the 148-test suite today. If a future Starlette/FastAPI
+    release hard-fails on it, `tests/test_module_c.py` and
+    `tests/test_module_d.py` are the only files affected — the app itself
+    never uses httpx, which is a `fastapi.testclient` dependency only and is
+    commented as such in `requirements.txt`.
+16. **CLAUDE.md's reference schema says `block_name`; the real field is
+    `locality_name`.** The `DistrictAdvisory` code block in CLAUDE.md (and
+    AGENTS.md / GEMINI.md, which are the same file) declares
+    `EvacuationPriority.block_name`. The implemented schema uses
+    `locality_name`, because the demand nodes throughout Modules B and C are
+    OSM *localities* from `data/places.geojson` — there is no administrative
+    "block" anywhere in this codebase, and `validate_advisory` has to match
+    the names in `/allocation`, which are locality names.
+    **CLAUDE.md was deliberately not edited** (per the session's instruction
+    and Rules.md's "flag rather than silently diverge"). A human should
+    decide whether to correct the reference doc, since a client written
+    against it would send `block_name` and get a schema rejection.
+    Pinned by `TestSchema::test_field_is_locality_name_not_block_name`.
+17. **The district bbox includes a sliver of Purba Medinipur.** `Tamluk`
+    (22.2897 N, 87.9256 E) is in Purba Medinipur, not South 24 Parganas, but
+    it is inside the data bbox and south of the 22.40°N study-area cut, so it
+    survives scoping and appears in `/allocation` — and therefore in the
+    Gemini prompt as a place needing evacuation. Pre-existing from Module C's
+    locality set, not introduced by Module D. The API never names a district
+    boundary, so it is not making a false claim, but a real advisory should
+    not list a town in the neighbouring district. Fixing it means an explicit
+    locality allow/deny list in `backend/locations.py`, not a latitude tweak.
+18. **Module D has never talked to the live Gemini API.** No
+    `GEMINI_API_KEY` has been available in any session so far, so the two
+    `requires_key` tests have never executed. Everything asserted about the
+    model's *behaviour* is currently inference from the prompt and the
+    validator, not observation. The first person with a key should run
+    `venv/bin/pytest tests/test_module_d.py` and read what comes back before
+    trusting the retry threshold — it is a guess, not a measured rate.
 
 ## Environment / credentials status
 
 - [x] Google Earth Engine authenticated — done 2026-09-27, DEM fetched and committed
 - [x] FastAPI backend runs locally — `venv/bin/uvicorn backend.main:app --reload`,
       verified with curl on 2026-09-28. `httpx` installed (TestClient only).
-- [ ] `GEMINI_API_KEY` set in environment (Module D; must not be written to a tracked file)
+- [ ] `GEMINI_API_KEY` set in environment — **STILL UNSET.** Module D is code-complete
+      but has never made a live call. Set it in the shell that runs uvicorn
+      (`export GEMINI_API_KEY=...`) — never in a tracked file, `.env`, or
+      Render's committed env. Without it `POST /advisory` returns a clear 503
+      and `/health` reports `advisory_ready: false`.
 - [ ] Backend deployed (Render / Railway) — URL: _none yet_
 - [x] Expo project initialized — `mobile/`, Expo SDK 57.0.25, deps installed, `npx tsc --noEmit` clean
 - [ ] Expo app run on a device/simulator — never launched; theme is typechecked only (spec §10.5)
@@ -362,58 +407,157 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
 
 ## Next step
 
-Start **Module D — the AI advisory layer**, in `backend/ai/`. Module C is
-done and tested, so this is a genuinely new piece of work rather than more
-wiring: the only untested thing left in the system is text that a machine
-writes.
+Modules A–D are built. **The highest-value next action is not new code — it
+is a key and a live run.** Module D has never been exercised against the real
+Gemini API, and a demo that has never been run is a demo that will fail on
+stage.
 
-Install first: `venv/bin/pip install google-genai`.
+**Do this first, before any new work:**
 
-**The contract is already waiting.** `POST /advisory` currently returns
-**501 "Module D is not implemented yet"** — deliberately a hard 501 rather
-than a stub, so the client can detect the gap instead of rendering empty
-or invented copy. Replace that handler; do not paper over it.
+```
+export GEMINI_API_KEY=...            # in your shell, never in a tracked file
+venv/bin/pytest tests/test_module_d.py -q     # runs the 2 skipped live tests
+venv/bin/uvicorn backend.main:app --port 8000 &
+curl -X POST "localhost:8000/advisory?category=6&origin=kakdwip"
+```
 
-The payload it must accept is exactly what the endpoints already return:
-`/surge-zone`, `/exposure`, `/routes`, `/allocation` for one category and
-one origin. `/allocation` carries `capacity_basis`, `population_method`,
-`shelter_status.is_demo_data`, and `/surge-zone` carries `area_disclosure`
-and `is_estimate` — **feed those disclosure fields into the prompt or the
-output will overclaim.** Gemini must not be told it is describing real
-facility loads when `shelters_are_real` is `false` (see "Flagged for
-review" §13), and must not present `drawn_area_km2` as the flooded area
-(§9). The historical comparison must be traceable to a real named cyclone,
-never invented (Rules.md).
+Read the output as a human, not as a schema. Specifically check:
+- does `sms_dispatch_draft` come back under 160 chars, and does it read like
+  an SMS a DM would actually send;
+- do the `evacuation_plan` localities match `/allocation`;
+- does it disclose the shelter capacities as provisional;
+- does `historical_context` name a storm from the verified pool (Amphan, Yaas,
+  Bulbul) and not an invented one.
 
-What to build, per CLAUDE.md:
+The retry threshold in `main.advisory()` is **one** retry, chosen because it
+is cheap and a schema-shaped answer that broke a rule is usually a drafting
+slip. It is a guess, not a measurement. If the first live run shows a high
+violation rate, the fix is the system prompt or `validate_advisory`, not more
+retries — each retry spends free-tier quota.
 
-- `DistrictAdvisory` / `EvacuationPriority` pydantic schemas, verbatim
-  from the reference code in CLAUDE.md.
-- The Gemini system prompt / instruction.
-- The `google-genai` call with `response_schema` against
-  `gemini-3.7-flash`.
-- Tests in `tests/test_module_d.py` that assert the honesty rules, not
-  just the schema shape: `sms_dispatch_draft` actually under 160
-  characters (measure it, don't trust the prompt), no `CRITICAL` priority
-  for a block that is not in the exposure payload, and the shelter
-  disclaimer present in the output.
+**Then Module E — the mobile app**, the largest remaining gap. The design
+system is in place and the API it will call is real and tested, so the map
+screen can be built against actual response shapes rather than invented ones:
 
-`GEMINI_API_KEY` comes from the environment only — never write it to a
-tracked file. Add a test-skip guard so the suite still runs for anyone
-without a key, and note the variable in the checklist above.
+1. `react-native-maps` with a hardcoded initial region on Sagar Island — no
+   location permission (PRD).
+2. Static render first: cyclone track `Polyline` + infra `Marker`s from the
+   committed GeoJSON, so the screen is provable before any network call.
+3. Slider → `/surge-zone` + `/exposure`; render the flood `Polygon`, the
+   exposure counts, and compromised roads as red dashed polylines.
+4. "Generate Advisory" button → `POST /advisory` → `AdvisoryModal`
+   (already built, presentational). This is the only Gemini call in the app;
+   never wire it to `onChange` (Rules.md).
+5. `expo-clipboard` for the SMS copy button — still not installed.
 
-**Module E aside:** the design system is in place — `mobile/theme.ts`,
-fonts loaded through a `useFonts` gate, five themed primitives. Start the
-map screen from `mobile/components/` and `mobile/components/mapStyles.ts`
-rather than re-deriving styles, and build it against the **real** response
-shapes documented above. `theme.typography` now exists but no component
-applies it yet ("Flagged for review" §1) — that is Module E's first job.
-`expo-clipboard` is still not installed; it is needed for the SMS copy
-button.
+Apply `theme.typography` while you are in there: the tokens exist, no
+component uses them ("Flagged for review" §1).
+
+Module F after that: deploy to Render, point the app at it, pre-warm before
+any demo, record a backup capture.
 
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-28 — Claude Code: Module D — Gemini advisory layer
+
+- **Scope:** replace `POST /advisory`'s 501 with a real handler; add
+  `tests/test_module_d.py`; `google-genai` to requirements; update MEMORY.md.
+  `backend/ai/advisory.py` already existed and already matched main.py's real
+  field names — it was left alone except for two additive optional kwargs.
+- **File location correction:** the new `advisory.py` was sitting at
+  `backend/backend/ai/advisory.py` (doubled path), not `backend/ai/` as
+  briefed. Moved it and added the missing `backend/ai/__init__.py`. If a tool
+  reports it "already exists at backend/ai/advisory.py", check the path first.
+
+**Built**
+
+- `POST /advisory?category={0-6}&origin={locality_id}` — same validation
+  pattern as every GET (`Query(ge=0, le=6)` → 422, unknown origin → 404).
+- It calls the **endpoint functions** `surge_zone()` / `exposure()` /
+  `allocation()`, not the raw `allocation_for_category()` helper. advisory.py
+  is written against the response shapes, and feeding it the same dicts the
+  client already has is what guarantees the advisory prose and the map cannot
+  disagree. Costs nothing: the expensive parts are already `lru_cache`d.
+- **503 when `GEMINI_API_KEY` is unset**, with an instruction to set it in the
+  environment and not in a tracked file. The key is read per request, never at
+  import time — which is also what makes the whole path testable.
+- Upstream failures are reported, not absorbed: a Gemini exception is a 502
+  carrying the exception text, not a 500.
+- `google-genai` 2.25.0 installed; verified the SDK surface
+  (`GenerateContentConfig.response_schema`, `response.parsed`) actually exists
+  rather than assuming it.
+
+**Decisions made once**
+
+- **Retry once, then 502.** The brief offered "retry once with corrections" or
+  "502 listing the violations", asking to pick the simpler one first. Went
+  with the retry, because it is ~6 lines and it is the difference between a
+  demo button that works and one that fails whenever the model drafts a
+  170-character SMS. `validate_advisory`'s violations are fed back as
+  corrections; two failed attempts returns 502 listing them rather than
+  shipping prose that invents a locality. Retries are capped at one and tested
+  as such — the free tier is rate-limited (Rules.md). **The threshold is a
+  guess, not a measurement**; see §18.
+- `origin` is a required parameter, so it was given a real job: the prompt gets
+  a REQUESTING LOCALITY block built from the cached routing helpers, including
+  the road-data-vs-flood distinction, so the advisory can never tell someone to
+  travel a road the committed extract does not contain.
+- `ADVISORY_MODEL` lives in `advisory.py` next to the call that uses it and is
+  re-exported by main.py, so there is exactly one place the model string can
+  live (Rules.md: pin it).
+- Validation order: request validity (404 on a bad origin) is settled *before*
+  server configuration (503), so a client with a bad id hears about that even
+  on an unconfigured server. A test caught the wrong order.
+
+**Tests — 148 passing, 2 skipped** (was 119)
+
+- `tests/test_module_d.py`, 30 tests. 28 run with Gemini stubbed and need no
+  key; 2 are marked `requires_key` and skip without one.
+- They assert the honesty rules rather than the schema shape: the SMS is
+  measured with `len()` at the 159/160 boundary, an invented locality is
+  caught, and demo-shelter disclosure is required in either the summary or the
+  SMS. Also pinned: the prompt uses `final_land_area_km2` and never
+  `drawn_area_km2`, the infrastructure counts are labelled district-wide, and
+  the disclosure fields actually reach the payload Gemini receives.
+- Two Module C tests were updated because the contract changed on purpose:
+  `advisory_implemented` is now `true` (with a new `advisory_ready` tracking
+  the key), and the old `test_advisory_is_501_not_a_stub` became
+  `test_advisory_without_a_key_is_503_not_invented_copy` — same intent, new
+  reality: unconfigured must still be a detectable gap, never plausible
+  invented prose.
+
+**Broke, and was fixed**
+
+- Three tests referenced the autouse stub fixture by name, which pytest does
+  not put in scope. Switched to a module-level `_CAPTURED` dict.
+- The prompt printed `SURGE: 3.8625000000000043 m` — a float artifact that
+  reads as a defect and invites Gemini to quote it verbatim. Rounded to 2dp.
+- The classifier denied `pkill` again; used `lsof -ti :8011 | kill` on the
+  exact PID.
+
+**Left unresolved, deliberately**
+
+- **No live Gemini run has ever happened** (§18). Everything asserted about
+  the model's behaviour is inference from the prompt and validator, not
+  observation. This is the first thing the next session should fix.
+- **CLAUDE.md's reference schema still says `block_name`** where the real field
+  is `locality_name` (§16). Logged, not edited, as instructed.
+- **Tamluk is in Purba Medinipur, not the study district** (§17) — a
+  pre-existing Module C locality-scoping gap that now reaches the Gemini
+  prompt.
+- `httpx2` deprecation warning (§15), now affecting two test files.
+
+**Verified**
+
+- Curl against a real uvicorn on port 8011: 503 (no key), 404 (bad origin),
+  422 (bad category) — all correct, with the 503 body naming the variable and
+  forbidding a tracked file.
+- Full handler path with a stubbed Gemini at category 6: 200, one attempt, and
+  the prompt carrying the reference numbers MEMORY.md already records
+  (185 kmph → 1,820.83 km² modelled, 6 hospitals, 10 substations, 124 roads
+  cut off), consistent with the 180 kmph figures.
 
 ### 2026-09-28 — Claude Code (Opus 5): Module C — FastAPI backend
 

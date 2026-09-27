@@ -19,6 +19,8 @@ makes to a client:
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -241,7 +243,12 @@ class TestServiceContract:
         health = client.get("/health").json()
         assert health["status"] == "ok"
         assert health["shelters_verified"] == 0
-        assert health["advisory_implemented"] is False
+        assert health["advisory_implemented"] is True
+        # "implemented" and "ready" are different: ready tracks the key, which
+        # is read from the environment and never echoed back.
+        assert isinstance(health["advisory_ready"], bool)
+        assert health["advisory_model"] == "gemini-3.7-flash"
+        assert "GEMINI_API_KEY" not in json.dumps(health)
         assert health["building_centroids"] > 100_000
 
     def test_root_lists_the_contract(self, client):
@@ -249,14 +256,32 @@ class TestServiceContract:
         for path in ("/surge-zone", "/exposure", "/routes", "/allocation", "/advisory"):
             assert any(path in entry for entry in endpoints), path
 
-    def test_advisory_is_501_not_a_stub(self, client):
-        """Module D is next. A stub returning fake copy would be worse."""
-        response = client.post("/advisory", json={})
-        assert response.status_code == 501
-        assert "Module D" in response.json()["detail"]
+    def test_advisory_validates_like_the_other_endpoints(self, client):
+        """Same contract as every GET: out-of-range is 422, unknown id is 404."""
+        for bad in (-1, 7):
+            assert client.post(f"/advisory?category={bad}&origin=kakdwip").status_code == 422
+        assert client.post("/advisory?category=6").status_code == 422
+        assert client.post("/advisory?category=6&origin=atlantis").status_code == 404
+
+    def test_advisory_without_a_key_is_503_not_invented_copy(self, client, monkeypatch):
+        """Module D is wired. Unconfigured must still be a detectable gap.
+
+        A stub returning plausible advisory prose here would be indistinguishable
+        from a real answer to the user, which is the one thing this service must
+        never do.
+        """
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        response = client.post("/advisory?category=6&origin=kakdwip")
+        assert response.status_code == 503
+        assert "GEMINI_API_KEY" in response.json()["detail"]
 
     def test_no_handler_calls_a_network_service(self, monkeypatch):
-        """Rules.md: Overpass/IBTrACS/GEE are pre-fetch scripts, never runtime."""
+        """Rules.md: Overpass/IBTrACS/GEE are pre-fetch scripts, never runtime.
+
+        POST /advisory is the one deliberate exception — it calls Gemini, and
+        only because a human asked for it. It is covered separately in
+        test_module_d.py.
+        """
         import requests
 
         def explode(*args, **kwargs):
