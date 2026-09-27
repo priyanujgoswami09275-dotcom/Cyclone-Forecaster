@@ -4,3 +4,10 @@ scikit-learn
 joblib
 earthengine-api
 pytest
+
+# Module B — simulation engine
+rasterio
+shapely
+scipy
+networkx
+osmnx

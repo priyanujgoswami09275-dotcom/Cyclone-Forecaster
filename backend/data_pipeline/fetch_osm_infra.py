@@ -36,6 +36,22 @@ QUERIES = {
     ),
 }
 
+# The arterial filter above covers the mainland but returns almost nothing for
+# Sagar Island and the southern delta — the case study's actual landfall area.
+# OSM maps those roads as tertiary/unclassified/residential, so they are
+# excluded by an arterial-only filter, and routing there had no network at all
+# (nearest graph node 16 km away). This query is scoped to the delta and
+# widened to the classes actually present, writing a SEPARATE file so the
+# committed arterial network is not disturbed.
+DELTA_BBOX = "(21.55, 88.00, 21.85, 88.45)"  # Sagar Island + Gosaba + Namkhana
+DELTA_QUERIES = {
+    "delta_roads": (
+        f'[out:json][timeout:180];('
+        f'way{DELTA_BBOX}["highway"~"tertiary|unclassified|residential|secondary|primary|trunk"];'
+        f');out geom;'
+    ),
+}
+
 
 def overpass_to_geojson(elements: list[dict]) -> dict:
     """Overpass 'out geom' elements -> GeoJSON FeatureCollection.
@@ -79,7 +95,16 @@ def fetch_overpass(query: str) -> list[dict]:
 
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    for name, query in QUERIES.items():
+    # Only the requested names are fetched, so a delta-only run does not
+    # overwrite the committed hospital/substation/road extracts.
+    requested = sys.argv[1:] or list(QUERIES)
+    for name in requested:
+        query = {**QUERIES, **DELTA_QUERIES}.get(name)
+        if query is None:
+            sys.exit(
+                f"Unknown dataset '{name}'. Choose from: "
+                f"{', '.join([*QUERIES, *DELTA_QUERIES])}"
+            )
         elements = fetch_overpass(query)
         if not elements:
             sys.exit(f"Overpass returned 0 elements for '{name}' — refusing to write empty file.")

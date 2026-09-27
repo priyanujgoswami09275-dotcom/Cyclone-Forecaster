@@ -4,6 +4,11 @@ __pycache__/
 .DS_Store
 .superpowers/
 
+# node / expo
+node_modules/
+.expo/
+*.tsbuildinfo
+
 # data-fetch artifacts are only committed when they live under data/
 *.geojson
 *.tif
@@ -11,3 +16,12 @@ __pycache__/
 !data/*.geojson
 !data/*.tif
 !data/*.pkl
+
+# one-off scratch: GEE export archives and ad-hoc probe scripts kept at the
+# repo root during the DEM fetch. The DEM they produced IS committed
+# (data/dem.tif); these are the raw downloads and a scratch query, not sources.
+dem_archive.zip
+project.zip
+/fetch_dem.py
+/test_gee.py
+
