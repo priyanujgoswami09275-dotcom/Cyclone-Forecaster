@@ -11,3 +11,8 @@ shapely
 scipy
 networkx
 osmnx
+
+# Module C — FastAPI backend
+fastapi
+uvicorn[standard]
+httpx  # fastapi.testclient dependency, for tests/test_module_c.py only

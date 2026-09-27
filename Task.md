@@ -50,15 +50,29 @@ current-state summary.
 
 ## Module C — Backend / API
 
-- [ ] Scaffold the FastAPI app structure per Architecture.md
-- [ ] Implement `GET /surge-zone`
-- [ ] Implement `GET /exposure`
-- [ ] Implement `GET /routes`
-- [ ] Implement `GET /allocation`
-- [ ] Implement `POST /advisory` (calls Gemini)
-- [ ] Decide and document whether `/routes`/`/allocation` are separate
-      calls or bundled into `/exposure` — record the decision in MEMORY.md
-- [ ] End-to-end local test of all endpoints via curl/Postman
+- [x] Scaffold the FastAPI app structure per Architecture.md — `backend/main.py`
+- [x] Implement `GET /surge-zone` — `category` 0-6, both area figures + disclosure
+- [x] Implement `GET /exposure` — `hospitals` / `substations` / `roads_cut_off`
+- [x] Implement `GET /routes` — `origin` from `/localities`; unreachable is a
+      200 with a reason, never a 404
+- [x] Implement `GET /allocation` — LP solves; capacity basis disclosed
+- [x] Implement `POST /advisory` (calls Gemini) — **returns 501, not built.**
+      Module D is the next session's work. Deliberately a 501 rather than a
+      stub so the client can detect the gap instead of rendering empty copy.
+- [x] Decide and document whether `/routes`/`/allocation` are separate
+      calls or bundled into `/exposure` — **decided: separate endpoints**,
+      matching Architecture.md's numbered request sequence. Recorded in
+      MEMORY.md.
+- [x] End-to-end local test of all endpoints via curl/Postman — all verified;
+      `tests/test_module_c.py` adds 37 tests (119 total, all passing)
+- Added while wiring, because the endpoints could not work without them:
+  - `backend/locations.py` — locality list (id/coord/radius) and the
+    building-centroid loader, plus the study-area scoping
+  - `data/places.geojson` (2,362 OSM place nodes) and
+    `data/buildings.csv.gz` (660,893 centroids), pre-fetched and committed
+  - `GET /categories`, `GET /localities`, `GET /health` for the slider and
+    the origin picker
+  - Per-category `lru_cache`: flood 7.5 s cold, 0.02 s warm
 
 ## Module D — AI advisory layer
 
@@ -74,11 +88,16 @@ current-state summary.
 
 - [x] Scaffold the Expo app (TypeScript, managed workflow) — `mobile/`,
       Expo SDK 57.0.25, typechecks clean. Also landed: `theme.ts` from
-      `Design .md`, the four Google font families, the `useFonts` gate, and
+      `Design.md`, the four Google font families, the `useFonts` gate, and
       themed `PriorityChip` / `ExposureRow` / `PrimaryButton` /
       `GhostButton` / `AdvisoryModal` + map style constants
-- [ ] Resolve the missing font sizes — `Design.md` gives a type scale but
-      no sizes in the theme object (MEMORY.md "Flagged for review" §1)
+- [x] Resolve the missing font sizes — `Design.md` gives a type scale but
+      no sizes in the theme object (MEMORY.md "Flagged for review" §1).
+      **Resolved 2026-09-28** — `theme.typography` added (heading 22, body 16,
+      emphasis 16, caption 13) in both `Design.md` and `mobile/theme.ts`, and
+      `Design .md` renamed to `Design.md` (the stray space is gone). The
+      themed components still carry no `fontSize`; applying them is Module E
+      work, deliberately not done in the Module C session.
 - [ ] Set up `react-native-maps` with a hardcoded initial region (Sagar
       Island) — no location permission
 - [ ] Render the cyclone track `Polyline` and infra `Marker`s from static

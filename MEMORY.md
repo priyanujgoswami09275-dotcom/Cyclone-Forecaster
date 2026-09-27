@@ -62,15 +62,35 @@ step" before starting any work.
 |---|---|---|
 | A. Data pipeline & surge ML model | Done | All 6 deliverables. DEM resolved (real GEE SRTM, tagged + committed). Stretch item (more RSMC points) still open. |
 | B. Simulation engine (flood propagation, routing, shelter allocation) | In progress | Engine complete and tested on real data. Only the shelter *dataset* is missing — no real locations/capacities exist to use (see blockers). |
-| C. Backend / API (FastAPI) | Not started | Next. Module B is ready to be wrapped. |
-| D. AI advisory layer (Gemini) | Not started | |
-| E. Mobile app (Expo / React Native) | In progress | Design system landed 2026-09-27: `mobile/theme.ts`, fonts installed, font gate in `App.tsx`, 5 themed primitives. No screen logic yet — see "Module E: what is themed vs. unstyled" below. |
+| C. Backend / API (FastAPI) | Done | `backend/main.py` + `backend/locations.py`. All contract endpoints live and curl-verified. `/advisory` returns 501 — that's Module D, next. |
+| D. AI advisory layer (Gemini) | Not started | **Next.** `POST /advisory` is a 501 waiting for `backend/ai/`. See "Next step". |
+| E. Mobile app (Expo / React Native) | In progress | Design system landed 2026-09-27 (`theme.ts`, fonts, font gate, 5 themed primitives); `theme.typography` added 2026-09-28. No screen logic yet — see "Module E: what is themed vs. unstyled" below. The API it will call is now real, so the map screen can be built against actual response shapes. |
 | F. Deployment | Not started | |
 
 *(Status values: Not started / In progress / Blocked / Done)*
 
 ## What actually exists in the repo right now
 
+- `backend/main.py` — **the FastAPI app (Module C).** Implements the
+  Architecture.md contract exactly: `/surge-zone`, `/exposure`, `/routes`,
+  `/allocation`, `POST /advisory` (501, Module D), plus `/`, `/health`,
+  `/categories`, `/localities`. Per-category `lru_cache` throughout:
+  flood 7.5 s cold → **0.017 s warm**. Run:
+  `venv/bin/uvicorn backend.main:app --port 8000`
+- `backend/locations.py` — locality list (id / name / coords / search radius),
+  the building-centroid loader with a numpy bbox pre-filter, and the
+  study-area scoping. Owns the origin→coordinate mapping `/routes` needs.
+- `data/places.geojson` — 2,362 real OSM place nodes (14 city, 12 town,
+  47 village, 2,289 suburb). Source for locality names and coordinates.
+- `data/buildings.csv.gz` — 660,893 real OSM building centroids, 4.8 MB
+  gzipped. Feeds the population density estimate. Centroid-only on purpose:
+  the polygons are hundreds of MB and density only needs the point.
+- `backend/data_pipeline/fetch_osm_places.py`,
+  `backend/data_pipeline/fetch_osm_buildings.py` — the two pre-fetch scripts
+  for the above. Pre-fetch only; never called from a handler (Rules.md).
+- `tests/test_module_c.py` — 37 tests on the API layer: 422 validation,
+  honesty metadata present *and correct*, `/routes`↔`/allocation` agreement,
+  no-network-calls-from-a-handler. **119 tests pass in total.**
 - `data/dem.tif` — **real SRTM**, USGS/SRTMGL1_003 via Google Earth Engine
   (`getDownloadURL`, crs=EPSG:4326, scale=50), 2898×3117 px, ~46×50 m cells.
   Provenance stamped into the raster's own GeoTIFF tags by
@@ -120,20 +140,21 @@ step" before starting any work.
 - `data/roads.geojson` — 3712 real OSM ways (arterials)
 - `data/surge_model.pkl` — joblib dict {model, features, loo_mae}; LOOCV MAE = 2.36 m
 - `backend/data_pipeline/` — fetch_ibtracs.py, fetch_osm_infra.py (now takes dataset names as argv), fetch_dem.py, tag_dem.py, train_surge_model.py
-- `tests/` — **82 passing** (was 9): test_flood.py (21), test_dem_and_surge.py
-  (30), test_module_b.py (22), plus Module A's 9. Run `venv/bin/pytest tests/`.
-  No network access needed.
+- `tests/` — **119 passing** (was 82): test_module_c.py (37, new),
+  test_flood.py (21), test_dem_and_surge.py (30), test_module_b.py (22), plus
+  Module A's 9. Run `venv/bin/pytest tests/`. No network access needed.
 - `venv/` + `requirements.txt` (now includes rasterio, shapely, scipy, networkx,
-  osmnx); AGENTS.md & GEMINI.md symlinked to CLAUDE.md
-- `mobile/theme.ts` — the `theme` object copied verbatim from `Design .md` (colors, radius, spacing, shadow, fonts). No value modified or added.
+  osmnx, fastapi, uvicorn, httpx); AGENTS.md & GEMINI.md symlinked to CLAUDE.md
+- `Design.md` — the visual system spec. **Renamed from `Design .md` on
+  2026-09-28** (stray space gone, "Flagged for review" §5 resolved).
+- `mobile/theme.ts` — the `theme` object copied verbatim from `Design.md`
+  (colors, radius, spacing, shadow, fonts, typography). No value invented.
 - `mobile/App.tsx` — app root; `useFonts` gate over the four families in `theme.fonts`; renders nothing until fonts resolve
 - `mobile/index.ts` — `registerRootComponent(App)`
 - `mobile/components/` — `PriorityChip.tsx`, `ExposureRow.tsx`, `PrimaryButton.tsx`, `GhostButton.tsx`, `AdvisoryModal.tsx`, `mapStyles.ts` (all presentational, zero data/API)
 - `mobile/package.json` — Expo SDK 57.0.25; `@expo-google-fonts/inter` 0.4.2, `@expo-google-fonts/roboto-slab` 0.4.2, `expo-font` 57.0.4, `typescript` + `@types/react` (dev)
 - `mobile/app.json`, `tsconfig.json`, `babel.config.js` — minimal Expo managed scaffold
-- `Design .md` — the visual system spec, in the repo root
 - Typecheck: `cd mobile && npx tsc --noEmit` → clean, all 7 project files covered
-
 *(List real files/paths as they get created. Keep this in sync with reality
 — this is what stops the next session from re-deriving something that
 already exists, or trusting a file that was later deleted.)*
@@ -183,6 +204,16 @@ not visually verified**.
   `is_demo_data: true`, and every allocation result embeds that disclosure.
   Needs a human with district contacts, or a World Bank / NCRMP shelter
   register. **Do not invent shelter data to make the demo look complete.**
+  - **LEAD, don't re-search this (2026-09-28):** North 24 Parganas'
+    official **District Disaster Management Plan** (PDF hosted on
+    **wbxpress.com**) has an annexure literally titled *"Multipurpose
+    cyclone shelter with details."* It is gated behind free site
+    registration, which is why it has not been pulled. If someone
+    registers (or is a district contact), that annexure is the most
+    likely real source of shelter coordinates + capacities for the
+    northern blocks. Note it covers North 24 Parganas, not South 24
+    Parganas — the WBDMD count of 15 MPCS for our study district is a
+    separate, still-unlocated source.
 - **Drawn vs. modelled flood area diverge.** SRTM quantises elevation to whole
   metres, so in the 0–4 m delta a realistic surge shatters into 45k–541k
   slivers. The renderer drops bodies < 0.5 km², so `drawn_area_km2` can be
@@ -207,17 +238,13 @@ not visually verified**.
 *(A tool session adds a line here — not a silent change — if it disagrees
 with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
 
-1. **`Design.md` has a type scale but no sizes in its theme object.** Its
-   typography table specifies heading 20–24px / body 15–16px / caption
-   12–13px, but the "React Native theme object" carries font *families*
-   only. The session rule was to invent nothing, so **every themed
-   component renders with no `fontSize` at all** and falls back to the RN
-   default. This is the one real gap in the design system and it needs a
-   human decision: either add a `typography` block to `theme.ts` (and to
-   `Design .md`), or confirm the table's ranges should be read as ranges
-   and picked per component. Affected: every `fontSize` line in
-   `mobile/App.tsx` and `mobile/components/*.tsx`, each marked with
-   `// fontSize: omitted on purpose`.
+1. **RESOLVED 2026-09-28 — font sizes now exist.** A `typography` block
+   (heading 22, body 16, emphasis 16, caption 13) was added to both
+   `Design.md` and `mobile/theme.ts` (`theme.typography`). The tokens are
+   in place; **the themed components still carry no `fontSize`**, so
+   applying them across `mobile/App.tsx` and `mobile/components/*.tsx`
+   (each line still marked `// fontSize: omitted on purpose`) is Module E
+   work. If a size is changed, change `Design.md` and `theme.ts` together.
 2. **"White text" is not a token.** `Design.md`'s chip and button specs
    call for white text, but the token table has no `white`. Mapped to
    `theme.colors.card`, which is the same `#ffffff` — no new value
@@ -231,11 +258,9 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
 4. **Pressed/disabled states have no tokens.** `Design.md` defines no
    pressed or disabled colour, so `PrimaryButton`/`GhostButton` use a flat
    `opacity` change rather than a new colour.
-5. **The design file is named `Design .md`** — a stray space before the
-   extension, so plain `Design.md` lookups miss it. Left in place rather
-   than renamed, in case something external references the name.
-   `Architecture.md`'s repo-structure listing also does not mention
-   `Design.md` at all; worth adding.
+5. **RESOLVED 2026-09-28 — renamed `Design .md` → `Design.md`.** The stray
+   space is gone. `Architecture.md`'s repo-structure listing still does not
+   mention `Design.md` at all; worth adding there.
 6. **`npm 12` blocks install scripts by default** (EALLOWSCRIPTS). A global
    `~/.npmrc` already sets an `allow-scripts` allowlist that does not cover
    `@expo-google-fonts/*`, so installing the font packages fails until
@@ -287,10 +312,48 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
    committed GeoJSON with networkx instead, because osmnx queries Overpass
    live, which Rules.md forbids. Left installed because CLAUDE.md specifies it
    and other tools may reach for it — but nothing should import it.
+12. **The study area is cut at latitude 22.40°N, and that cut is an
+    approximation, not a boundary.** The DEM bbox clips northern Kolkata,
+    whose 12 km-radius density boxes would have produced ~90% of the raw
+    demand estimate and swamped the delta. `backend/locations.py` therefore
+    exposes 46 of the 77 fetched localities as the study area and the rest
+    via `/localities?scope=all`. `scoping()` names every excluded place and
+    says in the payload that this "is not the boundary." It is a scoping
+    decision to keep the demo legible — if a user asks why Kolkata is
+    missing, that is the honest answer, not a data gap.
+13. **Demo shelter capacities are derived from demand, not surveyed.** With
+    real shelters unavailable, `shelters_for_category()` scales placeholder
+    capacities to `ceil(demand × 1.10)`, so the LP is feasible and the
+    capacity/distance trade-off genuinely binds (at category 6, 4 of 5
+    shelters sit at 100% occupancy). `/allocation.capacity_basis.rule`
+    states this in the words "DERIVED" and "NOT surveyed", and `/health`
+    reports `shelters_verified: 0`. **Any UI copy or Gemini prompt must
+    carry that disclosure through** — a reader who sees "4 of 5 shelters
+    full" must not read it as a real facility count. This scales demo data
+    to make a feature demonstrable; it is not evidence about real shelters.
+14. **The committed OSM road extract does not connect the delta to the
+    inland towns.** `/routes?category=0&origin=canning` is unreachable at
+    *zero* surge, and the naive reason ("origin cut off") blamed a flood
+    that does not exist — the dangerous direction to be wrong in, since
+    "cut off" reads as a warning. `main._diagnose_unreachable()` now
+    compares `networkx.connected_components` labels and distinguishes
+    road-data coverage from flood severance. **The underlying gap is still
+    there**: Canning and other inland origins are unroutable at every
+    category, because the committed extract has no connecting edges.
+    Fixing it means a wider `data/delta_roads.geojson` fetch, not a code
+    change.
+15. **`httpx` warns that `starlette.testclient` should move to `httpx2`.**
+    Harmless for the 119-test suite today. If a future Starlette/FastAPI
+    release hard-fails on it, `tests/test_module_c.py` is the only file
+    affected — the app itself never uses httpx, which is a
+    `fastapi.testclient` dependency only and is commented as such in
+    `requirements.txt`.
 
 ## Environment / credentials status
 
 - [x] Google Earth Engine authenticated — done 2026-09-27, DEM fetched and committed
+- [x] FastAPI backend runs locally — `venv/bin/uvicorn backend.main:app --reload`,
+      verified with curl on 2026-09-28. `httpx` installed (TestClient only).
 - [ ] `GEMINI_API_KEY` set in environment (Module D; must not be written to a tracked file)
 - [ ] Backend deployed (Render / Railway) — URL: _none yet_
 - [x] Expo project initialized — `mobile/`, Expo SDK 57.0.25, deps installed, `npx tsc --noEmit` clean
@@ -299,82 +362,149 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
 
 ## Next step
 
-Start **Module C — the FastAPI backend**. Modules A and B are done and
-tested; this module is a thin, well-specified wrapper over code that
-already works. `backend/main.py` plus `backend/ai/` for Module D.
+Start **Module D — the AI advisory layer**, in `backend/ai/`. Module C is
+done and tested, so this is a genuinely new piece of work rather than more
+wiring: the only untested thing left in the system is text that a machine
+writes.
 
-**The API contract is fixed in Architecture.md** — implement it as written,
-don't redesign it:
+Install first: `venv/bin/pip install google-genai`.
 
-| Method | Path | Request | Response |
-|---|---|---|---|
-| GET | `/surge-zone?category={0-6}` | IMD category index | GeoJSON flood polygon |
-| GET | `/exposure?category={0-6}` | IMD category index | `{hospitals, substations, roads_cut_off}` |
-| GET | `/routes?category={0-6}&origin={block_id}` | origin + category | route polyline + shelter |
-| POST | `/advisory` | combined exposure+routes+allocation | `DistrictAdvisory` JSON |
+**The contract is already waiting.** `POST /advisory` currently returns
+**501 "Module D is not implemented yet"** — deliberately a hard 501 rather
+than a stub, so the client can detect the gap instead of rendering empty
+or invented copy. Replace that handler; do not paper over it.
 
-Key things to get right, all already handled inside the simulation layer —
-your job is to pass them through, not re-derive them:
+The payload it must accept is exactly what the endpoints already return:
+`/surge-zone`, `/exposure`, `/routes`, `/allocation` for one category and
+one origin. `/allocation` carries `capacity_basis`, `population_method`,
+`shelter_status.is_demo_data`, and `/surge-zone` carries `area_disclosure`
+and `is_estimate` — **feed those disclosure fields into the prompt or the
+output will overclaim.** Gemini must not be told it is describing real
+facility loads when `shelters_are_real` is `false` (see "Flagged for
+review" §13), and must not present `drawn_area_km2` as the flooded area
+(§9). The historical comparison must be traceable to a real named cyclone,
+never invented (Rules.md).
 
-- **The parameter is `category` (0–6 IMD band), not a raw wind speed.**
-  `backend/simulation/surge.py` has `IMD_CATEGORIES` (Depression → Super
-  Cyclonic Storm, 17 → ≥120 kmph) and `predict_surge()` takes kmph. Map the
-  index to the band's wind and call `predict_surge`. Note the dead zone
-  ("Flagged for review" §8): categories 0–3 all yield 0 m surge at
-  `approach_angle_flag=1`, so those responses are legitimately empty.
-  Validate the index and return 422 on anything outside 0–6.
-- **Every response must carry its own honesty metadata.** `exposure` returns
-  a `definitions` block; `/surge-zone` must include `final_land_area_km2`
-  (modelled), `drawn_area_km2`, and `is_estimate`; `/allocation` must include
-  the `shelter_dataset_status()` block with `is_demo_data: true`. Do not
-  strip these to make responses tidier.
-- **Cache aggressively per category.** The flood run is ~6 s at 180 kmph and
-  the road graph build is ~0.4 s (already `lru_cache`d). A 7-entry cache
-  keyed on category makes the slider usable; without it every slider tick
-  recomputes 6 s of raster work. `functools.lru_cache` on a
-  `flood_for_category(n)` helper is enough.
-- **No live network calls from any handler** (Rules.md). Everything reads
-  committed files in `data/`. Overpass, IBTrACS and GEE are one-off
-  pre-fetch scripts in `backend/data_pipeline/` only.
-- **`/routes` needs an origin→node mapping** that doesn't exist yet. Pick
-  block centroids (e.g. from the flood polygon or a fixed list of localities)
-  and snap via `routing.safe_route`, which already returns an explicit
-  unreachable result rather than raising. Return that `reason` to the client.
-- **Undecided, and yours to decide once, then record here:** whether
-  `/routes` and `/allocation` are separate endpoints or bundled into
-  `/exposure`. Architecture.md's request sequence calls them separately
-  (steps 5–6), so **default to separate endpoints**; bundle only if the
-  slider UX turns out to need it. Either way, write the decision into this
-  file so a later session doesn't re-decide it differently.
+What to build, per CLAUDE.md:
 
-Then **Module D** (`backend/ai/`): the `DistrictAdvisory` pydantic schema
-from CLAUDE.md, the Gemini system prompt, and the `google-genai` call with
-`response_schema` on `gemini-3.7-flash`. `GEMINI_API_KEY` comes from the
-environment only — never write it to a tracked file. Verify the
-`sms_dispatch_draft` actually comes back under 160 characters rather than
-trusting the prompt.
+- `DistrictAdvisory` / `EvacuationPriority` pydantic schemas, verbatim
+  from the reference code in CLAUDE.md.
+- The Gemini system prompt / instruction.
+- The `google-genai` call with `response_schema` against
+  `gemini-3.7-flash`.
+- Tests in `tests/test_module_d.py` that assert the honesty rules, not
+  just the schema shape: `sms_dispatch_draft` actually under 160
+  characters (measure it, don't trust the prompt), no `CRITICAL` priority
+  for a block that is not in the exposure payload, and the shelter
+  disclaimer present in the output.
 
-Install: `venv/bin/pip install fastapi "uvicorn[standard]" google-genai`.
+`GEMINI_API_KEY` comes from the environment only — never write it to a
+tracked file. Add a test-skip guard so the suite still runs for anyone
+without a key, and note the variable in the checklist above.
 
-Test the whole thing end-to-end with curl against a real category. Useful
-reference numbers from a full run this session (wind kmph → land km²
-flooded / hospitals / substations / roads cut): 120 → 0/0/0/0, 150 →
-747/0/0/3, 180 → 1710/5/10/122, 220 → 2399/8/19/180. Routes go unreachable
-above 180 kmph. If your numbers differ wildly, the wiring is wrong, not
-the model.
-
-**Module E aside (2026-09-27):** the design system is already in place —
-`mobile/theme.ts`, fonts loaded through a `useFonts` gate, and five themed
-primitives. When you get to the map screen, start from
-`mobile/components/` and `mobile/components/mapStyles.ts` rather than
-re-deriving styles. Two things need a human first: the missing font sizes
-("Flagged for review" §1) and `expo-clipboard` not being installed yet.
-The map screen can now be built against the real `/surge-zone` and
-`/exposure` shapes above rather than invented ones.
+**Module E aside:** the design system is in place — `mobile/theme.ts`,
+fonts loaded through a `useFonts` gate, five themed primitives. Start the
+map screen from `mobile/components/` and `mobile/components/mapStyles.ts`
+rather than re-deriving styles, and build it against the **real** response
+shapes documented above. `theme.typography` now exists but no component
+applies it yet ("Flagged for review" §1) — that is Module E's first job.
+`expo-clipboard` is still not installed; it is needed for the SMS copy
+button.
 
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-28 — Claude Code (Opus 5): Module C — FastAPI backend
+
+- **Scope:** `backend/main.py` + `backend/ai/` groundwork. The brief's contract
+  table was followed as written; no endpoint was redesigned, and no tested
+  simulation logic was re-derived. `POST /advisory` is a hard 501 — Module D
+  is next, and a stub would have been worse than a gap.
+- **Also landed first (housekeeping, not this session's work):** `Design .md`
+  → `Design.md`; the `typography` block added to `Design.md` and copied into
+  `mobile/theme.ts`. The updated `theme.ts` was sitting at the **repo root**
+  as a stray file, not at the path `mobile/App.tsx` imports — so the app was
+  still importing the version without font sizes. Both files are now correct.
+  No further action taken on either, as instructed.
+
+**Built**
+
+- `backend/main.py` — the full contract. `GET /surge-zone`, `/exposure`,
+  `/routes`, `/allocation` all live, plus `/categories`, `/localities` and
+  `/health` for the slider and origin picker. `category` is an IMD band
+  index 0–6, mapped to a wind via `IMD_CATEGORIES` then handed to
+  `predict_surge()`; `Query(ge=0, le=6)` makes out-of-range a 422 with no
+  hand-rolled validation.
+- `backend/locations.py` — the origin→node mapping `/routes` needed and that
+  did not exist: 77 localities from OSM, 46 in the study area, with
+  `scoping()` disclosing every excluded name.
+- `data/places.geojson` (2,362 place nodes) and `data/buildings.csv.gz`
+  (660,893 building centroids), pre-fetched with two new
+  `backend/data_pipeline/` scripts. Chosen as centroids over polygons: the
+  same count in 4.8 MB instead of ~85 MB, leaving `population.py`'s tested
+  `buildings: list[(lon, lat)]` interface untouched.
+- `tests/test_module_c.py` — 37 tests. Suite is now **119 passing** (was 82),
+  no regressions in Modules A or B.
+
+**Decisions made once, as instructed**
+
+- `/routes` and `/allocation` are **separate endpoints**, matching
+  Architecture.md's request sequence. No concrete reason for the slider to
+  need bundling came up. They are now pinned against each other by
+  `test_routes_and_allocation_agree_on_shelters`, because they are separate
+  code paths over the same shelter set and *did* drift once (below).
+- The study-area latitude cut and the demand-derived shelter capacities were
+  both put to the user and chosen deliberately, not defaulted into. Both are
+  recorded in "Flagged for review" §12–13 with the reasoning, because both
+  scale demo data in ways a viewer could misread as findings.
+
+**Verified**
+
+- Every endpoint curl-tested against a real category. Category 6 (185 kmph)
+  → 1,820.83 km² modelled / 833.5 drawn, 6 hospitals, 10 substations, 124
+  roads cut off. Consistent with MEMORY.md's 180 kmph reference
+  (1,710 / 5 / 10 / 122); the wiring is right.
+- Caching works end to end: `/surge-zone?category=6` **7.55 s cold → 0.017 s
+  warm**. `/allocation` at category 6 completes in ~1.5 s.
+- `test_no_handler_calls_a_network_service` monkeypatches
+  `requests.get/post/Session.request` to raise and then exercises the
+  handlers, so the Rules.md no-live-network rule is now enforced by the
+  suite rather than by convention.
+
+**Broke, and was fixed**
+
+- `pkill` was denied by the permission classifier ("Interfere With
+  Workloads" — it could kill pre-existing processes). Used
+  `lsof -ti :8000 | head -1 | xargs -I{} kill {}` to target the exact PID.
+- `/allocation` kept reporting 5,100 capacity after the shelter fix, because
+  the handler called `allocate_shelters(populations)` with the *default*
+  shelters while `capacity_basis` used the scaled set. Exactly the
+  `/routes`↔`/allocation` drift decision (1) was meant to prevent. Now
+  pinned by a test.
+- `/routes?category=0&origin=canning` returned "no flood-free route: origin
+  cut off" at **zero surge**, blaming a flood that does not exist — the
+  misleading direction, since "cut off" reads as a warning. Added
+  `_diagnose_unreachable()`, which compares connected-component labels and
+  separates road-data coverage from flood severance.
+- Four pytest 10 deprecation warnings (class-scoped fixtures defined as
+  instance methods) — fixed with `@classmethod`.
+- The brief said "categories 0–3 legitimately return 0 m surge". The actual
+  band mapping gives **0–4 at 0 m and category 5 at 0.06 m**. Reported rather
+  than followed; the dead zone is documented in `category_band()` and
+  surfaced in `/categories` instead of hidden.
+
+**Left unresolved, deliberately**
+
+- The road extract still does not connect the delta to Canning and other
+  inland towns, so those origins are unroutable at every category. The
+  message is now truthful about *why*, but the gap is a data gap — it needs
+  a wider `data/delta_roads.geojson` fetch ("Flagged for review" §14).
+- `httpx2` deprecation warning from `starlette.testclient` (§15).
+- Real shelter data: still blocked, now with a concrete lead recorded
+  (North 24 Parganas DDMP annexure on wbxpress.com, behind free
+  registration) so the next session does not re-search it.
+- Themed components still apply no `fontSize` (§1) — Module E.
 
 ### 2026-09-27 — Claude Code (Opus 5): Modules A closeout + Module B simulation engine
 - Scope: everything under the previous "Next step" — resolve the DEM blocker,
