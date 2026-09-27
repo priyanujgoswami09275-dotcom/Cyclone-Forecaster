@@ -1,0 +1,13 @@
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+.superpowers/
+
+# data-fetch artifacts are only committed when they live under data/
+*.geojson
+*.tif
+*.pkl
+!data/*.geojson
+!data/*.tif
+!data/*.pkl
