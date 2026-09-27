@@ -1,0 +1,361 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            89.4,
+            18.8
+          ],
+          [
+            89.23,
+            18.75
+          ],
+          [
+            89.1,
+            18.8
+          ],
+          [
+            89.035,
+            19.025
+          ],
+          [
+            89.0,
+            19.4
+          ],
+          [
+            88.9575,
+            19.9075
+          ],
+          [
+            88.9,
+            20.4
+          ],
+          [
+            88.8149,
+            20.665
+          ],
+          [
+            88.7,
+            20.9
+          ],
+          [
+            88.5055,
+            21.285
+          ],
+          [
+            88.4,
+            21.7
+          ],
+          [
+            88.536,
+            22.0626
+          ],
+          [
+            88.8,
+            22.4
+          ],
+          [
+            89.0658,
+            22.7242
+          ],
+          [
+            89.3509,
+            23.0325
+          ],
+          [
+            89.6178,
+            23.3337
+          ],
+          [
+            89.8799,
+            23.6263
+          ],
+          [
+            90.14,
+            23.9143
+          ],
+          [
+            90.4,
+            24.2
+          ]
+        ]
+      },
+      "properties": {
+        "name": "REMAL",
+        "season": "2024",
+        "source": "IBTrACS v04r00",
+        "wind_units": "knots"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          89.4,
+          18.8
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-25 12:00:00",
+        "usa_wind_kt": 35.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          89.23,
+          18.75
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-25 15:00:00",
+        "usa_wind_kt": 35.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          89.1,
+          18.8
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-25 18:00:00",
+        "usa_wind_kt": 35.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          89.035,
+          19.025
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-25 21:00:00",
+        "usa_wind_kt": 37.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          89.0,
+          19.4
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-26 00:00:00",
+        "usa_wind_kt": 39.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          88.9575,
+          19.9075
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-26 03:00:00",
+        "usa_wind_kt": 45.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          88.9,
+          20.4
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-26 06:00:00",
+        "usa_wind_kt": 51.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          88.8149,
+          20.665
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-26 09:00:00",
+        "usa_wind_kt": 52.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          88.7,
+          20.9
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-26 12:00:00",
+        "usa_wind_kt": 54.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          88.5055,
+          21.285
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-26 15:00:00",
+        "usa_wind_kt": 54.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          88.4,
+          21.7
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-26 18:00:00",
+        "usa_wind_kt": 54.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          88.536,
+          22.0626
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-26 21:00:00",
+        "usa_wind_kt": 52.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          88.8,
+          22.4
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-27 00:00:00",
+        "usa_wind_kt": 51.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          89.0658,
+          22.7242
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-27 03:00:00",
+        "usa_wind_kt": 0.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          89.3509,
+          23.0325
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-27 06:00:00",
+        "usa_wind_kt": 0.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          89.6178,
+          23.3337
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-27 09:00:00",
+        "usa_wind_kt": 0.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          89.8799,
+          23.6263
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-27 12:00:00",
+        "usa_wind_kt": 0.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          90.14,
+          23.9143
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-27 15:00:00",
+        "usa_wind_kt": 0.0
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          90.4,
+          24.2
+        ]
+      },
+      "properties": {
+        "iso_time": "2024-05-27 18:00:00",
+        "usa_wind_kt": 39.0
+      }
+    }
+  ]
+}
