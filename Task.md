@@ -11,8 +11,11 @@ current-state summary.
 - [x] Fetch OSM hospitals/clinics for target bbox via Overpass → `data/hospitals.geojson`
 - [x] Fetch OSM power substations/plants → `data/substations.geojson`
 - [x] Fetch OSM arterial roads → `data/roads.geojson`
-- [ ] Fetch SRTM DEM via Google Earth Engine for target bbox → `data/dem.tif`
-  - Blocked on GEE auth — `backend/data_pipeline/fetch_dem.py` is written and runs, needs `earthengine authenticate` once (see MEMORY.md blockers)
+- [x] Fetch SRTM DEM via Google Earth Engine for target bbox → `data/dem.tif`
+  - Done: real GEE `USGS/SRTMGL1_003`, 50 m, EPSG:4326, 2898×3117. Provenance
+    stamped into the raster's own tags by `backend/data_pipeline/tag_dem.py`
+    and committed. (The design spec's Terrarium fallback is moot — GEE auth
+    was obtained, so this is the better provenance.)
 - [x] Compile historical surge training table (≥4 verified real points to
       start: Remal, Helen, Lehar, Mandous)
 - [x] Train surge regression model with leave-one-out cross-validation,
@@ -22,16 +25,27 @@ current-state summary.
 
 ## Module B — Simulation engine
 
-- [ ] Implement BFS flood propagation over the DEM grid, producing N
-      timestep frames (not a single static polygon)
-- [ ] Build the road network graph from OSM data with `osmnx`/`networkx`
-- [ ] Implement the safe-route function (Dijkstra, excluding edges that
+- [x] Implement BFS flood propagation over the DEM grid, producing N
+      timestep frames (not a single static polygon) — `backend/simulation/flood.py`.
+      Vectorised the dilation; the reference BFS's drained-frontier stall is
+      fixed and covered by tests.
+- [x] Build the road network graph from OSM data with `osmnx`/`networkx` —
+      `backend/simulation/routing.py`. Built from the committed GeoJSON rather
+      than osmnx, because osmnx queries Overpass live, which Rules.md forbids.
+      Added `data/delta_roads.geojson` so Sagar Island is routable.
+- [x] Implement the safe-route function (Dijkstra, excluding edges that
       intersect the current flood frame)
-- [ ] Estimate at-risk population per block (building density from OSM,
-      or a population raster)
+- [x] Estimate at-risk population per locality (building density from OSM) —
+      `backend/simulation/population.py`. Labelled an estimate throughout.
 - [ ] Curate/verify real shelter locations + capacities for the target
-      blocks (OSM `amenity=shelter` coverage may be sparse here)
-- [ ] Implement shelter allocation via `scipy.optimize.linprog`
+      blocks — **BLOCKED: no real data exists to curate.** OSM
+      `amenity=shelter` here is 21 gazebos/bus shelters with no capacity
+      tags; the official WBDMD page confirms 15 real MPCS in South 24 Parganas
+      but publishes no locations or capacities. Recorded in
+      `data/shelters.json`. The LP runs against clearly-labelled placeholder
+      shelters (`is_demo_data: true`) rather than inventing figures. Needs a
+      human with district contacts, or a World Bank/NCRMP shelter register.
+- [x] Implement shelter allocation via `scipy.optimize.linprog`
       (transportation-problem formulation)
 
 ## Module C — Backend / API
@@ -58,7 +72,13 @@ current-state summary.
 
 ## Module E — Mobile app (Expo / React Native)
 
-- [ ] Scaffold the Expo app (TypeScript, managed workflow)
+- [x] Scaffold the Expo app (TypeScript, managed workflow) — `mobile/`,
+      Expo SDK 57.0.25, typechecks clean. Also landed: `theme.ts` from
+      `Design .md`, the four Google font families, the `useFonts` gate, and
+      themed `PriorityChip` / `ExposureRow` / `PrimaryButton` /
+      `GhostButton` / `AdvisoryModal` + map style constants
+- [ ] Resolve the missing font sizes — `Design.md` gives a type scale but
+      no sizes in the theme object (MEMORY.md "Flagged for review" §1)
 - [ ] Set up `react-native-maps` with a hardcoded initial region (Sagar
       Island) — no location permission
 - [ ] Render the cyclone track `Polyline` and infra `Marker`s from static
