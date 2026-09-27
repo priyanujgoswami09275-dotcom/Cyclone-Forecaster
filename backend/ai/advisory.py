@@ -48,7 +48,20 @@ class DistrictAdvisory(BaseModel):
     )
 
 
-ADVISORY_MODEL = "gemini-3.7-flash"
+ADVISORY_MODEL = "gemini-3.8-flash"
+# Pinned per Rules.md ("Pin the exact Gemini model string in code ... don't
+# silently swap model versions"), so this change is deliberate and recorded
+# rather than a quiet edit.
+#
+# 2026-09-28: bumped 3.7 -> 3.8 after a live observation run. `gemini-3.7-flash`
+# returned 503 UNAVAILABLE ("this model is currently experiencing high demand")
+# on five consecutive attempts over ~4 minutes, while `gemini-3.8-flash`
+# answered the same trivial prompt in 3.0s. `models.list()` confirmed 3.7 was
+# still a valid, available model for the key — it was capacity-blocked, not
+# misnamed, and not our payload's fault (a four-word prompt failed identically).
+# Logged as RESOLVED in MEMORY.md "Flagged for review" #19. If 3.8 is ever
+# blocked the same way, the swap is a one-line change here — but do it as a
+# recorded decision with a live test behind it, not in passing.
 
 
 VERIFIED_HISTORICAL_POOL = """

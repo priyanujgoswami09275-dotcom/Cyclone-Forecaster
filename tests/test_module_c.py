@@ -247,7 +247,7 @@ class TestServiceContract:
         # "implemented" and "ready" are different: ready tracks the key, which
         # is read from the environment and never echoed back.
         assert isinstance(health["advisory_ready"], bool)
-        assert health["advisory_model"] == "gemini-3.7-flash"
+        assert health["advisory_model"] == "gemini-3.8-flash"
         assert "GEMINI_API_KEY" not in json.dumps(health)
         assert health["building_centroids"] > 100_000
 

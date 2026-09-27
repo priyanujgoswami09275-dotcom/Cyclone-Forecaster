@@ -4,6 +4,12 @@ __pycache__/
 .DS_Store
 .superpowers/
 
+# Secrets. GEMINI_API_KEY lives here (see .env.example); Rules.md says it must
+# never reach a tracked file. `.env.example` IS committed and holds no secret.
+.env
+.env.*
+!.env.example
+
 # node / expo
 node_modules/
 .expo/

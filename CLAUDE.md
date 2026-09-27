@@ -71,7 +71,7 @@ before live demos, cold start is 30–50s after 15 min idle).
 | Simulation | scipy.optimize.linprog | Shelter allocation as a capacitated transportation problem |
 | Backend | FastAPI + Uvicorn | API server — every layer talks through this |
 | Backend | rasterio, geopandas, shapely | DEM reading, polygon geometry, spatial intersections |
-| AI | google-genai SDK + gemini-3.7-flash | Synthesizes the district advisory from all computed outputs |
+| AI | google-genai SDK + gemini-3.8-flash | Synthesizes the district advisory from all computed outputs |
 | AI | pydantic (`response_schema`) | Forces Gemini's output into a fixed, parseable schema |
 | Mobile | Expo (managed, TypeScript) | App shell, no native Xcode/Android Studio setup needed |
 | Mobile | react-native-maps | MapView, Polygon (flood), Polyline (track/routes), Marker (infra) — confirmed to work directly in Expo Go |
@@ -122,7 +122,7 @@ to the same bbox, 30m scale, exported via `getDownloadURL`.
 - Deploy to Render.
 
 ### D. AI advisory layer (Gemini)
-- `google-genai` SDK, model `gemini-3.7-flash`.
+- `google-genai` SDK, model `gemini-3.8-flash`.
 - Pydantic schema `DistrictAdvisory`: `executive_summary`,
   `evacuation_plan` (block-level priorities), `sms_dispatch_draft`
   (<160 chars), `post_landfall_risks` (freshwater/salinization narrative —
@@ -154,8 +154,13 @@ to the same bbox, 30m scale, exported via `getDownloadURL`.
   inspection instead.
 - Cyclone Yaas evacuation figure: the correct widely-reported number is
   **~1.1 million** people (not 2 million) — use this if citing it.
-- `gemini-3.7-flash` is a real, current model (released mid-August 2026) —
-  confirmed, not hallucinated.
+- `gemini-3.8-flash` is a real, current model — confirmed, not hallucinated.
+  It replaced `gemini-3.7-flash` on 2026-09-28, when a live test found 3.7
+  returning `503 UNAVAILABLE` (capacity) on five consecutive attempts over
+  ~4 minutes while 3.8 answered the same prompt in 3s. `models.list()`
+  confirmed 3.7 was still valid and available to the key, so this was a
+  capacity block rather than a wrong model name. See MEMORY.md "Flagged for
+  review" #19.
 - `react-native-maps` works directly inside **Expo Go** — no custom dev
   client or EAS build needed for development/demo.
 - If reusing code drafted by another AI session, check for stray

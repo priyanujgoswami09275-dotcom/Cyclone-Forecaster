@@ -63,7 +63,7 @@ step" before starting any work.
 | A. Data pipeline & surge ML model | Done | All 6 deliverables. DEM resolved (real GEE SRTM, tagged + committed). Stretch item (more RSMC points) still open. |
 | B. Simulation engine (flood propagation, routing, shelter allocation) | In progress | Engine complete and tested on real data. Only the shelter *dataset* is missing — no real locations/capacities exist to use (see blockers). |
 | C. Backend / API (FastAPI) | Done | `backend/main.py` + `backend/locations.py`. All contract endpoints live and curl-verified. `/advisory` returns 501 — that's Module D, next. |
-| D. AI advisory layer (Gemini) | Done | `backend/ai/advisory.py` + the `POST /advisory` handler. Schema, prompt, call, and an honesty validator. 30 tests (2 skip without a key). **Never yet run against the live API — no `GEMINI_API_KEY` in this environment.** |
+| D. AI advisory layer (Gemini) | Done | `backend/ai/advisory.py` + the `POST /advisory` handler. Schema, prompt, call, an honesty validator, and `load_dotenv()` key loading. 30 tests (2 skip without a key). **Still no live advisory produced** — the one attempt was blocked by `gemini-3.7-flash` returning 503, now swapped to 3.8 (§18, §19). |
 | E. Mobile app (Expo / React Native) | In progress | Design system landed 2026-09-27 (`theme.ts`, fonts, font gate, 5 themed primitives); `theme.typography` added 2026-09-28. No screen logic yet — see "Module E: what is themed vs. unstyled" below. The API it will call is now real, so the map screen can be built against actual response shapes. |
 | F. Deployment | Not started | |
 
@@ -84,6 +84,12 @@ step" before starting any work.
   Note the field is `locality_name`, **not** CLAUDE.md's `block_name` (§16).
   `build_prompt`/`generate_advisory` take optional `context` and
   `corrections` keywords; with neither, it is a single clean call.
+- `.env.example` — committed, secret-free template for the one variable the
+  app reads from the environment. `cp .env.example .env` and paste a key;
+  `main.py` calls `load_dotenv()` at import so nothing needs exporting. `.env`
+  is gitignored (the ignore rule was missing until 2026-09-28 and is now
+  added and verified). `load_dotenv()` never overwrites an already-set
+  variable, so exported/CI/Render environments still win.
 - `tests/test_module_d.py` — 30 tests. 28 run with Gemini stubbed and need no
   key; 2 live tests are marked `requires_key` and skip when
   `GEMINI_API_KEY` is unset. Suite is **148 passing, 2 skipped**.
@@ -382,24 +388,49 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     boundary, so it is not making a false claim, but a real advisory should
     not list a town in the neighbouring district. Fixing it means an explicit
     locality allow/deny list in `backend/locations.py`, not a latitude tweak.
-18. **Module D has never talked to the live Gemini API.** No
-    `GEMINI_API_KEY` has been available in any session so far, so the two
-    `requires_key` tests have never executed. Everything asserted about the
-    model's *behaviour* is currently inference from the prompt and the
-    validator, not observation. The first person with a key should run
-    `venv/bin/pytest tests/test_module_d.py` and read what comes back before
-    trusting the retry threshold — it is a guess, not a measured rate.
+18. **A live advisory has still never been produced — and the reason
+    changed.** First live attempt 2026-09-28: a key was supplied and accepted
+    (`/health` → `advisory_ready: true`), but `POST /advisory` returned 502 on
+    five attempts over ~4 minutes because **`gemini-3.7-flash` was returning
+    `503 UNAVAILABLE` ("high demand")** — see #19. So the blocker was never
+    only the missing key; a fresh key alone would have hit the same wall.
+    **The two `requires_key` tests in `tests/test_module_d.py` have still
+    never executed**, and the retry threshold in `main.advisory()` remains a
+    guess rather than a measurement. The first person to get a 200 should read
+    the output as a human, per "Next step".
+19. **RESOLVED 2026-09-28 — model swapped `gemini-3.7-flash` →
+    `gemini-3.8-flash`.** Not a silent edit: decided and recorded per Rules.md
+    ("Pin the exact Gemini model string in code... don't silently swap model
+    versions"), then folded back into CLAUDE.md's tech stack table and its
+    "Corrections / gotchas" section, because this is an explicit correction
+    being made good rather than a divergence to leave for a human.
+    **Evidence from the live observation run:** `gemini-3.7-flash` returned
+    `503 UNAVAILABLE` five consecutive times over ~4 minutes;
+    `gemini-3.8-flash` answered the same trivial prompt in 3.0s, and
+    `gemini-3.5-flash` in 10.6s. `models.list()` showed 3.7 **was** still a
+    valid, available model for the key — so this was a capacity block, not a
+    misnamed model and not a fault in our payload; a four-word prompt failed
+    identically. That also means 3.7 was blocked *at one moment*, not
+    permanently retired: **if `gemini-3.8-flash` ever 503s the same way, the
+    correct response is to re-test 3.7 before concluding the swap was wrong.**
+    CLAUDE.md and its `AGENTS.md`/`GEMINI.md` symlinks are updated;
+    `ADVISORY_MODEL` remains the single source of truth in
+    `backend/ai/advisory.py`.
 
 ## Environment / credentials status
 
 - [x] Google Earth Engine authenticated — done 2026-09-27, DEM fetched and committed
 - [x] FastAPI backend runs locally — `venv/bin/uvicorn backend.main:app --reload`,
       verified with curl on 2026-09-28. `httpx` installed (TestClient only).
-- [ ] `GEMINI_API_KEY` set in environment — **STILL UNSET.** Module D is code-complete
-      but has never made a live call. Set it in the shell that runs uvicorn
-      (`export GEMINI_API_KEY=...`) — never in a tracked file, `.env`, or
-      Render's committed env. Without it `POST /advisory` returns a clear 503
-      and `/health` reports `advisory_ready: false`.
+- [ ] `GEMINI_API_KEY` set — **STILL UNSET.** A key was pasted into one
+      session on 2026-09-28, worked (`advisory_ready: true`), and is now
+      revoked; it was never written to any file. Loading is now automatic:
+      `cp .env.example .env`, paste the rotated key in, and uvicorn picks it
+      up via `python-dotenv`. `.env` is gitignored and `.env.example` is the
+      committed secret-free template. `load_dotenv()` does not overwrite an
+      already-exported variable, so CI and Render (which inject the key into
+      the environment) still work unchanged. Without a key `POST /advisory`
+      returns 503 and `/health` reports `advisory_ready: false`.
 - [ ] Backend deployed (Render / Railway) — URL: _none yet_
 - [x] Expo project initialized — `mobile/`, Expo SDK 57.0.25, deps installed, `npx tsc --noEmit` clean
 - [ ] Expo app run on a device/simulator — never launched; theme is typechecked only (spec §10.5)
@@ -408,18 +439,21 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
 ## Next step
 
 Modules A–D are built. **The highest-value next action is not new code — it
-is a key and a live run.** Module D has never been exercised against the real
-Gemini API, and a demo that has never been run is a demo that will fail on
-stage.
+is a live run.** The one attempt so far was blocked by a capacity-blocked
+model, not by anything in the code (#18, #19). A demo that has never produced
+a real advisory is a demo that will fail on stage.
 
 **Do this first, before any new work:**
 
 ```
-export GEMINI_API_KEY=...            # in your shell, never in a tracked file
-venv/bin/pytest tests/test_module_d.py -q     # runs the 2 skipped live tests
+cp .env.example .env       # then paste a rotated GEMINI_API_KEY into it
 venv/bin/uvicorn backend.main:app --port 8000 &
-curl -X POST "localhost:8000/advisory?category=6&origin=kakdwip"
+curl -X POST "localhost:8000/advisory?category=6&origin=sagar"
 ```
+
+Use `origin=sagar` — it is the Remal landfall site. Also run
+`venv/bin/pytest tests/test_module_d.py -q`, which un-skips the 2
+`requires_key` tests.
 
 Read the output as a human, not as a schema. Specifically check:
 - does `sms_dispatch_draft` come back under 160 chars, and does it read like
@@ -428,6 +462,11 @@ Read the output as a human, not as a schema. Specifically check:
 - does it disclose the shelter capacities as provisional;
 - does `historical_context` name a storm from the verified pool (Amphan, Yaas,
   Bulbul) and not an invented one.
+
+If the call 503s again, check which model: `models.list()` proves whether the
+string is valid for the key, and a four-word trivial prompt proves whether it
+is capacity. Those two probes separate "wrong model name" from "model busy"
+in one step — see #19 for how that went last time.
 
 The retry threshold in `main.advisory()` is **one** retry, chosen because it
 is cheap and a schema-shaped answer that broke a rule is usually a drafting
@@ -459,6 +498,60 @@ any demo, record a backup capture.
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-28 — Claude Code: live observation run + dotenv wiring + model swap
+
+- **Scope:** an observation run (do not fix, report and wait), then three
+  follow-ups: stop the server, add automatic `.env` key loading, and act on
+  the model finding. `validate_advisory`, the prompt, and every test file were
+  left untouched, as instructed.
+
+**The observation run — no advisory produced**
+
+- `POST /advisory?category=6&origin=sagar` → **502**, five attempts over ~4
+  minutes, identical each time:
+  `ServerError: 503 UNAVAILABLE — 'This model is currently experiencing high
+  demand.'`
+- Origin chosen: `sagar` (21.6476 N, 88.0568 E), ~0.4 km from the Remal
+  landfall reference point, in the study area and not in the excluded list.
+- Read-only probes isolated the cause: the key was accepted
+  (`advisory_ready: true`); `models.list()` showed `gemini-3.7-flash` **was**
+  available to the key; a four-word trivial prompt to 3.7 failed identically,
+  while 3.8 answered in 3.0s and 3.5 in 10.6s. So it was **capacity, not a
+  bad model name, and not our payload** — a distinction that would have been
+  expensive to guess at later.
+- The key was pasted into the chat, so it is in the transcript. It was never
+  written to any file, and it has been rotated by the user.
+
+**Acted on**
+
+- **Stopped the stale server.** A uvicorn from an earlier session (1h17m, no
+  `--reload`) was still holding port 8000 with pre-Module-D code and the old
+  key in its environment; the first restart silently failed to bind and
+  `/health` still reported `advisory_implemented: false`. Worth knowing: a
+  failed bind looks like a successful start if you only check `/health`.
+- **`.env` was NOT in `.gitignore`.** Checked before doing anything, as
+  asked — it would have been committed. Added `.env`, `.env.*` and a
+  `!.env.example` negation, then verified empirically: `git add .env` is
+  refused, `git add .env.example` is accepted. (`git check-ignore -v` reports
+  a negated path confusingly; the dry-run add is the trustworthy check.)
+- **`python-dotenv` 1.2.3** added and installed; `load_dotenv()` called at the
+  top of `main.py` before anything reads the environment. It does not
+  overwrite an already-exported variable, so CI and Render are unaffected.
+  Added `.env.example` so the variable is discoverable without a secret.
+- **Model swapped 3.7 → 3.8**, per the explicit decision, with the evidence
+  recorded in the code comment, in MEMORY.md (#19, RESOLVED), and folded back
+  into CLAUDE.md's tech stack table and its Corrections section — AGENTS.md
+  and GEMINI.md are symlinks, so one edit covered all three.
+
+**Left unresolved**
+
+- **The live advisory is still unproduced.** This round could not fix that:
+  the only key available was revoked and `.env` is empty. `main.py`,
+  `advisory.py` and the `.gitignore` are wired and waiting on a rotated key.
+- The `requires_key` tests have still never run (#18).
+- §16 (`block_name` in CLAUDE.md) still stands — not authorised to change this
+  round, and still the one place a client built on the doc would break.
 
 ### 2026-09-28 — Claude Code: Module D — Gemini advisory layer
 

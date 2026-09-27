@@ -42,9 +42,19 @@ from dataclasses import replace
 from functools import lru_cache
 
 import networkx as nx
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from shapely.geometry import shape
+
+# Load `.env` before anything reads the environment. `load_dotenv` does NOT
+# overwrite a variable that is already set, so an exported GEMINI_API_KEY still
+# wins over the file — useful in CI and on Render, where the key is injected
+# into the environment rather than shipped in a file.
+#
+# `.env` is gitignored (see .gitignore) and `.env.example` is the committed,
+# secret-free template. Rules.md: the key must never reach a tracked file.
+load_dotenv()
 
 from .ai.advisory import ADVISORY_MODEL, generate_advisory, validate_advisory
 from .locations import (

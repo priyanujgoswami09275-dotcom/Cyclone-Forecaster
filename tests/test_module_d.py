@@ -111,8 +111,14 @@ class TestSchema:
         }
 
     def test_model_is_pinned(self, payloads):
-        """Rules.md: pin the model string, don't silently swap versions."""
-        assert advisory.ADVISORY_MODEL == "gemini-3.7-flash"
+        """Rules.md: pin the model string, don't silently swap versions.
+
+        The pin is a tripwire: changing the model without deciding to (and
+        recording it in MEMORY.md #19) is supposed to fail here. It failed on
+        2026-09-28 for exactly that reason, which is how the swap was confirmed
+        deliberate rather than accidental.
+        """
+        assert advisory.ADVISORY_MODEL == "gemini-3.8-flash"
 
 
 class TestPrompt:
@@ -396,7 +402,7 @@ class TestHandlerPayload:
 
     def test_reports_which_model_wrote_it(self, client):
         body = client.post("/advisory?category=6&origin=kakdwip").json()
-        assert body["model"] == "gemini-3.7-flash"
+        assert body["model"] == "gemini-3.8-flash"
         assert body["validated"] is True
         assert body["advisory"]["sms_dispatch_draft"]
 
