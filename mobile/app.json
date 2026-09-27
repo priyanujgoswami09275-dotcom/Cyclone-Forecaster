@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "Cyclone Forecaster",
+    "slug": "cyclone-forecaster",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "cycloneforecaster",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#faf5e8"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.hackathon.cycloneforecaster"
+    },
+    "android": {
+      "package": "com.hackathon.cycloneforecaster"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "cyclone-forecaster",
+  "version": "1.0.0",
+  "private": true,
+  "main": "index.ts",
+  "allowScripts": {
+    "@expo-google-fonts/inter": true,
+    "@expo-google-fonts/roboto-slab": true
+  },
+  "dependencies": {
+    "@expo-google-fonts/inter": "^0.4.2",
+    "@expo-google-fonts/roboto-slab": "^0.4.2",
+    "expo": "^57.0.25",
+    "expo-font": "~57.0.4"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "typescript": "^7.0.2"
+  }
+}
