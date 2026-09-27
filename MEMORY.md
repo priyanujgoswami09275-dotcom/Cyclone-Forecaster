@@ -60,8 +60,8 @@ step" before starting any work.
 
 | Module | Status | Notes |
 |---|---|---|
-| A. Data pipeline & surge ML model | Not started | |
-| B. Simulation engine (flood propagation, routing, shelter allocation) | Not started | |
+| A. Data pipeline & surge ML model | In progress | 5/6 deliverables done: track, hospitals, substations, roads, surge model (LOOCV MAE 2.36 m). Missing: `data/dem.tif` — see blockers. |
+| B. Simulation engine (flood propagation, routing, shelter allocation) | Not started | Next — needs `data/dem.tif` first |
 | C. Backend / API (FastAPI) | Not started | |
 | D. AI advisory layer (Gemini) | Not started | |
 | E. Mobile app (Expo / React Native) | Not started | |
@@ -71,15 +71,39 @@ step" before starting any work.
 
 ## What actually exists in the repo right now
 
+- `data/remal_track.geojson` — real IBTrACS v04r00 track: 19 fixes, 2024-05-25 12Z → 2024-05-27 18Z, max USA_WIND 54 kt (JTWC 1-min; properties carry `wind_units: knots`)
+- `data/hospitals.geojson` — 560 real OSM features (amenity~hospital|clinic)
+- `data/substations.geojson` — 103 real OSM features (power~substation|plant)
+- `data/roads.geojson` — 3712 real OSM ways (arterials)
+- `data/surge_model.pkl` — joblib dict {model, features, loo_mae}; LOOCV MAE = 2.36 m
+- `backend/data_pipeline/` — fetch_ibtracs.py, fetch_osm_infra.py, fetch_dem.py (works, needs GEE auth), train_surge_model.py
+- `tests/` — 9 passing tests (4 IBTrACS + 3 Overpass + 2 model); run `venv/bin/pytest tests/`
+- `venv/` + `requirements.txt`; repo git-init'd with per-task commits; AGENTS.md & GEMINI.md symlinked to CLAUDE.md
+- NOT yet: `data/dem.tif` (see blockers)
+
 *(List real files/paths as they get created. Keep this in sync with reality
 — this is what stops the next session from re-deriving something that
 already exists, or trusting a file that was later deleted.)*
 
-- Nothing yet.
-
 ## Known issues / blockers
 
-*(None yet.)*
+- **GEE auth (ACTIVE BLOCKER for `data/dem.tif`):** `fetch_dem.py` is
+  written and runs, but `ee.Initialize()` fails — no Earth Engine
+  credentials on this machine. Remediation: `venv/bin/earthengine
+  authenticate` (auth with a Google account that has a registered cloud
+  project — create one at https://code.earthengine.google.com/register
+  if needed), then re-run `venv/bin/python backend/data_pipeline/fetch_dem.py`.
+- **IBTrACS URL moved:** the v04r00 path in CLAUDE.md 404s; the dataset now
+  lives under `...-stewardship-ibtracs/v04r00/...` (fixed in
+  fetch_ibtracs.py — same dataset, same version).
+- **Overpass host:** overpass-api.de rejects this machine's IP (406 on
+  every query); kumi/mail.ru time out on full-bbox queries from here.
+  fetch_osm_infra.py currently uses overpass.openstreetmap.fr (works,
+  ~10 s per query).
+- **Surge model accuracy:** LOOCV MAE is 2.36 m — honest but large,
+  because n=4 with 3 features. Adding more real RSMC New Delhi bulletin
+  points (stretch item in Task.md) is the fix — do not swap the regression
+  for a lookup table.
 
 ## Flagged for review
 
@@ -95,16 +119,39 @@ if it disagrees with something in AGENTS.md/CLAUDE.md.)*
 
 ## Next step
 
-Start Module A: pull the IBTrACS track for Cyclone Remal, the OSM
-infrastructure layers (hospitals/substations/roads), and the SRTM DEM,
-per the "Data sources — how to pull them" section in AGENTS.md/CLAUDE.md.
-Commit the resulting GeoJSON/TIFF files to the repo rather than re-fetching
-them live in later sessions.
+Start **Module B — simulation engine**, but the first 15 minutes are
+module-A cleanup: resolve the GEE blocker and produce `data/dem.tif`
+(see "Known issues / blockers" — exact commands are there). Then build
+under `backend/simulation/`:
+
+1. BFS flood propagation over the DEM grid producing N time-stepped
+   frames (reference code in CLAUDE.md "Reference code" section) —
+   input: `data/dem.tif` + surge height from `data/surge_model.pkl`.
+2. Road network graph from `data/roads.geojson` (or osmnx re-pull for
+   richer topology — decision recorded in MEMORY once made).
+3. Safe-route function: Dijkstra excluding edges intersecting the current
+   flood frame.
+4. At-risk population per block (OSM building density or WorldPop raster).
+5. Curated shelter list + capacities (OSM amenity=shelter is likely
+   sparse here — expect to hand-curate Multi-Purpose Cyclone Shelters).
+6. Shelter allocation LP via `scipy.optimize.linprog`.
+
+You'll need rasterio/geopandas/shapely/osmnx/scipy — add to
+requirements.txt and reinstall (`venv/bin/pip install -r requirements.txt`).
 
 ---
 
 ## Session log (newest entry first)
 
-### _(fill in date)_ — _(fill in which tool: Z.Code / Antigravity / Devin / Claude Code / OpenCode / Gemini)_
-- No sessions logged yet — this is the first one. Update this entry, then
-  move it below a fresh one next time.
+### 2026-09-27 — Z.Code (OpenCode, inline plan execution)
+- Built Module A end-to-end: repo scaffolding (git init, venv,
+  requirements.txt, AGENTS/GEMINI symlinks), IBTrACS fetch (Remal 2024
+  track, 19 fixes), OSM infra fetch (560 hospitals, 103 substations,
+  3712 roads), surge model trained (LinearRegression, LOOCV MAE 2.36 m,
+  serialized to data/surge_model.pkl), 9 pytest tests all passing.
+- Broke/worked around: IBTrACS URL 404 (dataset moved to
+  `...-ibtracs` base path — updated script); Overpass overpass-api.de
+  406 IP-block + kumi 504s (moved to overpass.openstreetmap.fr);
+  GEE auth absent — `data/dem.tif` NOT produced (blocker above).
+- Plan + ledger: docs/superpowers/plans/2026-09-27-module-a-data-pipeline.md
+- Next: Module B (see "Next step" above).

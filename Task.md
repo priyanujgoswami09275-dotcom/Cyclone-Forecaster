@@ -7,15 +7,16 @@ current-state summary.
 
 ## Module A — Data pipeline & surge ML model
 
-- [ ] Fetch IBTrACS track for Cyclone Remal → `data/remal_track.geojson`
-- [ ] Fetch OSM hospitals/clinics for target bbox via Overpass → `data/hospitals.geojson`
-- [ ] Fetch OSM power substations/plants → `data/substations.geojson`
-- [ ] Fetch OSM arterial roads → `data/roads.geojson`
+- [x] Fetch IBTrACS track for Cyclone Remal → `data/remal_track.geojson`
+- [x] Fetch OSM hospitals/clinics for target bbox via Overpass → `data/hospitals.geojson`
+- [x] Fetch OSM power substations/plants → `data/substations.geojson`
+- [x] Fetch OSM arterial roads → `data/roads.geojson`
 - [ ] Fetch SRTM DEM via Google Earth Engine for target bbox → `data/dem.tif`
-- [ ] Compile historical surge training table (≥4 verified real points to
+  - Blocked on GEE auth — `backend/data_pipeline/fetch_dem.py` is written and runs, needs `earthengine authenticate` once (see MEMORY.md blockers)
+- [x] Compile historical surge training table (≥4 verified real points to
       start: Remal, Helen, Lehar, Mandous)
-- [ ] Train surge regression model with leave-one-out cross-validation,
-      serialize as `data/surge_model.pkl`
+- [x] Train surge regression model with leave-one-out cross-validation,
+      serialize as `data/surge_model.pkl` (LOOCV MAE: 2.36 m)
 - [ ] (Stretch) Add more historical points from the RSMC New Delhi
       bulletin archive to strengthen the model
 
