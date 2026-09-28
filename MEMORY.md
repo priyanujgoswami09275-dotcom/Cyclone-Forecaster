@@ -64,7 +64,7 @@ step" before starting any work.
 | B. Simulation engine (flood propagation, routing, shelter allocation) | In progress | Engine complete and tested on real data. Only the shelter *dataset* is missing — no real locations/capacities exist to use (see blockers). |
 | C. Backend / API (FastAPI) | Done | `backend/main.py` + `backend/locations.py`. All contract endpoints live and curl-verified. `/advisory` is live (Module D below). **Display overlay layer added 2026-09-28** — `backend/tools/render_overlays.py` + `data/overlays/` + `GET /overlays`; display-only, §32. |
 | D. AI advisory layer (Gemini) | Done | `backend/ai/advisory.py` + the `POST /advisory` handler. Schema, prompt, call, an honesty validator, district-scoped localities, a capacity-retry wrapper, and `load_dotenv()` key loading. 70 tests. **Three live advisories produced**; all three rounds of defects are now closed (§20–§25). Two operational notes, not code gaps: the free tier is 20 calls/day (§26) and eight border-cluster localities still need a boundary dataset (§24). |
-| E. Mobile app (Expo / React Native) | In progress | Design system landed 2026-09-27 (`theme.ts`, fonts, font gate, 5 themed primitives); `theme.typography` added 2026-09-28. **API client `mobile/api.ts` landed 2026-09-28** — types mirrored off a running backend, 120 s advisory timeout, error taxonomy, GeoJSON normalisers. No screen yet — see "Module E: what is themed vs. unstyled" below. |
+| E. Mobile app (Expo / React Native) | In progress | Design system + `theme.typography` + `api.ts` (Stage 1) all landed 2026-09-28. **Stage 2, the map screen, landed 2026-09-28** (`1f23721`): `MapView` on a fixed Sagar Island region, flood as a `<Overlay>` raster, slider over `/categories` fetching on `onSlidingComplete`, Remal preset, markers, roads, locality picker, empty state. **Stage 3 remains: the advisory modal wiring and `POST /advisory`.** Never run on a device. |
 | F. Deployment | In progress | `render.yaml` + pinned `requirements.txt` landed 2026-09-28 (Stage 0). **Blocked on a plan decision** — the backend does not fit 512 MB; see "Known issues / blockers". |
 
 *(Status values: Not started / In progress / Blocked / Done)*
@@ -193,12 +193,14 @@ step" before starting any work.
   2026-09-28** (stray space gone, "Flagged for review" §5 resolved).
 - `mobile/theme.ts` — the `theme` object copied verbatim from `Design.md`
   (colors, radius, spacing, shadow, fonts, typography). No value invented.
-- `mobile/App.tsx` — app root; `useFonts` gate over the four families in `theme.fonts`; renders nothing until fonts resolve
+- `mobile/App.tsx` — app root; `useFonts` gate over the four families in `theme.fonts`; **mounts `MapScreen` since 2026-09-28**
 - `mobile/index.ts` — `registerRootComponent(App)`
-- `mobile/components/` — `PriorityChip.tsx`, `ExposureRow.tsx`, `PrimaryButton.tsx`, `GhostButton.tsx`, `AdvisoryModal.tsx`, `mapStyles.ts` (all presentational, zero data/API)
-- `mobile/package.json` — Expo SDK 57.0.25; `@expo-google-fonts/inter` 0.4.2, `@expo-google-fonts/roboto-slab` 0.4.2, `expo-font` 57.0.4, `typescript` + `@types/react` (dev)
+- `mobile/components/` — `PriorityChip.tsx`, `ExposureRow.tsx`, `PrimaryButton.tsx`, `GhostButton.tsx`, `AdvisoryModal.tsx`, `mapStyles.ts` (presentational, zero data/API) **plus Stage 2**: `MapScreen.tsx` (the screen and its state), `IntensityControl.tsx` (slider + preset), `ReadoutPanel.tsx` (figures, exposure counts, empty state), `LocalityPicker.tsx` (origin chips)
+- `mobile/package.json` — Expo SDK 57.0.25; `@expo-google-fonts/inter` 0.4.2, `@expo-google-fonts/roboto-slab` 0.4.2, `expo-font` 57.0.4, `react-native-maps` 1.27.2, `@react-native-community/slider` 5.2.0, `expo-clipboard`, `typescript` + `@types/react` (dev)
+- `mobile/app.config.ts` — **new 2026-09-28.** Reads `GOOGLE_MAPS_ANDROID_API_KEY` from the env and injects `android.config.googleMaps`, so a billable Google credential never reaches `app.json`. Unset → config byte-identical to `app.json`.
+- `mobile/.env.example` — committed template for `EXPO_PUBLIC_API_URL` + `GOOGLE_MAPS_ANDROID_API_KEY`. **Must live under `mobile/`, not the repo root**: Expo reads `.env` from the directory holding `app.json`. `mobile/.env` is gitignored (verified).
 - `mobile/app.json`, `tsconfig.json`, `babel.config.js` — minimal Expo managed scaffold
-- Typecheck: `cd mobile && npx tsc --noEmit` → clean, all 7 project files covered
+- Typecheck: `cd mobile && npx tsc --noEmit` → clean, all **15** project files covered
 *(List real files/paths as they get created. Keep this in sync with reality
 — this is what stops the next session from re-deriving something that
 already exists, or trusting a file that was later deleted.)*
@@ -213,26 +215,28 @@ design system itself.
 
 | Design.md spec | Implementation |
 |---|---|
-| Map screen background | `theme.colors.background` in `App.tsx` container; the map screen itself is pending |
-| Intensity slider track/thumb | **not implemented** — needs `border`/`primary`; pending the map screen (Module E) |
-| Exposure list row | `ExposureRow.tsx` — `card` bg, `radius.card`, `border`, `danger`/`textMuted` dot |
+| Map screen background | `theme.colors.background` behind and around the `MapView` in `MapScreen.tsx` |
+| Intensity slider track/thumb | `IntensityControl.tsx` — `maximumTrackTintColor: border`, `minimumTrackTintColor` + `thumbTintColor: primary` |
+| Exposure list row | `ExposureRow.tsx` — `card` bg, `radius.card`, `border`, `danger`/`textMuted` dot. **Now used for the three counts** in `ReadoutPanel` |
 | Priority chip | `PriorityChip.tsx` — `radius.chip` pill, `danger`/`dangerDark`/`caution`/`safe`, total `PriorityLevel` type |
-| Flood polygon | `mapStyles.ts` → `floodPolygonStyle` (`waterFill` @ 0.5 fill, `water` stroke) |
-| Compromised road | `mapStyles.ts` → `compromisedRoadStyle` (`danger`) + `compromisedRoadDashPattern` |
+| Flood polygon | **superseded by the raster.** `mapStyles.ts` → `floodPolygonStyle` is still exported and still correct, but Stage 2 draws the flood as a `<Overlay>` PNG instead. See §32. |
+| Compromised road | `mapStyles.ts` → `compromisedRoadStyle` (`danger`) + `compromisedRoadDashPattern`, spread onto every `<Polyline>` in `MapScreen.tsx` |
 | Advisory modal | `AdvisoryModal.tsx` — `card` bg, `radius.card`, `theme.shadow.card` |
 | "Generate Advisory" button | `PrimaryButton.tsx` — `primary` fill, `radius.button` |
 | SMS copy button | `GhostButton.tsx` — `card` fill, 1px `border`, `text` label |
 | Fonts | `useFonts` gate in `App.tsx`; all four families installed and loading |
 
-**Still pending, owned by Module E (Task.md lines 59–70):** the map screen
-itself — `MapView` on a hardcoded Sagar Island region, the intensity
-`Slider`, flood `Polygon` render, live exposure counts, the Remal track
-`Polyline`, the `/api/simulate` and `/api/advisory` wiring, and
-`expo-clipboard` (not yet installed). Deliberately not built here: this
-session's rule was not to write another module's logic. Also still open per
-`docs/superpowers/specs/2026-09-27-core-loop-design.md` §10.5 — the app has
-never been run on a device or simulator, so the theme is **typechecked but
-not visually verified**.
+Stage 2 landed 2026-09-28 (`1f23721`). Everything in Module E's brief is
+now built except the advisory wiring: the map screen, the intensity slider,
+the flood layer, live exposure counts, the locality picker, and the disabled
+state for the empty-exposure case. The **Remal track `Polyline` and the
+`expo-clipboard` SMS copy remain unbuilt** — they belong with the advisory
+modal, which is Stage 3.
+
+The app has still never been run on a device or simulator, so everything
+above is **typechecked but not visually verified** (open since
+`docs/superpowers/specs/2026-09-27-core-loop-design.md` §10.5). What that
+means in practice is listed under "Flagged for review" below.
 
 ## Known issues / blockers
 
@@ -646,6 +650,95 @@ not visually verified**.
 
   `final_land_area_km2` travels in the index precisely so the app can show
   the model's own number and never measures area off the picture.
+
+- **§33 — the Stage 2 map screen, and the three things it got wrong before
+  it worked (2026-09-28).** Built in `mobile/components/MapScreen.tsx` with
+  `IntensityControl`, `ReadoutPanel` and `LocalityPicker` alongside it.
+  Committed as `1f23721`. The findings below are the ones a next session
+  would otherwise re-derive the hard way.
+
+  **1. `InfraFeature` in `api.ts` was wrong about geometry, and the mistake
+  was silent.** It claimed hospitals, substations and roads all arrive as
+  `LineString` and instructed callers to take `coordinates[0]`. The backend
+  passes each source geometry through untouched
+  (`_record()` emits `geometry.__geo_interface__` verbatim), and OSM tags a
+  hospital as a **node**. Measured on the live payload: at category 6,
+  hospitals + substations are **6 `Point` and 28 `LineString`**; at category
+  5 all 15 are `LineString`. So the mix is category-dependent and cannot be
+  special-cased. Following the old advice would have put a marker at a bare
+  longitude value. The type is now the real union, roads get their own
+  `RoadFeature` (the backend's line loader admits only `LineString` /
+  `MultiLineString` for roads, so that one *can* be narrow), and every
+  wire→map conversion goes through `toLatLng()` — because GeoJSON's
+  `[lon, lat]` and react-native-maps' `{latitude, longitude}` are
+  transposed, and swapping them throws nothing. It just lands the marker
+  ~150 km away.
+
+  **2. `<Overlay>` bounds are a transposed tuple, not an object.**
+  `bounds` is `[[north, east], [south, west]]` — a two-corner tuple,
+  right-top first, and each corner is **latitude first**. The intuitive
+  `{north, south, east, west}` shape that every tutorial uses is a *type
+  error* here, which is the only reason it is easy to get right at all.
+  Also: `<Overlay>` takes a **static `bearing`** and does not track map
+  rotation, so a rotated map would leave the water at the wrong angle to
+  the coastline. The screen pins `rotateEnabled={false}` and
+  `pitchEnabled={false}` — a correctness decision, not a simplification.
+
+  **3. `@react-native-community/slider@5.2.0` ships class-component typings
+  that React 19's JSX check rejects** ("not a valid JSX element type"), since
+  it exports an intersection of a native constructor and a `React.Component`
+  subclass. The cast is confined to one import boundary in
+  `IntensityControl.tsx` and immediately re-typed with the library's own
+  `SliderProps`, so the props are still checked. Deleting that cast is a
+  drop-in change if the package ever ships function-component typings.
+
+  **The default band is 5, and that is a measurement rather than a taste.**
+  Categories 0-4 expose **no infrastructure at all** — 0 hospitals, 0
+  substations, 0 roads at each, and 0-3 flood nothing either because their
+  surge is under the DEM's 1 m vertical resolution. Opening anywhere lower
+  shows an empty map and a disabled Generate Advisory, which reads as a
+  broken app rather than as a resolution limit. 5 was chosen over 6 so the
+  app does not open on the most extreme scenario the model can express; 6 is
+  2,680 km² and 251 roads cut off, and leading with that would overstate
+  every reading that follows.
+
+  **The demo problem this creates, stated plainly:** Generate Advisory is
+  disabled at **5 of the 7** slider positions and for the Remal preset. That
+  is the specified behaviour, but it means the core loop is only
+  demonstrable at categories 5 and 6. Worth solving before a live demo —
+  options are a lower surge floor (the DEM is the binding constraint, not the
+  model), denser OSM infrastructure coverage in the delta, or accepting it
+  and demoing at category 5.
+
+  **The Remal preset borrows a band, and the screen says so.** The preset is
+  not an IMD band, so every API-driven figure uses the nearest one — 115 kmph
+  is 12 kmph from category 3's 103 and 20 from category 4's 135, so it borrows
+  category 3. That borrow is safe here, and it was checked rather than
+  assumed: the preset floods **327.6 km²** and *every* neighbouring band
+  reports zero exposure, so there is no meaningful number being
+  misrepresented. The flood layer drawn is the preset's own raster; the
+  counts beside it are labelled as the borrowed band's.
+
+  **`mobile/app.config.ts` exists so a Google credential is never
+  committed.** `react-native-maps` uses the Google Maps SDK on Android and
+  draws a **blank grey tile grid** — not an error — without an authorised
+  key. The documented fix is `app.json`, which would put a billable key in a
+  tracked file. It is read from `GOOGLE_MAPS_ANDROID_API_KEY` instead.
+  Verified both ways: unset leaves the config byte-identical to `app.json`;
+  set, the key lands in `android.config.googleMaps`. Note that
+  `npx expo config --type public` **filters the key out**, which made an
+  early check look like the injection had silently failed — `--type
+  introspect` is the way to see it.
+
+  **`mobile/.env.example` must live under `mobile/`**, not the repo root.
+  Expo reads `.env` from the directory containing `app.json`; a root-level
+  `.env` is invisible to the app bundler. `mobile/.env` is gitignored and the
+  template is committed — both verified with `git check-ignore`.
+
+  **`EXPO_PUBLIC_*` is inlined at build time**, so a hot reload is not enough
+  after changing `EXPO_PUBLIC_API_URL` — the bundler must be restarted with
+  `npx expo start -c`, or the old origin keeps being used and the failure
+  looks like a dead backend.
 
 ## Flagged for review
 
@@ -1115,6 +1208,51 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     are the opt-in `@requires_key` live-Gemini tests; no quota was spent).
     `tsc --noEmit` exits 0.
 
+32. **NEW 2026-09-28 — Design.md has no spec for a raster flood layer.**
+    §The flood is drawn as a `<Overlay>` PNG, not the `waterFill`-at-50% /
+    `water`-stroke `Polygon` the spec describes (2026-09-28, §32-§33). This
+    is not drift I would call accidental: at 180,038 vertices the polygon
+    cannot be drawn on a phone at all. But **Design.md still specifies the
+    polygon**, so the spec and the app now disagree, and nobody has decided
+    what a hazard raster should look like. The specific gaps: no depth ramp
+    (the app uses four alpha steps on one hue, alpha rising with depth,
+    chosen in `render_overlays.py`), no legend, no treatment of the fact
+    that the raster is coarser than the terrain. The depth-class choice is
+    defensible — SRTM stores whole metres, so depths inside a class really
+    are the same measurement — but it is a cartographic decision that
+    belongs in the spec, not only in a code comment.
+
+33. **NEW 2026-09-28 — the app is now a real screen and has still never been
+    run.** This upgrades the long-standing "typechecked but not visually
+    verified" note (§10.5 of the core-loop design doc) from a
+    design-system caveat to a functional risk. Stage 2 is 1,659 lines of new
+    TypeScript that no human has seen render. Specifically unverified: that
+    map tiles draw at all; that the `<Overlay>` lands in the right place
+    (the type system caught the `[lat, lng]` vs `{north, east}` transposition,
+    but nothing has confirmed which corner is *first* on screen); whether
+    251 polylines plus 34 markers stutter on a mid-range Android; and
+    whether Expo Go supplies its own Google Maps key or needs ours. **The
+    run instructions in the session log are the next thing to execute.**
+
+34. **NEW 2026-09-28 — the demo's core loop is only reachable at 2 of 7
+    slider positions.** Because cats 0-4 expose no infrastructure (§31) and
+    the empty state correctly disables Generate Advisory, the app's primary
+    action is live at categories 5 and 6 only. This is correct behaviour
+    around a real limitation, not a bug — but it is a product problem. The
+    options, none of which I should pick alone: a finer DEM (the binding
+    constraint is SRTM's 1 m vertical quantum, not the surge model), denser
+    OSM infrastructure coverage in the delta, or accept it and demo at
+    category 5. Worth noting the case study itself — Remal at 115 kmph,
+    327.6 km² modelled — also lands in the dead zone, which is the more
+    awkward version of this problem.
+
+35. **NEW 2026-09-28 — `CLAUDE.md`'s Module E section is now out of date.**
+    It describes the map screen as a `Polygon` fed by `/surge-zone` and
+    lists `expo-clipboard` as needed-but-not-installed. Neither is true now.
+    Not edited, per the standing instruction; logging it here instead. Same
+    list as #30: the doc and the code have diverged enough that a rewrite is
+    probably cheaper than a patch.
+
 ## Environment / credentials status
 
 - [x] Google Earth Engine authenticated — done 2026-09-27, DEM fetched and committed
@@ -1288,6 +1426,83 @@ any demo, record a backup capture.
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-28 — Claude Code: Stage 2 map screen (§33) — the first screen
+
+**What landed.** `mobile/components/MapScreen.tsx` with three siblings:
+`IntensityControl` (slider + preset), `ReadoutPanel` (figures, exposure
+counts, empty state) and `LocalityPicker` (origin chips). Committed
+`1f23721`. `App.tsx` now mounts it after the font gate. The screen draws
+the flood as a `<Overlay>` from the committed PNG and **never calls
+`/surge-zone`** — 7.0 MB of GeoJSON replaced by a 126 KB texture the map
+engine samples rather than parses.
+
+**The three API mistakes, all of which were silent.** These are the
+expensive half of the session and they are written up in §33 in full:
+
+  1. `InfraFeature` in `api.ts` asserted every exposed asset is a
+     `LineString` and told callers to take `coordinates[0]`. Hospitals are
+     OSM **nodes** — at category 6 the point assets are 6 `Point` and 28
+     `LineString`, and at category 5 all 15 are `LineString`, so the mix
+     varies by category. The old advice would have placed a marker at a bare
+     longitude. Type corrected; `toLatLng()` added so the `[lon, lat]` vs
+     `{latitude, longitude}` transposition has exactly one home.
+  2. `<Overlay bounds>` is `[[north, east], [south, west]]` — a two-corner
+     tuple, **latitude first** — not the `{north, south, east, west}` object
+     every tutorial shows. Also learned that `<Overlay>` takes a static
+     `bearing` and does not track rotation, so `rotateEnabled` and
+     `pitchEnabled` are off: a rotated map would leave the water at the
+     wrong angle to the coast.
+  3. `@react-native-community/slider@5.2.0` ships class-component typings
+     that React 19's JSX check rejects. Cast confined to the import
+     boundary and re-typed with the library's own `SliderProps`.
+
+**Two design decisions I made explicitly rather than by default.**
+
+The default band is **5**. Categories 0-4 expose nothing at all — 0
+hospitals, 0 substations, 0 roads, measured — so any lower default opens on
+an empty map with a dead button, which reads as broken rather than as a
+resolution limit. 5 over 6 because 6 is the top of the scale (2,680 km², 251
+roads cut off) and opening there would overstate every reading that follows.
+
+The Remal preset **borrows the nearest band** for its exposure figures, and
+the screen discloses it. I checked the borrow was safe before shipping it:
+the preset floods 327.6 km² and *every* neighbouring band reports zero
+exposure, so no meaningful number is being misrepresented.
+
+**The demo problem, stated rather than buried.** Generate Advisory is
+disabled at 5 of 7 slider positions and for the preset. That is what was
+specified, and it is also true that the core loop is only demonstrable at
+categories 5 and 6. Options are a finer DEM, denser OSM coverage in the
+delta, or accepting it and demoing at 5. This needs a human decision.
+
+**Security.** `react-native-maps` uses the Google Maps SDK on Android and
+draws a **blank grey tile grid** — not an error — without an authorised key.
+The documented fix is `app.json`, which would commit a billable credential.
+`mobile/app.config.ts` reads `GOOGLE_MAPS_ANDROID_API_KEY` from the
+environment instead; verified both ways with `npx expo config`. A trap worth
+recording: `--type public` **filters the key out**, so an early check of the
+public output looked like the injection had failed when it had worked.
+`--type introspect` shows it. `mobile/.env.example` is the committed
+template and must live under `mobile/`, because Expo reads `.env` from the
+directory holding `app.json` — a root-level one is invisible to the bundler.
+`mobile/.env` is gitignored; both facts checked with `git check-ignore`.
+
+**Also worth knowing:** `EXPO_PUBLIC_*` is inlined at build time, so a hot
+reload does not pick up a changed `EXPO_PUBLIC_API_URL`. The bundler needs
+`npx expo start -c`, or the app keeps using the old origin and the symptom
+looks like a dead backend.
+
+`tsc --noEmit` clean across all 15 project files. Backend suite **236
+passed, 3 skipped** — unchanged, as it should be, since nothing on the
+computation path moved.
+
+**Could not verify without a device:** that tiles render at all; whether 251
+polylines plus 34 markers stutter on a mid-range Android; whether the
+`<Overlay>` bounds land the raster in the right place on screen (the type
+system caught the transposition, but a transposed-and-typed-correctly pair
+would still be wrong if I misread which corner is which); and whether Expo
+Go supplies its own maps key or needs ours.
 
 ### 2026-09-28 — Claude Code: display overlay layer (§32) + a third 503 on the live capture
 
