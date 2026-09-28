@@ -297,6 +297,141 @@ not visually verified**.
   **Deliberately NOT done: `render.yaml` still says `plan: free`, and no
   precompute has been started.** The user asked for this finding to be recorded
   and left as a decision. Both remain open.
+
+- **NEW 2026-09-28 — the payload finding above is now HALF solved: gzip cuts
+  the wire cost 7.6×, and the true uncompressed figure is lower than logged.**
+  `GZipMiddleware(minimum_size=1000)` is on the app (registered *after*
+  CORS, so it is outermost and the compressed body is what the CORS headers
+  attach to). Measured end-to-end at category 6:
+
+  | | bytes |
+  |---|---|
+  | uncompressed HTTP body | **4,386,305** |
+  | gzipped HTTP body | **578,451** (13.19%, **7.58× smaller**) |
+
+  The gzipped body decompresses **byte-identically** to the plain one, so
+  this changes transport cost only. `/health` comes back with no
+  `content-encoding` at all, as `minimum_size=1000` intends.
+
+  **Correction to the entry above:** it quotes 4,608,374 bytes, which was the
+  geometry object measured with `json.dumps`, not the HTTP body. The real
+  figure is 4,386,305. Same order of magnitude, but the number a reader would
+  quote should be the real one.
+
+  This does **not** remove the blocker. 578 KB is under the ~500 KB target
+  only marginally, and the cost is now transfer time rather than parsing —
+  but `react-native-maps` still receives 112,655 vertices. The
+  `SIMPLIFY_TOL_DEG` decision stands; gzip just buys time to make it.
+
+- **NEW 2026-09-28 — per-category survey, and it turns up something the
+  slider cannot show.** `GET /surge-zone` for all seven categories, with the
+  app's default forward speed (15 kmph) and approach flag (1):
+
+  | cat | IMD band | wind | surge_m | raw pred | clamped | final km² | drawn km² | polys | verts | bytes |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | 0 | Depression | 22.5 | 0.000 | −3.856 | **yes** | 0.00 | 0.00 | 0 | 0 | 3,108 |
+  | 1 | Deep Depression | 31.0 | 0.000 | −3.453 | **yes** | 0.00 | 0.00 | 0 | 0 | 3,118 |
+  | 2 | Cyclonic Storm | 41.0 | 0.000 | −2.978 | **yes** | 0.00 | 0.00 | 0 | 0 | 3,117 |
+  | 3 | Severe Cyclonic Storm | 56.0 | 0.000 | −2.265 | **yes** | 0.00 | 0.00 | 0 | 0 | 3,131 |
+  | 4 | Very Severe CS | 77.0 | 0.000 | −1.268 | **yes** | 0.00 | 0.00 | 0 | 0 | 3,141 |
+  | 5 | Extremely Severe CS | 105.0 | **0.062** | +0.062 | no | 0.00 | 0.00 | 0 | 0 | 3,207 |
+  | 6 | Super Cyclonic Storm | 185.0 | **3.863** | +3.863 | no | 1,820.83 | 833.50 | 308 | 112,655 | 4,386,305 |
+
+  **Six of the seven slider positions draw an empty map.** Categories 0–4 are
+  clamped (the regression goes negative and is floored at 0). Category 5 is
+  the interesting one and is a *different* failure — see below.
+
+- **NEW 2026-09-28 — the DEM has a 1 m vertical floor, and it swallows
+  category 5.** Measured against the raster (2,898 × 3,117 = 9,033,066
+  cells, 0 nodata cells, cell area 2,308 m²):
+
+  - SRTM here is **integer-valued** (confirmed; 51 distinct land values,
+    min 1 m, max 80 m).
+  - **Category 5** (Extremely Severe CS, 105 kmph) produces
+    `surge_m = 0.0625` — **positive, not clamped** — and still floods
+    **0 cells, 0.00 km², 0 polygons**. Land cells at or below 0.0625 m: **0
+    (0.0000% of land)**. There are no land cells at or below 0.0 m either;
+    the lowest land in the bbox is 1 m. At 1 m there are 283,090 cells
+    (653.25 km²).
+  - So category 5 is **not** a clamp and **not** a flood-model bug: a 6.25 cm
+    water level simply cannot be represented on a whole-metre DEM, so the BFS
+    has nothing to step onto. 62 mm of surge is below the data's vertical
+    resolution. **Category 5 is effectively dead in this demo** — it is the
+    only category that is neither clamped nor flooding, and it is the one
+    immediately below the headline case.
+  - **Category 6** for contrast: 1,561,774 cells (3,603.88 km², **29.2971%**
+    of all land) at or below 3.863 m.
+  - Land area in bbox: 5,330,820 cells = **12,301.2 km²**; ocean 3,702,246.
+
+- **NEW 2026-09-28 — the surge fit is exactly determined. This is the single
+  most important number in the project.** `n = 4` training rows, 3 feature
+  columns, **4 fitted parameters** (3 coefs + intercept) ⇒ **zero residual
+  degrees of freedom**. The full fit interpolates all four points to ~1e-16.
+  The model has no capacity to be wrong *in sample* and therefore **no
+  redundancy whatsoever**: the LOOCV error is the only evidence it has ever
+  learned anything, and that evidence is bad.
+
+  | training point | actual | LOO prediction | abs error | as % of actual |
+  |---|---|---|---|---|
+  | Remal 2024 | 1.2 m | 2.679 m | **1.479 m** | 123.3% |
+  | Helen 2013 | 1.6 m | 0.019 m | **1.581 m** | 98.8% |
+  | Lehar 2013 | 2.9 m | −0.026 m | **2.926 m** | 100.9% |
+  | Mandous 2021 | 0.6 m | 4.053 m | **3.453 m** | **575.4%** |
+
+  MAE 2.3599 m. **Every point is wrong by roughly its own magnitude**, and the
+  two largest LOO predictions are physically absurd (Lehar −0.026 m; Helen
+  0.019 m — the model loses all its signal when any one point is removed).
+  Reported MAE of 2.36 m hides this; the per-point table is the honest version
+  and it is what the app should be able to show.
+
+  Full-fit coefficients: `wind +0.0475`, `forward_speed +0.6625`,
+  `approach_angle −2.8625`, intercept `−12.0`. Note the sign on forward speed
+  (+0.66 m per kmph of translation speed) and the magnitude on approach angle
+  (−2.86 m for the head-on flag) — both are implausible on their face, and
+  they are what the saturated fit had to do to hit four points.
+
+- **NEW 2026-09-28 — the 1.2 m Remal anchor is UNREACHABLE from the UI, and
+  the case-study storm is not what the demo's headline case models.** Remal's
+  real landfall was **110–120 kmph gusting 135** (CLAUDE.md). Measured
+  against the band table:
+  - 110–120 kmph **straddles categories 5 (88–117) and 6 (117–240)**.
+  - Category 6's representative wind is the **band midpoint, 185 kmph** —
+    **65–75 kmph above the actual event** the project is anchored on.
+  - The regression yields 1.2 m at **129 kmph**, but the app only ever
+    evaluates the seven band midpoints, so the slider jumps **0.062 m → 3.863 m**
+    straight past it. There is no slider position that shows Remal.
+  - So the demo's maximum setting models a storm roughly **1.5× the real
+    Cyclone Remal**, and produces **3.2× its documented surge**. Every
+    narrative string that says "1.2 m anchor" describes a number the map can
+    never display.
+  - **This is a real, unresolved honesty problem, not a bug to be quietly
+    patched.** The fix is a design decision — a wind slider in kmph rather
+    than 7 discrete bands, or an extra band for 117–140 — and either changes
+    what the demo claims. **Owed a decision; not actioned.**
+
+- **NEW 2026-09-28 — the 4-row training table, with the sources the code
+  actually cites.** From `backend/data_pipeline/train_surge_model.py`:
+
+  | name | year | wind kmph | forward | angle | surge m | source cited in the code |
+  |---|---|---|---|---|---|---|
+  | Remal | 2024 | 115 | 16 | 1 | 1.2 | *project brief* — "observed ~1.0–1.5, anchored 1.2" |
+  | Helen | 2013 | 105 | 13 | 0 | 1.6 | same verified set; **no per-point citation** |
+  | Lehar | 2013 | 95 | 20 | 1 | 2.9 | same verified set; **no per-point citation** |
+  | Mandous | 2021 | 70 | 14 | 0 | 0.6 | same verified set; **no per-point citation** |
+
+  The module docstring attributes all four to "the four verified real
+  historical cases from CLAUDE.md (source: project brief)". **CLAUDE.md
+  contains no such table** — it names Remal only. So three of the four
+  training points, including the largest surge value in the model (Lehar,
+  2.9 m, which is what forces the 5 m+ extrapolation), have **no traceable
+  source anywhere in the repo**. They are asserted, not cited. Adding a
+  citable source for each is the precondition for the RSMC New Delhi
+  bulletin stretch item to mean anything.
+
+- **Root `theme.ts` is byte-identical to `mobile/theme.ts`** (verified by
+  `diff`, 2026-09-28). It is an untracked duplicate, not a divergent fork.
+  Deleted nothing, as instructed — but it is safe to remove, and leaving two
+  copies of the design tokens is a drift risk.
 - **Data files for deploy: all committed, no action needed.** All ten files
   under `data/` are tracked and total **~23 MB** — `roads.geojson` 6,
   `buildings.csv.gz` 5, `dem.tif` 3, `delta_roads.geojson` 3, then
@@ -739,46 +874,49 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
 
 ## Next step
 
-**Stage 1 (`mobile/api.ts`) is committed. Stage 2 is the map screen, and it is
-blocked on two things that are not code.**
+**Stage 2 (the map screen) is now unblocked and ready to build.** The three
+native modules are installed (`086efe1`), so `tsc` covers the map code. The
+payload is gzipped 7.6× (`d234e81`), which buys transfer time but does not
+reduce the 112,655 vertices the map still has to draw.
 
-1. **Three native deps are not installed.** `react-native-maps`,
-   `@react-native-community/slider` and `expo-clipboard` are all absent from
-   `mobile/node_modules` and from `mobile/package.json`. The map screen cannot
-   be built or typechecked without at least the first two, and they need
-   `npx expo install` (network + a native module link). This was not run
-   unprompted — it mutates `package.json` and the lockfile.
+Everything for Stage 2 is already derived: initial region hardcoded to Sagar
+Island, intensity slider over categories 0-6 firing `/surge-zone` and
+`/exposure` on `onSlidingComplete` only, final flood frame first,
+hospitals/substations as Markers (their geometry is `LineString`, so a marker
+takes `coordinates[0]` — there is no `Point` in the payload), `roads_cut_off`
+as a red `Polyline`, localities from `/localities` defaulting to `sagar`,
+counts via the existing `ExposureRow`, and `decimatePolygon` from `api.ts` to
+bound the vertex count.
 
-2. **The flood payload decision.** 112,655 vertices / 4.6 MB at category 6
-   (§ "Known issues / blockers"). `api.ts` ships a client-side decimator so
-   the map is *drawable* today, but the 4.6 MB still crosses the wire on every
-   slider step. The real fix — raising `SIMPLIFY_TOL_DEG` server-side — is a
-   backend change that trades drawn detail against payload, and it was left
-   for a decision rather than made silently.
+**The slider needs a design decision before the screen is honest, though.**
+Six of the seven positions draw an empty map (cats 0–4 clamped, cat 5 below
+the DEM's 1 m vertical floor). The screen should say *why* — "below the surge
+model's resolution" is a different message from "nothing to evacuate here",
+and the difference is the whole credibility of the demo. Recommend the empty
+state name the cause and cite `surge.loo_mae_m` rather than implying safety.
 
-Everything else for Stage 2 is unblocked and already derived: initial region
-hardcoded to Sagar Island, intensity slider over categories 0-6 firing
-`/surge-zone` and `/exposure` on `onSlidingComplete` only, final flood frame
-first, hospitals/substations as Markers (note: their geometry is `LineString`,
-so a marker takes `coordinates[0]` — there is no `Point` anywhere in the
-payload), `roads_cut_off` as a red `Polyline`, localities from `/localities`
-defaulting to `sagar`, counts via the existing `ExposureRow`, and categories
-0-5 rendering "nothing floods at this intensity" rather than an error.
+**Three decisions are owed, none of which is code I should decide:**
 
-**One decision owed before any deploy:** the backend peaks at **827 MB**.
-`starter` is 512 MB like free and would not help; **standard (2 GB, ~$25/mo)**
-is the first tier that fits, and the *preferred* fix is not to buy it at all
-but to precompute all seven categories offline, which would drop peak memory
-to the ~138 MB import baseline and make the free tier viable. `render.yaml`
-still says `plan: free` and no precompute has been started — both are open
-deliberately. It does not block mobile work and should not be allowed to.
+1. **The `SIMPLIFY_TOL_DEG` call.** Gzip got the wire cost to 578 KB; the
+   render cost is untouched. Raising the server-side tolerance to ~0.005–0.01°
+   is the real fix, and it trades drawn detail against payload.
+2. **The 1.2 m anchor is unreachable.** Cat 6's representative wind (185 kmph)
+   is ~1.5× the real Cyclone Remal, and the slider jumps 0.062 → 3.863 m
+   straight past 1.2 m. Either the slider becomes a kmph control, or a band
+   is added for 117–140 kmph, or the narrative stops claiming the anchor.
+   This is the one finding that could undermine the demo's central claim.
+3. **The 827 MB deploy decision.** `starter` is 512 MB like free and would not
+   help; **standard (2 GB, ~$25/mo)** is the first tier that fits, and the
+   *preferred* fix is precomputing all seven categories offline, which would
+   drop peak memory to the ~138 MB import baseline. `render.yaml` still says
+   `plan: free`; no precompute started.
 
-**The live `POST /advisory` capture is still outstanding.** This round's
-single allowed attempt returned **HTTP 503** — all 3 attempts, 2 s + 4 s of
-backoff, 42 s wall clock, "This model is currently experiencing high demand".
-No `gemini_calls` or `validation` block exists, because it was an error, not a
-200. Not retried, per instruction. The free tier also resets at midnight
-Pacific, so the next attempt has to be made by hand after the reset.
+**The live `POST /advisory` capture is still outstanding.** The single allowed
+attempt returned **HTTP 503** (3 attempts, 2 s + 4 s backoff, 42 s wall clock).
+Not retried. The free tier resets at midnight Pacific, so the next attempt
+has to be made by hand after the reset — and `data/cached_advisory_cat6_sagar.json`
+is currently absent by design, because the only body it ever held was that
+error. Stage 4's fallback cannot be built until a real advisory is captured.
 
 
 **The mobile advisory flow does not exist yet — that is now the top item.**
@@ -862,6 +1000,70 @@ any demo, record a backup capture.
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-28 — Claude Code: map deps, gzip middleware, per-category diagnosis
+
+- **Item 1 — deps installed, with a workaround worth knowing.**
+  `npx expo install` resolved and pinned the right SDK-57 versions into
+  `package.json`, then failed on its own npm invocation: **npm 12 rejects the
+  `--allow-scripts` flag in project scope** (`EALLOWSCRIPTS`). The project
+  already has an `allowScripts` field, so the flag is doubly redundant here.
+  Chose a plain `npm install` over adding the packages to `allowScripts` —
+  that installs the already-pinned versions and grants **no install-script
+  permission at all**, which none of the three need (Metro handles them like
+  any other RN module). Installed: **react-native-maps 1.27.2,
+  @react-native-community/slider 5.2.0, expo-clipboard 57.0.2**. `tsc
+  --noEmit` exits 0. Committed `086efe1`.
+- **Item 2 — GZipMiddleware, and it is a bigger win than expected.**
+  Added at `minimum_size=1000`, registered *after* CORS so it is outermost.
+  Category 6: **4,386,305 → 578,451 bytes, 7.58× smaller**, decompressing
+  byte-identically. `/health` correctly uncompressed. Four tests in
+  `TestGzip`; suite 201 passed, 3 skipped. Committed `d234e81`.
+  Two things learned writing the tests:
+  - **`TestClient` decodes gzip transparently**, so `len(response.content)` is
+    the same 4.4 MB either way. Asserting on it would have passed no matter
+    whether compression worked. The tests assert on **`Content-Length`**,
+    which does carry the wire size.
+  - The first version of those two tests asserted on `gzip.decompress(...)`
+    and failed with `BadGzipFile` — for the reason above, not because
+    compression was broken.
+- **Item 3 — diagnosis, report only. The headline is not the payload.**
+  Three findings worth more than the gzip win, all measured, all in
+  "Known issues / blockers" above in full:
+  1. **The surge fit has zero residual degrees of freedom** — 4 rows, 3
+     features, 4 parameters. It interpolates all four training points to
+     ~1e-16 and has no redundancy at all. Per-point LOOCV errors are
+     **1.479 / 1.581 / 2.926 / 3.453 m** against actuals of 1.2 / 1.6 / 2.9 /
+     0.6 m — every point wrong by roughly its own magnitude, worst at 575%
+     of actual. The MAE of 2.36 m that the API reports hides all of this.
+  2. **Category 5 is dead in a way nobody had noticed.** It is the only
+     category that is neither clamped nor flooding: 105 kmph yields
+     +0.0625 m, unclamped, and 0.00 km². The DEM is integer-valued (SRTM), the
+     lowest land in the bbox is 1 m, and 0 land cells sit at or below 0.0625
+     m. 62 mm of surge is below the data's vertical resolution. Six of seven
+     slider positions therefore draw an empty map.
+  3. **The 1.2 m Remal anchor is unreachable from the UI.** Real landfall was
+     110–120 kmph, which straddles cats 5 and 6; cat 6's representative wind
+     is the band midpoint **185 kmph**, ~65–75 kmph above the actual event.
+     The slider jumps 0.062 → 3.863 m straight past 1.2 m, which needs
+     129 kmph. The demo's headline case models a storm ~1.5× Cyclone Remal
+     and produces ~3.2× its documented surge, while the narrative strings say
+     "1.2 m anchor". **A real honesty problem, left as a decision.**
+  - Also: **three of the four training points have no traceable source.**
+    `train_surge_model.py` attributes all four to "the four verified real
+    historical cases from CLAUDE.md" — but **CLAUDE.md has no such table**;
+    it names Remal only. Helen 1.6 m, Lehar 2.9 m and Mandous 0.6 m are
+    asserted, not cited, and Lehar's 2.9 m is what forces the model's
+    5 m+ extrapolation.
+  - **Correction logged:** the 4,608,374-byte figure I gave last round was the
+    geometry measured with `json.dumps`, not the HTTP body. The real
+    uncompressed body is **4,386,305**.
+- **Root `theme.ts` vs `mobile/theme.ts`: byte-identical** (`diff` clean). An
+  untracked duplicate, not a divergent fork. Deleted nothing, as instructed.
+- **Scratch scripts** (`backend/_diag_*.py`) were written to produce these
+  numbers and **removed** after; the tree is clean apart from the pre-existing
+  untracked strays. No fixes were applied to any finding above — all three
+  are reported for a decision.
 
 ### 2026-09-28 — Claude Code: housekeeping, live-capture attempt, Module E Stage 1 (api.ts)
 
