@@ -1278,6 +1278,22 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
 - [ ] Expo app run on a device/simulator — never launched; theme is typechecked only (spec §10.5)
 - [ ] `expo-clipboard` installed — needed for the SMS copy button, not yet added
 
+## Repo hygiene
+
+Deleted as redundant, all untracked and all already in `.gitignore` (lines
+26-32): `dem_archive.zip` (a bare TIFF despite the name, not the extracted
+`data/dem.tif`), `fetch_dem.py` (stale root duplicate of
+`backend/data_pipeline/fetch_dem.py` — hardcoded project id, `scale=50` only,
+no zip-format fallback), and `theme.ts` (byte-identical to
+`mobile/theme.ts`, sha256 `b3ab2f55…`). Caches (`__pycache__/`,
+`.pytest_cache/`, all `.DS_Store`) cleared. Suite 254 passed / 3 skipped
+before and after, which is the proof that `data/dem.tif` alone is
+sufficient. There is no `"Design .md"` on disk — only `Design.md`; the
+stray-space file in the task list does not exist. Untracked and left alone:
+root `package.json` / `package-lock.json` (Claude Code CLI install),
+`skills-lock.json` + `.agents/skills/ponytail/` (a skills-installer
+lockfile), `.claude/` (settings + skills).
+
 ## Next step
 
 **Stage 2 (the map screen) is next, and the overlay layer has just answered
