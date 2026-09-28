@@ -13,11 +13,16 @@ number under a real place's name, which is the failure the shelter work
 already had to refuse once.
 
 **Which localities.** Every `city`, `town` and `village` in the extract (73
-places — Diamond Harbour, Kakdwip, Canning, Haldia, Tamluk, the delta
-villages), plus four settlements that OSM tags as `suburb` but which the
-case study names directly: Patharpratima, Namkhana, Gosaba and Sagar Island.
-Those four are added explicitly and the reason is recorded in
-`DELTA_PLACES_ADDED` rather than being silently mixed in.
+places — Diamond Harbour, Kakdwip, Canning, Haldia, the delta villages), plus
+four settlements that OSM tags as `suburb` but which the case study names
+directly: Patharpratima, Namkhana, Gosaba and Sagar Island. Those four are
+added explicitly and the reason is recorded in `DELTA_PLACES_ADDED` rather
+than being silently mixed in.
+
+**Which districts.** `DISTRICT_DENY` names the places in the extract that are
+not in South/North 24 Parganas or Sagar Island, and `BORDER_CLUSTER` names the
+ones the dataset cannot settle. The extract has no `admin_level` tags and no
+boundary geometry, so membership is a stated decision, not a computed fact.
 
 **`radius_km` is a search radius, not a boundary.** It is how far around the
 centroid the density estimate counts buildings; it is emphatically NOT a
@@ -58,10 +63,52 @@ RADIUS_KM_BY_TYPE = {"city": 12.0, "town": 8.0, "village": 4.0, "suburb": 6.0}
 # not the delta the case study is about, and including them buried the towns
 # the narrative actually names (Kakdwip, Patharpratima, Gosaba).
 #
-# So the study area is South 24 Parganas and the delta, taken as everything
-# south of this latitude. It is a scoping decision, NOT a boundary claim: the
-# real South 24 Parganas district boundary is not in the dataset, and this
-# line is an approximation of it. See MEMORY.md "Flagged for review".
+# So the study area is South 24 Parganas, the delta, and the southern sliver of
+# North 24 Parganas that the same bbox catches (Sandeshkhali, Shyamnagar).
+STUDY_AREA_DISTRICTS = ("South 24 Parganas", "North 24 Parganas", "Sagar Island")
+
+# **Explicit out-of-district exclusions.** The extract carries no
+# `admin_level` tags and no boundary geometry, so membership cannot be computed
+# — it has to be named. This is the authoritative list, and the value is the
+# district the place really belongs to, so the list is self-describing and
+# says *why* something is absent rather than leaving a silent hole.
+#
+# Tamluk is the case that forced this: it is in Purba Medinipur, but it sits
+# inside the bbox and south of the northern cut, so it survived scoping, landed
+# in `/allocation`, and reached the Gemini prompt as a place needing evacuation
+# on South 24 Parganas advice. See MEMORY.md #17/#24.
+#
+# Adding a locality is one line. Do not add one "just in case" — every entry
+# here removes a real place from a real advisory, and the ones listed in
+# `BORDER_CLUSTER` below are genuinely undecided rather than confirmed.
+DISTRICT_DENY: dict[str, str] = {
+    "Tamluk": "Purba Medinipur (Haldia subdivision)",
+}
+
+# **Unresolved, deliberately NOT denied.** `data/places.geojson` has no
+# administrative tags, so for these the district could not be confirmed from
+# the dataset and is not something this code should guess. They sit on or near
+# the western South 24 Parganas / Purba Medinipur boundary, which the DEM bbox
+# is the only thing clipping. They are kept in the study area and reported
+# here, because an admission that a boundary is uncertain is worth more than a
+# confident wrong answer — and because dropping a real delta village on a hunch
+# is the worse error. A human with a boundary dataset should settle these.
+BORDER_CLUSTER: tuple[str, ...] = (
+    "Anantapur",   # 22.32 N, 87.96 E — ~6 km east of Tamluk, same band
+    "Nandakumar",  # 22.20 N, 87.92 E — 8 km south of Tamluk
+    "Syampur",     # 22.30 N, 88.03 E — same latitude as Tamluk, 1.2 km east
+    "Bajkul",      # 22.02 N, 87.82 E — 2.6 km inside the bbox's western edge
+    "Dholmari",    # 21.81 N, 87.83 E — 3.1 km inside the western edge
+    "Basantia",    # 21.80 N, 87.81 E — 1.1 km inside the western edge
+    "Junput",      # 21.73 N, 87.81 E — 1.1 km inside the western edge
+    "Henria",      # 21.97 N, 87.80 E — on the western edge itself
+)
+
+# **The northern cut.** This is NOT the district boundary and never claimed to
+# be; it is a coarse guard whose one job is to keep the clipped Kolkata suburbs
+# out of the demand totals. Actual district membership is `DISTRICT_DENY`;
+# anything south of this line that is in the wrong district has to be named
+# there, because this line cannot detect it.
 STUDY_AREA_MAX_LAT = 22.40
 
 # Settlements the case study names that OSM classifies as `suburb`. Without
@@ -151,36 +198,98 @@ def all_localities() -> tuple[Locality, ...]:
 
 
 def in_study_area(locality: Locality) -> bool:
+    """Whether `locality` belongs in the study area.
+
+    District membership first, the northern cut second. The order matters: the
+    cut cannot detect a wrong-district place south of the line, so a name in
+    `DISTRICT_DENY` has to be rejected regardless of where it falls.
+    """
+    if locality.name in DISTRICT_DENY:
+        return False
     return locality.lat <= STUDY_AREA_MAX_LAT
+
+
+def _exclusion_reason(locality: Locality) -> str:
+    if locality.name in DISTRICT_DENY:
+        return f"out of district: {DISTRICT_DENY[locality.name]}"
+    return f"north of the {STUDY_AREA_MAX_LAT} study-area cut"
+
+
+@lru_cache(maxsize=1)
+def _deny_list_audit() -> dict:
+    """Catch a `DISTRICT_DENY` entry that does nothing.
+
+    A typo in a deny-list key fails open: the place is still served, still
+    reaches the prompt, and the list looks like it is working. Cheap to check,
+    so it is checked rather than trusted.
+    """
+    present = {loc.name for loc in all_localities()}
+    return {
+        "not_in_extract": sorted(set(DISTRICT_DENY) - present),
+        "excluded": sorted(name for name in DISTRICT_DENY if name in present),
+    }
 
 
 @lru_cache(maxsize=1)
 def localities() -> tuple[Locality, ...]:
     """The study area's localities — what the API serves.
 
-    `all_localities()` minus everything north of STUDY_AREA_MAX_LAT. Kept
-    available so a caller can see what was excluded and why rather than
-    finding a locality silently missing.
+    `all_localities()` minus the explicitly-denied out-of-district places and
+    everything north of STUDY_AREA_MAX_LAT. Kept available so a caller can see
+    what was excluded and why rather than finding a locality silently missing.
     """
     return tuple(loc for loc in all_localities() if in_study_area(loc))
 
 
 @lru_cache(maxsize=1)
 def scoping() -> dict:
-    """Provenance for the study-area cut, shipped with /localities."""
+    """Provenance for the study-area scoping, shipped with /localities.
+
+    The two exclusion mechanisms are reported separately, because they are not
+    the same kind of claim: `DISTRICT_DENY` is a decision we made and can name,
+    while the latitude cut is a coarse guard standing in for a boundary that
+    the dataset does not contain.
+    """
     in_area = len(localities())
     excluded = [loc for loc in all_localities() if not in_study_area(loc)]
+    denied = [loc for loc in excluded if loc.name in DISTRICT_DENY]
+    audit = _deny_list_audit()
     return {
+        "study_area_districts": list(STUDY_AREA_DISTRICTS),
+        "out_of_district_excluded": {
+            loc.name: DISTRICT_DENY[loc.name] for loc in denied
+        },
+        "out_of_district_excluded_count": len(denied),
+        # A name in here that is not in the extract means the deny list has a
+        # typo and is silently doing nothing. Surfaced rather than fixed here:
+        # whether it should be added is a data question, not a code one.
+        "deny_list_not_in_extract": audit["not_in_extract"],
+        "unresolved_border_localities": list(BORDER_CLUSTER),
+        "unresolved_border_note": (
+            "Localities on or near the western district boundary that the "
+            "dataset cannot resolve — data/places.geojson carries no admin_level "
+            "tags and no boundary geometry. They are KEPT in the study area, "
+            "because dropping a real delta village on a hunch is the worse "
+            "error. Settle them against a boundary dataset."
+        ),
         "study_area_max_lat": STUDY_AREA_MAX_LAT,
         "localities_in_study_area": in_area,
         "localities_excluded": len(excluded),
         "excluded_names": sorted(loc.name for loc in excluded),
+        "excluded_reasons": {
+            loc.name: _exclusion_reason(loc) for loc in sorted(
+                excluded, key=lambda l: l.name
+            )
+        },
         "disclosure": (
-            f"Scoped to lat <= {STUDY_AREA_MAX_LAT} (South 24 Parganas and the "
-            "delta). The DEM bbox clips the northern Kolkata suburbs, whose "
-            "density estimates would otherwise dominate the district totals. "
-            "This line approximates the district boundary — it is not the "
-            "boundary, which is not in the dataset."
+            f"Scoped to {', '.join(STUDY_AREA_DISTRICTS)}, taken as everything "
+            f"south of lat {STUDY_AREA_MAX_LAT} that is not explicitly denied "
+            "above. The DEM bbox clips the northern Kolkata suburbs, whose "
+            "density estimates would otherwise dominate the district totals, "
+            "and the bbox also catches part of neighbouring Purba Medinipur, "
+            "which is why some places are named and denied one by one. The "
+            "latitude line is NOT the district boundary — it approximates it, "
+            "and the real boundary is not in the dataset."
         ),
     }
 

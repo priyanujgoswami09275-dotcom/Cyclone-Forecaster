@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from dataclasses import replace
 from functools import lru_cache
 
@@ -45,6 +46,7 @@ import networkx as nx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from google.genai.errors import ServerError
 from shapely.geometry import shape
 
 # Load `.env` before anything reads the environment. `load_dotenv` does NOT
@@ -61,6 +63,7 @@ from .ai.advisory import (
     DistrictAdvisory,
     EvacuationPriority,
     generate_advisory,
+    plan_coverage,
     validate_advisory,
 )
 from .locations import (
@@ -503,6 +506,97 @@ def _capacity_basis(category: int) -> dict:
     }
 
 
+# --------------------------------------------------------------------------
+# Gemini capacity handling
+# --------------------------------------------------------------------------
+#
+# `gemini-3.8-flash` is intermittently capacity-blocked: 2026-09-28 saw
+# `503 UNAVAILABLE` on a call that succeeded eight seconds later, and a
+# read-only probe found `gemini-3.5-flash` failing 3/3 while 3.8 answered.
+# That is a capacity blip, not a fault in this code and not a reason to swap
+# models (Rules.md: pin the string, decide deliberately, never silently).
+#
+# So: retry the SAME model, briefly, and if it is still busy say so in the
+# status code and the message. Retry never becomes a model swap (Rules.md pins
+# the string) and never becomes an unbounded loop — three attempts, then stop
+# and report how many were made, so a client can tell "we tried three times and
+# the model stayed busy" from "we called once".
+#
+# Exhaustion is 503 with `Retry-After: 60`. 503 is the semantically correct
+# code for "the model is busy, the identical request is likely to work shortly";
+# 502 would say "this service failed to get a usable answer from upstream",
+# which is exactly what the retries were there to prevent. Both stories stay in
+# the message body, so a client reading only the status gets the actionable one
+# and a human reading the body gets the detail.
+#
+# This has been 503 -> 502 -> 503 in one day. The middle state was a one-round
+# change on request; it is now reverted. Recorded because a reader finding
+# 502 and 503 both discussed in git history should know which is current and
+# that the change was deliberate, not drift. Logged as §28 in MEMORY.md.
+
+# Seconds to wait before attempt N+1. Three attempts leave two gaps, so only
+# 2s and 4s fire; 8s is here so raising CAPACITY_MAX_ATTEMPTS needs no new
+# numbers. The total actually waited is measured, not assumed, and reported.
+CAPACITY_BACKOFF_SECONDS = (2, 4, 8)
+CAPACITY_MAX_ATTEMPTS = 3
+CAPACITY_RETRY_AFTER_SECONDS = 60
+
+# Indirected so tests can stub the wait without patching the stdlib.
+_sleep = time.sleep
+
+
+class GeminiCapacityError(RuntimeError):
+    """Every attempt returned 503 UNAVAILABLE. The model is at capacity."""
+
+
+def _is_capacity_error(exc: ServerError) -> bool:
+    """Is this a capacity block rather than a real server-side failure?
+
+    Matched on both the numeric code and the status word because the SDK has
+    used both in the wild, and a retry is only correct for the transient case.
+    A 500 or a malformed-response error must not be retried — that one is ours
+    to fix, and retrying it just spends quota.
+    """
+    if getattr(exc, "code", None) == 503:
+        return True
+    text = str(exc).upper()
+    return "503" in text or "UNAVAILABLE" in text
+
+
+def _generate_with_capacity_retry(*args, **kwargs) -> tuple[DistrictAdvisory, int]:
+    """`generate_advisory`, retried across capacity blocks.
+
+    Transparent: same positional and keyword arguments. Returns the advisory and
+    the number of attempts it took, so the handler can report how hard it tried
+    instead of a client guessing from a latency. The only error this raises
+    itself is exhausted-retry exhaustion.
+
+    Applies to both the first pass and the correction pass, and to nothing
+    else: the correction pass is a different kind of retry (a drafting slip,
+    not a busy model) and the two are kept separate so `attempts` in the
+    response still means what it says.
+    """
+    last: ServerError | None = None
+    waited = 0
+    for attempt in range(1, CAPACITY_MAX_ATTEMPTS + 1):
+        try:
+            return generate_advisory(*args, **kwargs), attempt
+        except ServerError as exc:
+            if not _is_capacity_error(exc):
+                raise
+            last = exc
+            if attempt < CAPACITY_MAX_ATTEMPTS:
+                delay = CAPACITY_BACKOFF_SECONDS[attempt - 1]
+                _sleep(delay)
+                waited += delay
+    raise GeminiCapacityError(
+        f"{ADVISORY_MODEL} returned 503 UNAVAILABLE on all "
+        f"{CAPACITY_MAX_ATTEMPTS} attempts over {waited}s. The model is at "
+        f"capacity, not a fault in this service; the same request is worth "
+        f"retrying in about {CAPACITY_RETRY_AFTER_SECONDS}s. Last error: {last}"
+    ) from last
+
+
 @app.post("/advisory")
 def advisory(
     category: int = Query(..., ge=0, le=6, description="IMD category index 0-6"),
@@ -517,9 +611,11 @@ def advisory(
     numbers on the map.
 
     Upstream failures are reported honestly rather than papered over: a missing
-    key is 503, a Gemini failure is 502, and output that fails `validate_advisory`
-    even after one retry is 502 with the violations listed. A 200 always means
-    the advisory passed every honesty check.
+    key is 503, a capacity-blocked model is retried three times on the same
+    pinned model and then 503 with a Retry-After, any other Gemini failure is
+    502, and output that fails `validate_advisory` even after one correction
+    pass is 502 with the violations listed. A 200 always means the advisory
+    passed every honesty check.
     """
     # Request validity is settled before server configuration, so a client with
     # a bad origin id hears about that even on an unconfigured server — the two
@@ -556,9 +652,17 @@ def advisory(
     context = _origin_context(facts)
 
     try:
-        result = generate_advisory(
+        result, gemini_calls = _generate_with_capacity_retry(
             surge_payload, exposure_payload, allocation_payload, context=context
         )
+    except GeminiCapacityError as exc:
+        # Caught before the blanket `except Exception` below, which would
+        # otherwise report a busy model as a broken one.
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+            headers={"Retry-After": str(CAPACITY_RETRY_AFTER_SECONDS)},
+        ) from exc
     except Exception as exc:  # noqa: BLE001 - any SDK failure is a 502 to the client
         raise HTTPException(
             status_code=502,
@@ -580,13 +684,24 @@ def advisory(
         # the free tier is rate-limited (Rules.md).
         attempts = 2
         try:
-            result = generate_advisory(
+            result, correction_calls = _generate_with_capacity_retry(
                 surge_payload,
                 exposure_payload,
                 allocation_payload,
                 context=context,
                 corrections="\n".join(f"- {v}" for v in violations),
             )
+            gemini_calls += correction_calls
+        except GeminiCapacityError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"{exc} It failed its honesty checks first "
+                    f"({'; '.join(violations)}), so the correction pass was also "
+                    f"needed."
+                ),
+                headers={"Retry-After": str(CAPACITY_RETRY_AFTER_SECONDS)},
+            ) from exc
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(
                 status_code=502,
@@ -641,9 +756,21 @@ def advisory(
                 "sms_dispatch_draft under 160 characters",
                 "every evacuation_plan locality appears in the allocation data, "
                 "or is the requesting origin",
+                "every allocation locality appears in evacuation_plan",
                 "demo shelter data is disclosed as provisional/placeholder",
             ],
+            # "covered/total" over the ALLOCATION localities, which is what the
+            # coverage check is about. The code-built origin entry is not one of
+            # them (Sagar has no allocation row), so it does not inflate the
+            # count; a client reading 12/12 knows the plan names all 12.
+            "plan_coverage": plan_coverage(result, allocation_payload)["label"],
+            # Two different counts, deliberately separate. `attempts` is
+            # correction passes (1, or 2 when the first draft broke a check).
+            # `gemini_calls` is HTTP calls actually made, including the ones
+            # that came back 503 and were retried — the honest answer to "how
+            # hard did you try", and the one that makes a slow response legible.
             "attempts": attempts,
+            "gemini_calls": gemini_calls,
         },
     }
 
@@ -823,6 +950,22 @@ def _origin_context(facts: dict) -> str:
     )
 
 
+def _as_sentence(text: str) -> str:
+    """`text` normalised into one clean sentence.
+
+    `/routes`' `reason` is a clause with no terminal punctuation, and the
+    code-built origin reasoning splices it into the middle of a sentence — so
+    the two ran straight together and the entry read "...road-data coverage,
+    not flooding Evacuation cannot proceed along the mapped road network".
+    Whitespace is collapsed too, because the reason is built from several
+    diagnostic fragments that each end in a space.
+    """
+    cleaned = " ".join(str(text or "").split())
+    if not cleaned:
+        return ""
+    return cleaned if cleaned[-1] in ".!?" else cleaned + "."
+
+
 def _ensure_origin_in_plan(
     result: "DistrictAdvisory", facts: dict, allocation_payload: dict
 ) -> "DistrictAdvisory":
@@ -856,9 +999,10 @@ def _ensure_origin_in_plan(
         priority = "CRITICAL"
         reasoning = (
             f"The requesting locality. It is UNREACHABLE at this intensity: "
-            f"{facts['reason']} Evacuation cannot proceed along the mapped road "
-            f"network from here, so movement must be planned off-network — this "
-            f"is the highest-priority locality in the district at this intensity."
+            f"{_as_sentence(facts['reason'])} Evacuation cannot proceed along the "
+            f"mapped road network from here, so movement must be planned "
+            f"off-network — this is the highest-priority locality in the "
+            f"district at this intensity."
         )
 
     if not facts["in_allocation"]:

@@ -9,8 +9,18 @@ are the failures this file targets.
 Most of these tests run with Gemini stubbed out, because the properties under
 test are properties of *our* code — the prompt, the payload assembly, the
 validator, the failure handling — not of the model. The tests that do call
-Gemini are marked `requires_key` and skip when GEMINI_API_KEY is absent, so
-the suite passes for anyone who has not set one.
+Gemini are marked `requires_key` and are **opt-in**: they run only when
+`RUN_LIVE_TESTS=1` *and* `GEMINI_API_KEY` is set, so the suite passes for
+anyone who has not set one — and, since 2026-09-28, for anyone who has.
+
+That second condition is the point. The free tier allows 20 calls per day per
+project per model (§26 in MEMORY.md), and key-presence gating meant every
+`pytest tests/` on a configured machine silently spent quota. Opt-in makes
+spending it a deliberate act:
+
+    RUN_LIVE_TESTS=1 venv/bin/pytest tests/test_module_d.py
+
+Budget for 3 live calls per full run of that file.
 
 Note what is NOT tested here: that Gemini is a good writer. If a draft is
 grammatical and hits every rule below, it ships. Judging prose quality is a
@@ -24,6 +34,7 @@ import re
 
 import pytest
 from fastapi.testclient import TestClient
+from google.genai.errors import ServerError
 from pydantic import ValidationError
 
 from backend import main
@@ -32,13 +43,55 @@ from backend.ai.advisory import (
     DistrictAdvisory,
     EvacuationPriority,
     build_prompt,
+    plan_coverage,
     validate_advisory,
 )
 
 API_KEY = os.environ.get("GEMINI_API_KEY")
+RUN_LIVE = os.environ.get("RUN_LIVE_TESTS") == "1"
 requires_key = pytest.mark.skipif(
-    not API_KEY, reason="GEMINI_API_KEY is not set; skipping live Gemini call"
+    not (RUN_LIVE and API_KEY),
+    reason=(
+        "live Gemini tests are opt-in: set RUN_LIVE_TESTS=1 (and have "
+        "GEMINI_API_KEY set) to run them. Key-presence is not enough — the "
+        "free tier allows 20 calls/day/project/model, so having a key in .env "
+        "must never be what spends the quota."
+    ),
 )
+
+
+def capacity_error(message: str = "This model is currently experiencing high demand.") -> ServerError:
+    """A `ServerError` shaped like the 503 UNAVAILABLE the API actually returned."""
+    return ServerError(
+        503,
+        {
+            "error": {
+                "code": 503,
+                "message": message,
+                "status": "UNAVAILABLE",
+            }
+        },
+    )
+
+
+def _advisory_body(client, url: str) -> dict:
+    """POST /advisory and return its body — skipping if the model is at capacity.
+
+    `gemini-3.8-flash` is intermittently 503 UNAVAILABLE, and the handler now
+    retries three times over 6s (2s + 4s) before admitting it. That is a fact
+    about the model's load, not a failure of this code, so it skips with the
+    reason rather than flapping the suite red on someone else's outage.
+    Anything else — a 502 from a real honesty violation, a 500, or a 429 from
+    an exhausted daily quota (§26) — still fails, because that one *is* either
+    this code or a limit we should see.
+    """
+    response = client.post(url)
+    if response.status_code == 503:
+        detail = str(response.json().get("detail", ""))
+        if "capacity" in detail.lower():
+            pytest.skip(f"{advisory.ADVISORY_MODEL} is at capacity: {detail}")
+    assert response.status_code == 200, response.text
+    return response.json()
 
 CATEGORY = 6  # Super Cyclonic Storm — the only band that actually floods
 
@@ -187,6 +240,19 @@ class TestPrompt:
             "160 characters",
         ):
             assert rule.lower() in advisory.SYSTEM_PROMPT.lower(), rule
+
+    def test_system_prompt_requires_every_allocation_locality(self):
+        """Rule 9, and it is a separate rule from the no-invention one.
+
+        The two pull in opposite directions and the model needs both stated
+        plainly: rule 3 stops it naming a place that is not in the data, rule 9
+        stops it dropping a place that is. Folding them together is what let
+        7 of 12 localities through with no priority at all on the first live
+        run — the instruction was there, buried inside another rule."""
+        prompt = advisory.SYSTEM_PROMPT
+        assert "9." in prompt
+        assert "EVERY locality listed in the allocation data" in prompt
+        assert "no more and no fewer" in prompt
 
     def test_historical_pool_is_a_closed_list(self):
         """Rules.md: every historical number traceable to a named source."""
@@ -460,12 +526,17 @@ class TestNoInventedEmergencyNumbers:
         )
         assert self._numbers_in(clean) <= {"112", "2020"}
 
+    @requires_key
     def test_no_unverified_number_reaches_a_live_advisory(self, client):
         """Live-only: the real check. Skipped without a key, and the stubbed
-        tests above are what keep the pattern honest in its absence."""
-        response = client.post("/advisory?category=6&origin=sagar")
-        assert response.status_code == 200, response.text
-        result = DistrictAdvisory(**response.json()["advisory"])
+        tests above are what keep the pattern honest in its absence.
+
+        The `@requires_key` here was missing until 2026-09-28 — the docstring
+        claimed a skip the test did not have, so it only ever passed because a
+        key happened to be in `.env`.
+        """
+        body = _advisory_body(client, "/advisory?category=6&origin=sagar")
+        result = DistrictAdvisory(**body["advisory"])
         blob = " ".join(
             [
                 result.executive_summary,
@@ -593,6 +664,384 @@ class TestHandlerPayload:
 
 
 # --------------------------------------------------------------------------
+# Capacity blocks — 503 UNAVAILABLE is a fact about the model, not a bug
+# --------------------------------------------------------------------------
+
+
+class TestCapacityRetry:
+    """`gemini-3.8-flash` is intermittently 503 UNAVAILABLE.
+
+    Observed 2026-09-28: a `POST /advisory` returned 502 on attempt 1 and 200
+    on attempt 2 eight seconds later, and a read-only probe found
+    `gemini-3.5-flash` failing 3/3 while 3.8 answered. So the fix is to wait the
+    blip out on the SAME pinned model — Rules.md forbids a silent swap, and a
+    swap would not have helped anyway, since 3.5 was the one that was blocked.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_real_sleep(self, monkeypatch):
+        self.slept: list[float] = []
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+        monkeypatch.setattr(main, "_sleep", self.slept.append)
+
+    def test_two_capacity_failures_then_success_is_a_200(self, client, monkeypatch):
+        calls: list[int] = []
+
+        def flaky(surge, exposure, allocation, context="", corrections=""):
+            calls.append(1)
+            if len(calls) <= 2:
+                raise capacity_error()
+            return a_valid_advisory([r["node"] for r in allocation["allocation"]])
+
+        monkeypatch.setattr(main, "generate_advisory", flaky)
+        response = client.post("/advisory?category=6&origin=kakdwip")
+        assert response.status_code == 200, response.text
+        assert len(calls) == 3, "should have taken the third attempt"
+
+    def test_backoff_is_two_then_four(self, client, monkeypatch):
+        """2s then 4s, and no third wait — the spec, measured rather than hoped.
+
+        Three attempts leave two gaps. The 8s rung exists in the ladder but
+        does not fire at this ceiling; the test pins the two that do, so a
+        raised cap cannot silently reuse one of them."""
+
+        def flaky(surge, exposure, allocation, context="", corrections=""):
+            raise capacity_error()
+
+        monkeypatch.setattr(main, "generate_advisory", flaky)
+        client.post("/advisory?category=6&origin=kakdwip")
+        assert self.slept == [2, 4], self.slept
+
+    def test_the_backoff_ladder_is_2_4_8(self):
+        """The full ladder, so raising the ceiling needs no new numbers."""
+        assert main.CAPACITY_BACKOFF_SECONDS == (2, 4, 8)
+
+    def test_three_attempts_is_the_ceiling(self, client, monkeypatch):
+        """A busy model must not turn one button press into an unbounded loop."""
+        calls: list[int] = []
+
+        def always_busy(surge, exposure, allocation, context="", corrections=""):
+            calls.append(1)
+            raise capacity_error()
+
+        monkeypatch.setattr(main, "generate_advisory", always_busy)
+        assert client.post("/advisory?category=6&origin=kakdwip").status_code == 503
+        assert len(calls) == 3, calls
+
+    def test_exhaustion_reports_the_attempt_count(self, client, monkeypatch):
+        """A client that sees one slow advisory and another slow advisory needs
+        to tell "tried once" from "tried three times, the model stayed busy"."""
+        monkeypatch.setattr(
+            main,
+            "generate_advisory",
+            lambda *a, **k: (_ for _ in ()).throw(capacity_error()),
+        )
+        response = client.post("/advisory?category=6&origin=kakdwip")
+        assert response.status_code == 503
+        assert response.headers["Retry-After"] == "60"
+        assert "all 3 attempts" in response.json()["detail"]
+
+    def test_the_reported_wait_is_measured_not_assumed(self, client, monkeypatch):
+        """The message says how long it waited. Summing the whole ladder would
+        claim 14s when only 2s + 4s ever elapsed."""
+        monkeypatch.setattr(
+            main,
+            "generate_advisory",
+            lambda *a, **k: (_ for _ in ()).throw(capacity_error()),
+        )
+        detail = client.post("/advisory?category=6&origin=kakdwip").json()["detail"]
+        assert "over 6s" in detail, detail
+
+    def test_gemini_calls_counts_the_retries(self, client, monkeypatch):
+        """Two capacity blocks then success is three real calls to the API, and
+        the response has to admit that."""
+        calls: list[int] = []
+
+        def flaky(surge, exposure, allocation, context="", corrections=""):
+            calls.append(1)
+            if len(calls) <= 2:
+                raise capacity_error()
+            return a_valid_advisory([r["node"] for r in allocation["allocation"]])
+
+        monkeypatch.setattr(main, "generate_advisory", flaky)
+        body = client.post("/advisory?category=6&origin=kakdwip").json()
+        assert body["validation"]["gemini_calls"] == 3
+        # One pass, no correction: the two counts are different numbers, not
+        # the same number written twice.
+        assert body["validation"]["attempts"] == 1
+
+    def test_gemini_calls_includes_the_correction_pass(self, client, monkeypatch):
+        calls: list[int] = []
+
+        def needs_correction(surge, exposure, allocation, context="", corrections=""):
+            calls.append(1)
+            names = [r["node"] for r in allocation["allocation"]]
+            if corrections:
+                return a_valid_advisory(names)
+            draft = a_valid_advisory(names)
+            draft.sms_dispatch_draft = "z" * 400
+            return draft
+
+        monkeypatch.setattr(main, "generate_advisory", needs_correction)
+        body = client.post("/advisory?category=6&origin=kakdwip").json()
+        assert body["validation"]["gemini_calls"] == 2
+        assert body["validation"]["attempts"] == 2
+
+    def test_the_capacity_message_does_not_blame_the_code(self, client, monkeypatch):
+        monkeypatch.setattr(
+            main,
+            "generate_advisory",
+            lambda *a, **k: (_ for _ in ()).throw(capacity_error()),
+        )
+        detail = client.post("/advisory?category=6&origin=kakdwip").json()["detail"]
+        assert "at capacity" in detail
+        assert "not a fault in this service" in detail
+
+    def test_a_non_capacity_server_error_is_not_retried(self, client, monkeypatch):
+        """A 500 is ours to fix. Retrying it just spends quota on a bug."""
+        calls: list[int] = []
+
+        def broken(surge, exposure, allocation, context="", corrections=""):
+            calls.append(1)
+            raise ServerError(500, {"error": {"code": 500, "message": "INTERNAL"}})
+
+        monkeypatch.setattr(main, "generate_advisory", broken)
+        assert client.post("/advisory?category=6&origin=kakdwip").status_code == 502
+        assert len(calls) == 1, calls
+
+    def test_the_model_is_never_swapped_to_escape_a_block(self, monkeypatch):
+        """Rules.md: pin the model, decide deliberately. Retry, don't rotate."""
+        assert main.CAPACITY_MAX_ATTEMPTS == 3
+        assert main.ADVISORY_MODEL == "gemini-3.8-flash"
+        assert main._is_capacity_error(capacity_error()) is True
+
+    def test_capacity_retry_covers_the_correction_pass_too(self, client, monkeypatch):
+        """The first pass can succeed and the correction pass hit a block. The
+        user still deserves the capacity story and a Retry-After, not a bare
+        upstream error."""
+
+        def busy_on_correction(surge, exposure, allocation, context="", corrections=""):
+            if corrections:
+                raise capacity_error()
+            draft = a_valid_advisory([r["node"] for r in allocation["allocation"]])
+            draft.sms_dispatch_draft = "z" * 400  # forces the correction pass
+            return draft
+
+        monkeypatch.setattr(main, "generate_advisory", busy_on_correction)
+        response = client.post("/advisory?category=6&origin=kakdwip")
+        assert response.status_code == 503
+        assert response.headers["Retry-After"] == "60"
+        assert self.slept == [2, 4]
+        assert "at capacity" in response.json()["detail"]
+
+
+# --------------------------------------------------------------------------
+# Punctuation in the code-built origin entry
+# --------------------------------------------------------------------------
+
+
+class TestReasoningPunctuation:
+    """§25: the /routes reason was spliced in without a stop, so the entry read
+    "...road-data coverage, not flooding Evacuation cannot proceed...".
+    """
+
+    def test_a_missing_terminal_period_is_added(self):
+        assert main._as_sentence("not flooding") == "not flooding."
+
+    def test_an_existing_stop_is_kept_and_not_doubled(self):
+        assert main._as_sentence("not flooding.") == "not flooding."
+        for ending in ("!", "?"):
+            assert main._as_sentence(f"really{ending}") == f"really{ending}"
+
+    def test_stray_whitespace_is_collapsed(self):
+        """The reason is stitched from several diagnostic fragments."""
+        assert main._as_sentence("  a   b\n c  ") == "a b c."
+
+    def test_empty_reason_does_not_become_a_stray_period(self):
+        assert main._as_sentence("") == ""
+        assert main._as_sentence(None) == ""
+
+    def test_the_built_reasoning_reads_as_two_sentences(self, client, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+        monkeypatch.setattr(
+            main,
+            "generate_advisory",
+            lambda surge, exposure, allocation, context="", corrections="": (
+                a_valid_advisory([r["node"] for r in allocation["allocation"]])
+            ),
+        )
+        body = client.post("/advisory?category=6&origin=sagar").json()
+        entry = body["advisory"]["evacuation_plan"][0]
+        reason = body["generated_for"]["origin_reason"]
+        assert f"intensity: {reason}." in entry["reasoning"]
+        # The specific run-on from the third live run.
+        assert "not flooding Evacuation" not in entry["reasoning"]
+
+
+# --------------------------------------------------------------------------
+# Plan coverage — every allocation locality must get a priority
+# --------------------------------------------------------------------------
+
+
+class TestPlanCoverage:
+    """§23: the model named 7 of 12 allocation localities and nothing noticed.
+
+    A locality in the allocation is a place with a computed at-risk population
+    and a shelter assignment. Leaving it out of the plan means the advisory
+    never tells anyone there to leave, and it validated clean.
+    """
+
+    @pytest.fixture
+    def known(self, payloads):
+        return [row["node"] for row in payloads["allocation"]["allocation"]]
+
+    @pytest.fixture(autouse=True)
+    def _configured(self, monkeypatch):
+        """These are stubbed tests, so they must not depend on a real key being
+        present — otherwise they pass or fail on the machine's `.env`."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+
+    def test_a_full_plan_is_not_flagged(self, payloads, known):
+        assert plan_coverage(a_valid_advisory(known), payloads["allocation"])[
+            "label"
+        ] == f"{len(known)}/{len(known)}"
+        assert validate_advisory(a_valid_advisory(known), payloads["allocation"]) == []
+
+    def test_a_partial_plan_is_a_violation(self, payloads, known):
+        """The exact shape the live run produced."""
+        draft = a_valid_advisory(known[:7])
+        violations = validate_advisory(draft, payloads["allocation"])
+        assert any("covers only 7/" in v for v in violations), violations
+
+    def test_the_violation_names_every_missing_locality(self, payloads, known):
+        """Because that string is what the correction pass feeds back to the
+        model — a bare count gives it nothing to act on."""
+        draft = a_valid_advisory(known[:7])
+        violation = next(
+            v for v in validate_advisory(draft, payloads["allocation"]) if "Missing" in v
+        )
+        for name in known[7:]:
+            assert name in violation, name
+
+    def test_coverage_counts_allocation_localities_not_plan_entries(
+        self, payloads, known
+    ):
+        """The code-built origin entry is not an allocation locality, so a
+        complete plan reads N/N rather than being inflated to N+1/N."""
+        result = a_valid_advisory(known)
+        result.evacuation_plan.insert(
+            0,
+            EvacuationPriority(
+                locality_name="Sagar", priority_level="CRITICAL", reasoning="r"
+            ),
+        )
+        assert plan_coverage(result, payloads["allocation"])["label"] == (
+            f"{len(known)}/{len(known)}"
+        )
+        assert validate_advisory(result, payloads["allocation"], "Sagar") == []
+
+    def test_missing_priorities_are_not_invented_in_code(self, client, monkeypatch):
+        """The instruction is explicit: a priority is a judgement, so a
+        half-covered plan must fail, not be quietly padded by a guess."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+        seen: list[int] = []
+
+        def half_covers(surge, exposure, allocation, context="", corrections=""):
+            seen.append(1)
+            names = [r["node"] for r in allocation["allocation"]]
+            return a_valid_advisory(names[:5])
+
+        monkeypatch.setattr(main, "generate_advisory", half_covers)
+        response = client.post("/advisory?category=6&origin=kakdwip")
+        assert response.status_code == 502
+        violations = response.json()["detail"]["violations"]
+        # Counts are not hardcoded: the code-built origin entry covers Kakdwip,
+        # so the covered number is 6 of 11, not the 5 the stub emitted.
+        assert any("covers only" in v for v in violations), violations
+        assert any("Missing:" in v for v in violations), violations
+        # Both passes tried, and neither invented the missing priorities.
+        assert len(seen) == 2
+
+    def test_the_correction_pass_is_told_which_names_are_missing(
+        self, client, monkeypatch
+    ):
+        corrections_seen: list[str] = []
+
+        def half_then_full(surge, exposure, allocation, context="", corrections=""):
+            names = [r["node"] for r in allocation["allocation"]]
+            if not corrections:
+                return a_valid_advisory(names[:4])
+            corrections_seen.append(corrections)
+            return a_valid_advisory(names)
+
+        monkeypatch.setattr(main, "generate_advisory", half_then_full)
+        body = client.post("/advisory?category=6&origin=kakdwip").json()
+        assert body["validation"]["attempts"] == 2
+        # Kakdwip is not among them: the origin entry is code-built, so the
+        # model was never asked to supply it and must not be told it is missing.
+        missing = [r["node"] for r in main.allocation(6)["allocation"]][4:]
+        assert "Kakdwip" not in corrections_seen[0]
+        for name in missing:
+            if name == "Kakdwip":
+                continue
+            assert name in corrections_seen[0], name
+
+    def test_coverage_is_reported_in_the_response_metadata(self, client, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+        monkeypatch.setattr(
+            main,
+            "generate_advisory",
+            lambda surge, exposure, allocation, context="", corrections="": (
+                a_valid_advisory([r["node"] for r in allocation["allocation"]])
+            ),
+        )
+        total = len(main.allocation(6)["allocation"])
+        body = client.post("/advisory?category=6&origin=sagar").json()
+        assert body["validation"]["plan_coverage"] == f"{total}/{total}"
+
+    def test_coverage_is_among_the_stated_checks(self, client, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+        monkeypatch.setattr(
+            main,
+            "generate_advisory",
+            lambda surge, exposure, allocation, context="", corrections="": (
+                a_valid_advisory([r["node"] for r in allocation["allocation"]])
+            ),
+        )
+        checks = client.post("/advisory?category=6&origin=kakdwip").json()["validation"][
+            "checks"
+        ]
+        assert any("allocation locality appears in evacuation_plan" in c for c in checks)
+
+
+# --------------------------------------------------------------------------
+# Out-of-district localities must not reach the prompt
+# --------------------------------------------------------------------------
+
+
+class TestOutOfDistrictExcluded:
+    """§17/#24: Tamluk is in Purba Medinipur, not a 24 Parganas district."""
+
+    def test_the_prompt_never_names_an_out_of_district_place(self, payloads):
+        """The prompt is what the model writes from. A place that reaches here
+        can end up in a real person's SMS as a place to evacuate."""
+        prompt = build_prompt(
+            payloads["surge"], payloads["exposure"], payloads["allocation"]
+        )
+        assert "Tamluk" not in prompt
+
+    def test_the_prompt_names_exactly_the_allocation_localities(self, payloads):
+        prompt = build_prompt(
+            payloads["surge"], payloads["exposure"], payloads["allocation"]
+        )
+        listed = next(
+            line for line in prompt.splitlines() if line.startswith("LOCALITIES IN THIS")
+        )
+        assert "Tamluk" not in listed
+        assert "Kakdwip" in listed
+
+
+# --------------------------------------------------------------------------
 # Live calls — skipped without a key
 # --------------------------------------------------------------------------
 
@@ -602,9 +1051,7 @@ class TestLiveGemini:
     """The only tests that spend a request. One call, several assertions."""
 
     def test_generated_advisory_satisfies_every_rule(self, client):
-        response = client.post("/advisory?category=6&origin=kakdwip")
-        assert response.status_code == 200, response.text
-        body = response.json()
+        body = _advisory_body(client, "/advisory?category=6&origin=kakdwip")
         result = DistrictAdvisory(**body["advisory"])
 
         # The three rules the validator enforces, re-asserted at the boundary
@@ -626,7 +1073,7 @@ class TestLiveGemini:
         ), result.historical_context
 
     def test_sms_draft_is_short_enough_to_be_an_sms(self, client):
-        body = client.post("/advisory?category=6&origin=kakdwip").json()
+        body = _advisory_body(client, "/advisory?category=6&origin=kakdwip")
         draft = body["advisory"]["sms_dispatch_draft"]
         assert 0 < len(draft) < 160
         # 160 characters is two GSM-7 SMS segments. One is 160, so a draft that

@@ -225,7 +225,7 @@ class TestScoping:
         info = scoping()
         assert info["localities_excluded"] > 0
         assert "New Town" in info["excluded_names"]
-        assert "not the boundary" in info["disclosure"]
+        assert "not the district boundary" in info["disclosure"].lower()
 
     def test_localities_endpoint_carries_the_scoping(self, client):
         payload = client.get("/localities").json()
@@ -236,6 +236,79 @@ class TestScoping:
         ids = {loc["id"] for loc in client.get("/localities").json()["localities"]}
         for expected in ("kakdwip", "patharpratima", "namkhana", "gosaba", "sagar"):
             assert expected in ids, expected
+
+
+class TestDistrictScoping:
+    """Out-of-district places must not reach a real advisory.
+
+    `data/places.geojson` carries no `admin_level` tags and no boundary
+    geometry, so district membership is a decision this code makes and names,
+    not a fact it can look up. Tamluk is in Purba Medinipur; it survived the
+    old latitude-only scoping, reached `/allocation`, and was therefore in the
+    Gemini prompt as a place needing evacuation on 24 Parganas advice.
+    """
+
+    def test_tamluk_is_not_served(self, client):
+        ids = {loc["id"] for loc in client.get("/localities").json()["localities"]}
+        assert "tamluk" not in ids
+
+    def test_tamluk_is_not_in_the_allocation(self, client):
+        """The allocation is what the advisory is written from, so this is the
+        layer that actually mattered."""
+        for category in (0, 6):
+            nodes = {
+                row["node"] for row in client.get(f"/allocation?category={category}").json()["allocation"]
+            }
+            assert "Tamluk" not in nodes, category
+
+    def test_tamluk_is_not_routable(self, client):
+        assert client.get("/routes?category=6&origin=tamluk").status_code == 404
+
+    def test_the_denial_is_disclosed_with_the_real_district(self, client):
+        """Dropped silently it would read as a data gap; named, it is a
+        decision a human can check and reverse."""
+        scoping_info = client.get("/localities").json()["scoping"]
+        assert "Tamluk" in scoping_info["out_of_district_excluded"]
+        assert "Purba Medinipur" in scoping_info["out_of_district_excluded"]["Tamluk"]
+        assert "Tamluk" in scoping_info["excluded_names"]
+        assert "Purba Medinipur" in scoping_info["excluded_reasons"]["Tamluk"]
+
+    def test_every_deny_list_entry_exists_in_the_extract(self):
+        """A typo in a deny-list key fails open: the place is still served and
+        the list looks like it is working."""
+        from backend.locations import scoping as scoping_info
+
+        assert scoping_info()["deny_list_not_in_extract"] == []
+
+    def test_unresolved_border_localities_are_kept_not_dropped(self):
+        """The western boundary is genuinely undecidable from this data, and
+        dropping a real delta village on a hunch is the worse error. They are
+        kept, and the uncertainty is published rather than buried."""
+        from backend.locations import BORDER_CLUSTER, localities, scoping
+
+        names = {loc.name for loc in localities()}
+        assert set(BORDER_CLUSTER) <= names, "a border-cluster place was dropped"
+        info = scoping()
+        assert list(BORDER_CLUSTER) == info["unresolved_border_localities"]
+        assert "admin_level" in info["unresolved_border_note"]
+
+    def test_scope_all_still_shows_it(self):
+        """Deliberate: `?scope=all` is the raw extract, so an out-of-district
+        place is visible with its real coordinates rather than absent. The
+        advisory path never uses it."""
+        from backend.locations import all_localities
+
+        assert "Tamluk" in {loc.name for loc in all_localities()}
+
+    def test_the_latitude_cut_is_no_longer_the_whole_story(self):
+        """It is a coarse guard for the clipped Kolkata suburbs and says so; it
+        is not presented as the district boundary."""
+        from backend.locations import scoping as scoping_info
+
+        info = scoping_info()
+        assert info["study_area_districts"]
+        assert "not the district boundary" in info["disclosure"].lower()
+        assert "purba medinipur" in info["disclosure"].lower()
 
 
 class TestServiceContract:

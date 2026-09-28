@@ -118,6 +118,12 @@ the structured data given. Rules, non-negotiable:
    from the verified contacts pool below, and from nowhere else. Never
    invent or recall a number. If the pool does not contain a suitable number,
    omit the number entirely rather than supplying your own.
+9. You must include EVERY locality listed in the allocation data: one
+   evacuation_plan entry per locality in that list, no more and no fewer. A
+   locality you leave out is a place with people in it that this advisory
+   never tells anyone to leave. Do not merge two localities into one entry
+   and do not write "and surrounding areas" — one row, one locality name, the
+   exact string as given in the allocation list.
 
 """ + VERIFIED_HISTORICAL_POOL + \
 "\n\n" + VERIFIED_EMERGENCY_CONTACTS
@@ -194,6 +200,28 @@ def generate_advisory(
     return response.parsed
 
 
+def plan_coverage(advisory: DistrictAdvisory, allocation: dict) -> dict:
+    """How much of the allocation the plan actually names.
+
+    Counts ALLOCATION localities only. The code-built origin entry is not one of
+    them — Sagar has no allocation row — so a complete plan reads 12/12 rather
+    than being inflated to 13/12 by an entry the coverage rule never asked for.
+
+    One definition, shared by the validator and by the response metadata, so
+    the number a client is shown cannot drift from the number that was checked.
+    """
+    nodes = [row["node"] for row in allocation["allocation"]]
+    named = {item.locality_name for item in advisory.evacuation_plan}
+    covered = [node for node in nodes if node in named]
+    missing = [node for node in nodes if node not in named]
+    return {
+        "covered": len(covered),
+        "total": len(nodes),
+        "missing": missing,
+        "label": f"{len(covered)}/{len(nodes)}",
+    }
+
+
 def validate_advisory(
     advisory: DistrictAdvisory, allocation: dict, origin: str | None = None
 ) -> list[str]:
@@ -204,6 +232,14 @@ def validate_advisory(
     row, because the caller builds that entry in code from real routing data
     (see `main._ensure_origin_in_plan`). Without this exemption the origin
     guarantee and the invented-locality check would cancel each other out.
+
+    Coverage is checked in the other direction too: a plan that names only some
+    of the allocation's localities leaves the rest with no priority at all, and
+    in a real advisory that is a place with people in it going unmentioned. The
+    missing names go into the violation string verbatim, because that string is
+    what the correction pass feeds back to the model. Priorities for them are
+    NOT invented in code — a level is a judgement, and the only party that can
+    make one honestly is the model, re-asked.
     """
     violations = []
     if len(advisory.sms_dispatch_draft) >= 160:
@@ -216,6 +252,13 @@ def validate_advisory(
     for item in advisory.evacuation_plan:
         if item.locality_name not in known:
             violations.append(f"locality '{item.locality_name}' not in allocation data")
+    coverage = plan_coverage(advisory, allocation)
+    if coverage["missing"]:
+        violations.append(
+            f"evacuation_plan covers only {coverage['label']} of the allocation "
+            f"localities; it must name all of them. Missing: "
+            f"{', '.join(coverage['missing'])}"
+        )
     if allocation["shelter_status"]["is_demo_data"]:
         joined = (advisory.executive_summary + advisory.sms_dispatch_draft).lower()
         if not any(w in joined for w in ("provisional", "placeholder", "not surveyed")):
