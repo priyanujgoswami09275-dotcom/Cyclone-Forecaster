@@ -287,3 +287,15 @@ def allocate_shelters(pop_per_block, shelter_capacity, distance_matrix):
     res = linprog(c, A_eq=A_eq, b_eq=b_eq, A_ub=A_ub, b_ub=b_ub, bounds=(0, None))
     return res.x.reshape(n_blocks, n_shelters)
 ```
+
+## Agent skills
+
+### Issue tracker
+
+Local markdown: issues and specs live as files under `.scratch/`. See
+`docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See
+`docs/agents/domain.md`.
