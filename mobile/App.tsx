@@ -8,6 +8,7 @@ import {
 import { RobotoSlab_700Bold } from '@expo-google-fonts/roboto-slab';
 
 import { theme } from './theme';
+import { MapScreen } from './components/MapScreen';
 
 /**
  * App root. Owns exactly one responsibility for the design system: the font
@@ -15,8 +16,9 @@ import { theme } from './theme';
  * families named in `theme.fonts` have resolved — otherwise the first paint
  * falls back to the system font and every later frame re-lays-out.
  *
- * The real map screen replaces the placeholder below (Task.md, Module E).
- * This is not a screen; it is the themed shell those screens mount into.
+ * Stage 2 (the map screen) mounted here on 2026-09-28. It is the first of
+ * the app's two screens; the advisory modal is the second and opens from the
+ * "Generate Advisory" button, which Stage 3 wires to `POST /advisory`.
  */
 export default function App() {
   const [fontsLoaded, fontError] = useFonts({
@@ -45,11 +47,7 @@ export default function App() {
     );
   }
 
-  return (
-    <View style={styles.container}>
-      <Text style={styles.heading}>Cyclone Impact Forecaster</Text>
-    </View>
-  );
+  return <MapScreen />;
 }
 
 const styles = StyleSheet.create({
@@ -58,11 +56,6 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.background,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  heading: {
-    fontFamily: theme.fonts.heading,
-    color: theme.colors.text,
-    // fontSize: omitted on purpose — see MEMORY.md "Flagged for review".
   },
   errorText: {
     color: theme.colors.danger,

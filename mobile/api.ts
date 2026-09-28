@@ -300,10 +300,23 @@ export interface SurgeZoneResponse extends CategoryHeader {
 }
 
 /**
- * One exposed asset. The backend emits `LineString` geometry for ALL THREE
- * asset classes — hospitals and substations included — because they come
- * from the same OSM extract. A marker therefore has to take
- * `coordinates[0]`; there is no `Point` geometry anywhere in this payload.
+ * One exposed asset.
+ *
+ * The geometry type is **mixed**, and this type was wrong about that until
+ * 2026-09-28. It previously claimed every asset was a `LineString` on the
+ * reasoning that all three groups come from the same OSM extract, and told
+ * callers to take `coordinates[0]`. That silently renders a hospital marker
+ * at `[lon, lat]`'s *lon* value as if it were a coordinate pair.
+ *
+ * The backend passes each source geometry through untouched
+ * (`_record()` in `backend/simulation/exposure.py` emits
+ * `geometry.__geo_interface__` verbatim), and OSM tags a hospital as a node
+ * (`Point`) far more often than a footprint. Measured on the live payload at
+ * category 6: 6 `Point` and 28 `LineString` across hospitals + substations.
+ * At category 5 all 15 are `LineString`, so the mix is category-dependent
+ * and cannot be special-cased.
+ *
+ * Use `markerCoordinate()` below rather than indexing into this by hand.
  */
 export interface InfraFeature {
   type: 'Feature';
@@ -314,19 +327,120 @@ export interface InfraFeature {
     power?: string;
     highway?: string;
   };
-  geometry: { type: 'LineString'; coordinates: number[][] };
+  geometry:
+    | { type: 'Point'; coordinates: number[] }
+    | { type: 'LineString'; coordinates: number[][] }
+    | { type: 'Polygon'; coordinates: number[][][] }
+    | { type: 'MultiPolygon'; coordinates: number[][][][] };
 }
 
-export interface InfraGroup {
+/**
+ * One [lon, lat] to hang a `<Marker>` on, whatever shape the asset arrived
+ * in. Returns null for an empty or unrecognised geometry, because a marker
+ * with a NaN coordinate renders off-screen and looks like a missing asset.
+ */
+export function markerCoordinate(feature: InfraFeature): number[] | null {
+  const g = feature.geometry;
+  switch (g.type) {
+    case 'Point':
+      return g.coordinates.length >= 2 ? g.coordinates : null;
+    case 'LineString':
+      return g.coordinates[0] ?? null;
+    case 'Polygon':
+      return g.coordinates[0]?.[0] ?? null;
+    case 'MultiPolygon':
+      return g.coordinates[0]?.[0]?.[0] ?? null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * A GeoJSON `[lon, lat]` pair as the `{latitude, longitude}` object
+ * `react-native-maps` wants.
+ *
+ * The two conventions are transposed, and getting it wrong does not throw —
+ * it puts a marker in the Bay of Bengal or off the coast of Bangladesh, at
+ * roughly the right distance from the right place. At 22°N the whole study
+ * area is about 1.4° wide, so a swap is a ~150 km error, not a subtle one,
+ * but it is silent either way. Every conversion from the wire to the map goes
+ * through here.
+ *
+ * Returns null for a short or non-finite pair so the caller can skip the
+ * feature rather than hand the native view a NaN, which renders off-screen
+ * and reads as a missing asset.
+ */
+export function toLatLng(pair: number[] | null | undefined): LatLng | null {
+  if (!Array.isArray(pair) || pair.length < 2) return null;
+  const [longitude, latitude] = pair;
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return null;
+  return { latitude, longitude };
+}
+
+/** A whole `LineString` converted, dropping any unusable vertex. */
+export function toLatLngList(coordinates: number[][]): LatLng[] {
+  return coordinates
+    .map(toLatLng)
+    .filter((p): p is LatLng => p !== null);
+}
+
+/**
+ * The `{latitude, longitude}` shape, declared locally so `api.ts` keeps its
+ * "imports nothing from react-native-maps" rule. That rule is worth keeping:
+ * it is what lets this module be tested in plain Node, and it is why the
+ * conversions above return a structural type rather than the library's own.
+ */
+export interface LatLng {
+  latitude: number;
+  longitude: number;
+}
+
+export interface InfraGroup<F = InfraFeature> {
   count: number;
-  features: InfraFeature[];
+  features: F[];
+}
+
+/**
+ * A cut-off road.
+ *
+ * Typed separately from `InfraFeature` because the backend really does
+ * constrain it: `backend/simulation/exposure.py::_load_line_layer` accepts
+ * only `LineString` and `MultiLineString` for the roads layer, so no road can
+ * arrive as a `Point`. The point assets get the wide mixed type because the
+ * same loader deliberately admits `Point`/`LineString`/`Polygon`/
+ * `MultiPolygon` for them — hospitals and substations are nodes in OSM far
+ * more often than footprints.
+ */
+export interface RoadFeature {
+  type: 'Feature';
+  properties: { name: string; status: string; highway?: string };
+  geometry:
+    | { type: 'LineString'; coordinates: number[][] }
+    | { type: 'MultiLineString'; coordinates: number[][][] };
+}
+
+/**
+ * One road as the list of polylines needed to draw it.
+ *
+ * A `MultiLineString` is several disjoint paths, and a `<Polyline>` draws
+ * exactly one, so a road that arrives multi-part needs several elements.
+ * Returning a list (rather than flattening, which would draw a spurious
+ * segment between the parts) keeps the shape honest. Long roads that share
+ * endpoints are common, so some overlap is expected and harmless.
+ */
+export function roadPaths(feature: RoadFeature): LatLng[][] {
+  const raw =
+    feature.geometry.type === 'LineString'
+      ? [feature.geometry.coordinates]
+      : feature.geometry.coordinates;
+  return raw.map(toLatLngList).filter((path) => path.length >= 2);
 }
 
 export interface ExposureResponse extends CategoryHeader {
   final_land_area_km2: number;
   hospitals: InfraGroup;
   substations: InfraGroup;
-  roads_cut_off: InfraGroup;
+  roads_cut_off: InfraGroup<RoadFeature>;
   definitions: Record<string, string>;
   is_estimate: boolean;
 }
@@ -415,6 +529,139 @@ export interface AdvisoryResponse {
     /** HTTP calls made, including retried 503s. Explains a slow response. */
     gemini_calls: number;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Display overlays
+// ---------------------------------------------------------------------------
+
+/**
+ * The four numbers `<Overlay>` needs to place an image on the map.
+ *
+ * These are the **DEM's** bounds, not the flood's. The overlay is deliberately
+ * larger than its content so the map can place it without knowing how far
+ * the water reaches — cropping to the flood would also make the image change
+ * size between intensities.
+ */
+export interface OverlayBounds {
+  west: number;
+  south: number;
+  east: number;
+  north: number;
+}
+
+export interface OverlayDepthClass {
+  /** Upper bound in metres; null for the open-ended deepest class. */
+  upper: number | null;
+  alpha: number;
+}
+
+/**
+ * One pre-rendered flood raster. **Display only** — see the field docs on
+ * `final_land_area_km2` and the `disclosure` string, which every entry
+ * carries and which the UI is expected to surface.
+ */
+export interface OverlayEntry {
+  /** "cat0".."cat6", or "remal_observed" for the case-study anchor. */
+  id: string;
+  label: string;
+  wind_kmph: number;
+  surge_m: number;
+  imd_category: string;
+  /** Filename within the overlay directory. */
+  image: string;
+  /** Server-relative path, e.g. "/overlays/flood_cat6.png". */
+  image_url: string;
+  bounds: OverlayBounds;
+  width_px: number;
+  height_px: number;
+  png_bytes: number;
+  flooded_pixels: number;
+  flooded_fraction_of_raster: number;
+  /**
+   * The **model's** figure for land flooded, at this exact wind. This is the
+   * number to show. It is not derivable from the image — measure the picture
+   * and you get something else, because the raster is downsampled to ~150 m
+   * and hard-quantised into four depth classes.
+   */
+  final_land_area_km2: number;
+  /** What the polygon path would actually draw; lower than the above. */
+  drawn_area_km2: number;
+  depth_classes_m: OverlayDepthClass[];
+  is_display_raster: true;
+  disclosure: string;
+}
+
+export interface OverlaysResponse {
+  generated_by: string | null;
+  target_width_px: number;
+  surge_method: string;
+  anchor: { wind_kmph: number; surge_m: number };
+  limitation: string;
+  is_display_raster: true;
+  disclosure: string;
+  count: number;
+  overlays: OverlayEntry[];
+}
+
+/**
+ * The flood rasters. `/surge-zone` exists and is unchanged, but the map does
+ * not use it: at category 6 that payload is 532 polygons, 40,698 rings and
+ * **180,038 vertices — 7.0 MB raw, 936 KB gzipped**. `react-native-maps`
+ * stutters drawing that, and re-fetching it per slider step is a connection
+ * problem before it is a rendering one. The equivalent PNG is 126,552 bytes
+ * and is placed by the map engine as a texture sample, not parsed at all.
+ *
+ * Consequence worth keeping straight: this is a display shortcut, not a
+ * change to the model. `/exposure`, `/routes` and `/allocation` still use the
+ * full-resolution mask and are unaffected by these images.
+ */
+export function getOverlays(): Promise<OverlaysResponse> {
+  return request<OverlaysResponse>('/overlays', { method: 'GET' }, READ_TIMEOUT_MS);
+}
+
+/**
+ * Absolute URL for an overlay PNG, or null when `EXPO_PUBLIC_API_URL` is
+ * unset.
+ *
+ * `image_url` comes back server-relative, and `<Overlay>` needs something it
+ * can fetch — a relative path would resolve against the Metro bundler's own
+ * origin and 404. Returns null rather than a broken string so the caller can
+ * show the config error instead of a silently blank map.
+ */
+export function overlayImageUrl(entry: OverlayEntry): string | null {
+  if (!API_BASE_URL) return null;
+  return `${API_BASE_URL}${entry.image_url}`;
+}
+
+/**
+ * The IMD band whose representative wind is closest to `wind_kmph`.
+ *
+ * The seven bands are a classification scheme, not seven events, and no
+ * band's midpoint is the wind the case study actually made landfall at — so
+ * the Remal preset has to borrow a band for every API-driven figure
+ * (exposure, advisory). This returns the nearest one; the caller is
+ * responsible for saying so, because the borrowed band's numbers are not the
+ * preset's numbers.
+ *
+ * Returns the `category` field, not the array index — they are equal for the
+ * `/categories` response today, but only one of them is the value
+ * `/exposure?category=` actually takes.
+ */
+export function nearestCategory(
+  categories: { category: number; wind_kmph: number }[],
+  windKmph: number,
+): number {
+  let best = categories.length ? categories[0].category : 0;
+  let bestDelta = Number.POSITIVE_INFINITY;
+  for (const c of categories) {
+    const delta = Math.abs(c.wind_kmph - windKmph);
+    if (delta < bestDelta) {
+      bestDelta = delta;
+      best = c.category;
+    }
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -619,11 +866,17 @@ export function postAdvisory(
  * (see the `FloodGeometry` union). Rather than make the map screen handle
  * all three, it asks for polygons and gets polygons.
  *
- * Note the empty-collection cases are meaningful, not an error: categories
- * 0-5 currently return NO geometry at all, because the trained surge model
- * cannot resolve below ~115 kmph and those bands return 0 m of surge. An
- * empty array means "nothing floods at this intensity", and the map should
- * say so rather than treat it as a failure.
+ * **The map screen does not use this.** Stage 2 draws the flood from the
+ * pre-rendered PNG in `data/overlays/` via `<Overlay>`, because the polygon
+ * payload is 7.0 MB / 180k vertices at category 6. These normalisers and the
+ * `decimate*` helpers below are kept because they are correct and because
+ * `/surge-zone` is still the right answer for any non-display consumer — but
+ * nothing on the slider path should call them.
+ *
+ * An empty array is meaningful rather than an error: it means nothing floods
+ * at this intensity. Categories 0-3 return no geometry at all because their
+ * surge is under the DEM's 1 m vertical resolution (each carries a `note`
+ * saying so), and the Remal anchor at 1.2 m sits just above that floor.
  */
 export function floodPolygons(geometry: FloodGeometry | null | undefined): number[][][][] {
   if (!geometry) return [];

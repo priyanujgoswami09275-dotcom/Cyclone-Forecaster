@@ -62,7 +62,7 @@ step" before starting any work.
 |---|---|---|
 | A. Data pipeline & surge ML model | Done | All 6 deliverables. DEM resolved (real GEE SRTM, tagged + committed). Stretch item (more RSMC points) still open. |
 | B. Simulation engine (flood propagation, routing, shelter allocation) | In progress | Engine complete and tested on real data. Only the shelter *dataset* is missing — no real locations/capacities exist to use (see blockers). |
-| C. Backend / API (FastAPI) | Done | `backend/main.py` + `backend/locations.py`. All contract endpoints live and curl-verified. `/advisory` is live (Module D below). |
+| C. Backend / API (FastAPI) | Done | `backend/main.py` + `backend/locations.py`. All contract endpoints live and curl-verified. `/advisory` is live (Module D below). **Display overlay layer added 2026-09-28** — `backend/tools/render_overlays.py` + `data/overlays/` + `GET /overlays`; display-only, §32. |
 | D. AI advisory layer (Gemini) | Done | `backend/ai/advisory.py` + the `POST /advisory` handler. Schema, prompt, call, an honesty validator, district-scoped localities, a capacity-retry wrapper, and `load_dotenv()` key loading. 70 tests. **Three live advisories produced**; all three rounds of defects are now closed (§20–§25). Two operational notes, not code gaps: the free tier is 20 calls/day (§26) and eight border-cluster localities still need a boundary dataset (§24). |
 | E. Mobile app (Expo / React Native) | In progress | Design system landed 2026-09-27 (`theme.ts`, fonts, font gate, 5 themed primitives); `theme.typography` added 2026-09-28. **API client `mobile/api.ts` landed 2026-09-28** — types mirrored off a running backend, 120 s advisory timeout, error taxonomy, GeoJSON normalisers. No screen yet — see "Module E: what is themed vs. unstyled" below. |
 | F. Deployment | In progress | `render.yaml` + pinned `requirements.txt` landed 2026-09-28 (Stage 0). **Blocked on a plan decision** — the backend does not fit 512 MB; see "Known issues / blockers". |
@@ -96,13 +96,30 @@ step" before starting any work.
   variable, so exported/CI/Render environments still win.
 - `tests/test_module_d.py` — 74 tests. 71 run with Gemini stubbed and need no
   key; **3 live tests are opt-in and skip unless `RUN_LIVE_TESTS=1`**, so a
-  populated `.env` no longer implies a quota spend. Suite is **197 passing,
+  populated `.env` no longer implies a quota spend. Suite is **236 passing,
   3 skipped**. To spend quota deliberately:
   `RUN_LIVE_TESTS=1 venv/bin/pytest tests/test_module_d.py` — budget 3 live
   calls per full run of that file, against a free tier of 20/day (§26).
 - `backend/locations.py` — locality list (id / name / coords / search radius),
   the building-centroid loader with a numpy bbox pre-filter, and the
   study-area scoping. Owns the origin→coordinate mapping `/routes` needs.
+- `backend/tools/render_overlays.py` + `data/overlays/` — **the display
+  overlay layer (§32).** `render_overlays` runs the real flood engine once
+  per intensity and writes `flood_cat0..6.png` + `flood_remal_observed.png`
+  (all 1000×930, transparent) plus `overlays.json` carrying each image's
+  geographic bounds, the modelled `final_land_area_km2`, the depth classes
+  and the disclosure text. Sizes: cat0–3 4,983 B each (no inundation at all
+  at these intensities), cat4 26,588 B, remal 25,146 B, cat5 89,721 B,
+  cat6 126,552 B — **287,939 B total**. Rebuild:
+  `venv/bin/python -m backend.tools.render_overlays` (~40 s).
+  Served two ways: a `StaticFiles` mount at `/overlays` (so the app can point
+  `<Overlay>` straight at a URL) and `GET /overlays`, which returns the index
+  with absolute `image_url`s and 503s with a "run the renderer" message if
+  the PNGs are missing. **Display-only** — see §32.
+- `tests/test_overlays.py` — 26 tests. Checks the committed PNGs as actual
+  images (a stdlib decoder asserting chunk CRCs and filter-0 rows), the
+  encoder round-trip, the depth-class boundaries, the honesty disclosure,
+  and the display-only contract.
 - `data/places.geojson` — 2,362 real OSM place nodes (14 city, 12 town,
   47 village, 2,289 suburb). Source for locality names and coordinates.
 - `data/buildings.csv.gz` — 660,893 real OSM building centroids, 4.8 MB
@@ -114,7 +131,7 @@ step" before starting any work.
 - `tests/test_module_c.py` — 46 tests on the API layer: 422 validation,
   honesty metadata present *and correct*, `/routes`↔`/allocation` agreement,
   district scoping (Tamluk denied, border cluster retained), and
-  no-network-calls-from-a-handler. **192 tests pass in total** (3 skipped).
+  no-network-calls-from-a-handler. **236 tests pass in total** (3 skipped).
 - `data/dem.tif` — **real SRTM**, USGS/SRTMGL1_003 via Google Earth Engine
   (`getDownloadURL`, crs=EPSG:4326, scale=50), 2898×3117 px, ~46×50 m cells.
   Provenance stamped into the raster's own GeoTIFF tags by
@@ -164,10 +181,11 @@ step" before starting any work.
 - `data/roads.geojson` — 3712 real OSM ways (arterials)
 - `data/surge_model.pkl` — joblib dict {model, features, loo_mae}; LOOCV MAE = 2.36 m
 - `backend/data_pipeline/` — fetch_ibtracs.py, fetch_osm_infra.py (now takes dataset names as argv), fetch_dem.py, tag_dem.py, train_surge_model.py
-- `tests/` — **197 passing, 3 skipped** (was 119): test_module_d.py (74, new —
+- `tests/` — **236 passing, 3 skipped** (was 119): test_module_d.py (74, new —
   3 skip without `GEMINI_API_KEY`), test_module_c.py (46),
-  test_flood.py (21), test_dem_and_surge.py (30), test_module_b.py (22), plus
-  Module A's 9. Run `venv/bin/pytest tests/`. No network access needed.
+  test_overlays.py (26, new), test_flood.py (21), test_dem_and_surge.py (30),
+  test_module_b.py (22), plus Module A's 9. Run `venv/bin/pytest tests/`.
+  No network access needed.
 - `venv/` + `requirements.txt` (now includes rasterio, shapely, scipy, networkx,
   osmnx, fastapi, uvicorn, httpx, google-genai 2.25.0); AGENTS.md & GEMINI.md
   symlinked to CLAUDE.md
@@ -572,6 +590,62 @@ not visually verified**.
      Remal anchor at 115 kmph / 1.2 m. That is now the expected answer
      against an integer-valued DEM, not a failed request, and the map must
      read it as "nothing floods at this intensity".
+
+- **The 7.0 MB payload is now bypassed for display, not for computation
+  (2026-09-28).** The open payload problem above was a *phone* problem, and
+  the overlay layer answers it without touching the geometry. The two are
+  worth separating clearly, because conflating them is how the overlay
+  starts leaking into the numbers:
+
+  `/surge-zone` still returns 180,038 vertices at category 6. Nothing was
+  simplified, and `SIMPLIFY_TOL_DEG` is still 0.0015. The map does not use
+  it any more — the flood is drawn as a 1000 px raster carrying its own
+  bounds, which is 126 KB at cat 6 against 936 KB gzipped, and is drawn as
+  a texture sample rather than 180k vector vertices.
+
+  So the wire problem for the app is solved and the geometry problem for
+  anyone else consuming `/surge-zone` is not. If that endpoint is still
+  meant to be public-facing, the `SIMPLIFY_TOL_DEG` decision is still owed
+  and is now the *only* remaining reason to reopen it.
+
+- **§32 — the display overlay layer, and what it must never become
+  (2026-09-28).** `backend/tools/render_overlays.py` writes one transparent
+  PNG per intensity (cats 0–6 plus the Remal anchor) plus
+  `data/overlays/overlays.json`. The index carries each image's geographic
+  bounds, the modelled `final_land_area_km2`, the depth-class table and the
+  disclosure text. Served at `/overlays` (StaticFiles) and `GET /overlays`.
+
+  **The single rule: it is a picture, and nothing may read numbers off it.**
+  Three tests hold that line. `/exposure`, `/routes` and `/allocation` must
+  be byte-identical with and without the PNGs — verified empirically on
+  2026-09-28, not just asserted: six responses captured before the change,
+  server restarted, re-fetched, `cmp` reported all six IDENTICAL. And no
+  file under `backend/simulation/` may contain the string "overlay" at all,
+  which is a crude but effective tripwire against the raster quietly
+  entering the computation path.
+
+  Three limits, all stated in the index and in every entry, because the app
+  will show this on a phone and a viewer will not read a source file:
+
+  1. **Downsampled to ~150 m/px** (1000 px across the ~150 km bbox) — coarser
+     than both the 30 m DEM and the ~170 m polygon simplification tolerance.
+     It cannot represent the sub-pixel fragments `MIN_PART_KM2` drops.
+     Nearest-neighbour subsampling is deliberate: a mean turns a 3-cell
+     inlet into a 0.33-alpha smudge that effectively vanishes, and an
+     over-approximated water's edge is the recoverable direction to err in.
+  2. **Alpha is 4 depth classes, not a continuous ramp.** Defensible —
+     SRTM stores whole metres, so depths within a class are genuinely the
+     same measurement — but it is a *cartographic* encoding, and the app
+     must label the drawn area as a display raster rather than presenting
+     it as a measured field.
+  3. **The deepest class is unreachable below category 6.** At cat 5
+     (3.415 m surge) depth past 3.0 m needs ground below 0.415 m, and the
+     only integer-metre cells that low are ocean, which is excluded. This
+     looks like a missing depth band and is not one; the test that pins it
+     is `test_the_deepest_class_appears_where_the_depth_physically_allows_it`.
+
+  `final_land_area_km2` travels in the index precisely so the app can show
+  the model's own number and never measures area off the picture.
 
 ## Flagged for review
 
@@ -1068,43 +1142,44 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
 
 ## Next step
 
-**Stage 2 (the map screen) is now unblocked and ready to build.** The three
-native modules are installed (`086efe1`), so `tsc` covers the map code. The
-payload is gzipped 7.6× (`d234e81`), which buys transfer time but does not
-reduce the 112,655 vertices the map still has to draw.
+**Stage 2 (the map screen) is next, and the overlay layer has just answered
+its hardest question.** The three native modules are installed (`086efe1`), so
+`tsc` covers the map code. The screen no longer needs `/surge-zone` at all:
+the flood is drawn as a `<Overlay>` from the committed PNG plus its bounds in
+`overlays.json`, which is exactly the shape `react-native-maps` wants and
+removes 7.0 MB from the slider's critical path. `decimatePolygon` in `api.ts`
+is now unused by the map — leave it, it still serves the advisory path.
 
 Everything for Stage 2 is already derived: initial region hardcoded to Sagar
-Island, intensity slider over categories 0-6 firing `/surge-zone` and
-`/exposure` on `onSlidingComplete` only, final flood frame first,
-hospitals/substations as Markers (their geometry is `LineString`, so a marker
-takes `coordinates[0]` — there is no `Point` in the payload), `roads_cut_off`
-as a red `Polyline`, localities from `/localities` defaulting to `sagar`,
-counts via the existing `ExposureRow`, and `decimatePolygon` from `api.ts` to
-bound the vertex count.
+Island, intensity slider over categories read from `/categories` (not
+hardcoded) firing on `onSlidingComplete` only, hospitals/substations as
+Markers (their geometry is `LineString`, so a marker takes `coordinates[0]` —
+there is no `Point` in the payload), `roads_cut_off` as a red `Polyline`,
+localities from `/localities` defaulting to `sagar`, counts via the existing
+`ExposureRow`.
 
-**The slider needs a design decision before the screen is honest, though.**
-All seven positions now draw an empty map: cats 0–4 produce less surge than
-the DEM's 1 m vertical floor, and cats 5–6 flood land but shatter into
-sub-0.5 km² fragments so `drawn_area_km2` is 0. The screen should say *why* —
-"below the surge model's resolution" is a different message from "nothing to
-evacuate here", and the difference is the whole credibility of the demo.
-Recommend the empty state name the cause and cite `surge.method` +
-`surge.anchor_surge_m` rather than implying safety. (`surge.loo_mae_m` is the
-field this used to suggest; it is gone, and there is no error bar to quote,
-because there is no fit.)
+**One design decision the screen still owes before it is honest.** The empty
+state is not one state. Cats 0–4 produce less surge than the DEM's 1 m
+vertical floor, so they flood nothing at all; cats 5–6 flood land. "Below the
+surge model's resolution" is a different message from "nothing to evacuate
+here", and the difference is the whole credibility of the demo. Name the cause
+and cite `surge.method` + `surge.anchor_surge_m` rather than implying safety.
+(`surge.loo_mae_m` is gone — there is no error bar to quote, because the
+anchored scaling has no fit.)
 
 **Three decisions are owed, none of which is code I should decide:**
 
-1. **The `SIMPLIFY_TOL_DEG` call — live again, because §31 is resolved.**
-   It was briefly moot: under the broken bands every payload was under 1 KB,
+1. **The `SIMPLIFY_TOL_DEG` call — now narrowed, because §32 exists.** It
+   was briefly moot: under the broken bands every payload was under 1 KB,
    but only because the flood drew nothing. With cats 5 and 6 exposing real
-   geometry again, **cat 6 is 936 KB gzipped and cat 5 is 513 KB**, so the
-   vertex/render problem is back. Gzip cut the wire cost; the *render* cost
-   is untouched, and 112,655 vertices will not draw smoothly on a phone.
-   Raising the server-side tolerance to ~0.005–0.01° is still the real fix,
-   and it trades drawn detail against payload. Note this decision is now
+   geometry again, **cat 6 is 936 KB gzipped and cat 5 is 513 KB**. The
+   overlay layer solved this *for the app* — the map never fetches the
+   geometry — but `/surge-zone` itself is unchanged, so the vertex problem
+   is still there for any other consumer. If nothing else consumes it, this
+   is now a low-priority cleanup rather than a phone blocker. Note it is
    entangled with the 827 MB deploy decision below: the categories that are
-   expensive to render are the same ones that are expensive to hold in memory.
+   expensive to render are the same ones that are expensive to hold in
+   memory.
 2. **The 827 MB deploy decision.** `starter` is 512 MB like free and would not
    help; **standard (2 GB, ~$25/mo)** is the first tier that fits, and the
    *preferred* fix is precomputing all seven categories offline, which would
@@ -1120,12 +1195,16 @@ because there is no fit.)
    table today, so nothing in them is wrong about the bands, but if a band
    table is added it must be the km/h column, not the knots one.
 
-**The live `POST /advisory` capture is still outstanding.** The single allowed
-attempt returned **HTTP 503** (3 attempts, 2 s + 4 s backoff, 42 s wall clock).
-Not retried. The free tier resets at midnight Pacific, so the next attempt
-has to be made by hand after the reset — and `data/cached_advisory_cat6_sagar.json`
-is currently absent by design, because the only body it ever held was that
-error. Stage 4's fallback cannot be built until a real advisory is captured.
+**The live `POST /advisory` capture is still outstanding — this is now the
+fourth 503.** A fresh single attempt on 2026-09-28 (item 0 of the overlay
+round) returned **HTTP 503** on all 3 attempts over 6 s: Gemini 3.8 Flash at
+capacity. Not retried, and `data/cached_advisory_cat6_sagar.json` is
+correctly **absent** — the one-attempt rule is to report and save nothing on
+error, and that is what happened. Three separate sessions have now drawn the
+same result, so this is a capacity pattern, not bad luck. The free tier
+resets at midnight Pacific and allows 20 calls/day, so the next attempt has
+to be made by hand after the reset. Stage 4's fallback cannot be built until
+a real advisory is captured.
 
 
 **The mobile advisory flow does not exist yet — that is now the top item.**
@@ -1209,6 +1288,74 @@ any demo, record a backup capture.
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-28 — Claude Code: display overlay layer (§32) + a third 503 on the live capture
+
+**Item 0 — the live advisory capture failed again, as it has twice now.**
+`POST /advisory?category=6&origin=sagar` returned **HTTP 503**: Gemini
+3.8 Flash was unavailable on all 3 attempts over 6 s. Per the one-attempt
+rule, **nothing was saved** — `data/cached_advisory_cat6_sagar.json` does
+not exist and should not. Three separate sessions have now hit this. It is
+capacity, not a fault in the service, and the handler already says so with a
+retry hint. The free tier is 20 calls/day (§26), so retrying blindly burns
+quota for the same answer; the capture is worth one deliberate attempt when
+someone is actually watching for it.
+
+**Item 1 — the overlay layer, and why it exists.** The trigger was a
+measurement, not a hunch: `/surge-zone` at category 6 is 532 polygons,
+40,698 rings and 180,038 vertices — **7.0 MB raw, 936 KB gzipped**. That
+cannot back a slider on a phone for two independent reasons: `MapView`
+stutters drawing 180k vector vertices, and re-fetching 7 MB per slider step
+is a connection problem before it is ever a rendering one.
+
+`backend/tools/render_overlays.py` runs the real flood engine once per
+intensity and writes a 1000 px transparent PNG with alpha by depth class,
+plus `overlays.json` with per-image bounds. Committed: 287,939 B of PNG for
+all eight. Cat 6's 126 KB replaces 936 KB gzipped, and it is drawn as a
+texture sample rather than parsed as geometry.
+
+  - **No new dependency.** The PNG is encoded with stdlib `zlib` + `struct`
+    (8-bit RGBA, filter-0 rows). Pillow is not installed and adding it for an
+    offline build step is not a trade worth making. The test suite carries a
+    matching decoder, so the committed files are checked as images — chunk
+    CRCs, filter bytes, real pixel values — rather than trusted as files.
+  - **Nearest-neighbour, not mean, subsampling.** A mean over a boolean mask
+    turns a 3-cell-wide inlet into a 0.33-alpha smudge that effectively
+    vanishes, and the inlet is exactly what a flood map exists to show. The
+    cost is overstating the water's edge by up to one output pixel (~150 m),
+    which is the recoverable direction to err in.
+  - **The raw mask is rebuilt inside the renderer** rather than reused from
+    the polygonised geometry, because the raster's whole value is showing
+    the *unfiltered* extent, including the sub-`MIN_PART_KM2` fragments.
+  - **Bounds are the DEM bbox, not the flood's.** An overlay larger than its
+    content is what lets the map place it without knowing the extent; cropping
+    to the flood would also make the image change size between categories.
+
+**The display-only claim was verified, not asserted.** Six responses
+(`/exposure`, `/routes`, `/allocation` at cats 5 and 6) captured before the
+change, server restarted, re-fetched, `cmp` — all six IDENTICAL. Backed by
+three tests: byte-comparable payloads, a grep tripwire that no file under
+`backend/simulation/` may contain the string "overlay", and an index that
+carries the modelled `final_land_area_km2` next to the image so a client can
+show the model's number and never measures area off the picture.
+
+**A test I wrote was wrong, and the fix is the interesting part.**
+`test_the_high_categories_use_every_depth_class` demanded all four depth
+classes from cat 5 and got three. My first instinct was to loosen the
+assertion; the actual reason is that it is impossible, and the renderer is
+right. The overlay draws land, SRTM is integer-valued in metres, so the
+deepest drawable land is the 1 m contour and cat 5's 3.415 m surge reaches
+2.415 m — inside the 1.5–3.0 m class. Getting past 3.0 m needs ground below
+0.415 m, and the only integer-metre cells that low are ocean, which is
+excluded because the basemap already draws it. "Fixing" the renderer to
+satisfy the test would have meant drawing the sea. The test now asserts all
+four for cat 6 (4.472 m → 3.472 m, clears it) and exactly three for cat 5,
+with the derivation in the docstring. It is a narrower claim, and a true one.
+
+**Item 0's rule about error paths also held:** 503 → report, save nothing.
+
+Suite after: **236 passed, 3 skipped** (the 3 are the opt-in live Gemini
+tests). `tests/test_overlays.py` is 26 of those. Committed as `bb618b1`.
 
 ### 2026-09-28 — Claude Code: the category unit bug (knots read as km/h) — §31 resolved
 

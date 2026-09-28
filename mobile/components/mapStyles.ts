@@ -36,3 +36,53 @@ export const compromisedRoadStyle = {
  * See MEMORY.md "Flagged for review".
  */
 export const compromisedRoadDashPattern = [6, 4];
+
+/**
+ * Pin colours for the two point-asset classes.
+ *
+ * Design.md assigns `danger` to "compromised roads, CRITICAL priority chip"
+ * and `safe` to "shelter markers". Hospitals and substations are neither, and
+ * the tokens are deliberately not stretched to cover them: both are drawn
+ * `danger` here because both are *submerged*, which is the same severity as a
+ * cut-off road, and the class is distinguished by the callout text and by
+ * `caution` on substations rather than by inventing a new colour. Worth a
+ * human look — see MEMORY.md "Flagged for review".
+ */
+export const assetPinColours = {
+  hospital: theme.colors.danger,
+  substation: theme.colors.caution,
+} as const;
+
+/**
+ * The one constant the flood `<Overlay>` needs and Design.md does not
+ * specify.
+ *
+ * The raster is a single north-up image. `<Overlay>` takes a `bearing` and
+ * does NOT track the map's rotation, so a rotated or pitched map would leave
+ * the flood sitting at the wrong angle to the coastline — a subtle wrongness
+ * that is much worse than losing the ability to spin the map. The map screen
+ * therefore pins `rotateEnabled={false}` and `pitchEnabled={false}` and
+ * leaves `bearing` at its default of 0.
+ */
+export const OVERLAY_BEARING = 0;
+
+/**
+ * The opening region, fixed to Sagar Island.
+ *
+ * Per the Module E brief: no location permission, so there is no "centre on
+ * me" and no permission prompt in a live demo. Sagar Island is where Remal
+ * made landfall and it is the anchor for the whole case study, so it is
+ * hardcoded rather than derived from the first locality in `/localities`
+ * (which happens to be Anantapur, alphabetically first, and is on the
+ * northern edge of the study area).
+ *
+ * Centred on 21.68 N, 88.08 E with a ~0.36 deg span — roughly 40 km, wide
+ * enough to hold the island, the north-south creek network and the Bay
+ * coastline it floods.
+ */
+export const SAGAR_REGION = {
+  latitude: 21.68,
+  longitude: 88.08,
+  latitudeDelta: 0.36,
+  longitudeDelta: 0.36,
+} as const;
