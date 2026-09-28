@@ -88,7 +88,14 @@ from .simulation.shelters import (
     load_shelters,
     shelter_dataset_status,
 )
-from .simulation.surge import IMD_CATEGORIES, predict_surge
+from .simulation.surge import (
+    ANCHOR_SURGE_M,
+    ANCHOR_WIND_KMPH,
+    IMD_CATEGORIES,
+    SURGE_LIMITATION,
+    SURGE_METHOD,
+    predict_surge,
+)
 
 # `IMD_CATEGORIES` is ordered strong-to-worst for threshold lookups, but the
 # slider runs weak-to-strong (PRD: "Depression -> Super Cyclonic Storm"), so
@@ -96,7 +103,28 @@ from .simulation.surge import IMD_CATEGORIES, predict_surge
 # Bounds are the IMD 3-min mean wind classification table (see surge.py).
 _CATEGORY_BANDS = tuple(reversed(IMD_CATEGORIES))  # Depression .. Super
 _BAND_LOWER_KMPH = (17.0, 28.0, 34.0, 48.0, 64.0, 90.0, 120.0)
-BAND_UPPER_KMPH = 250.0  # the open-ended top band's working ceiling
+# IMD's classification table is open-ended at the top: Super Cyclonic Storm is
+# ">= 120 kmph" with no upper bound, so there is no midpoint for the top band
+# and no ceiling to record here. It used to be 250.0 kmph — an invented number
+# whose midpoint (185) was presented to clients as an IMD figure.
+BAND_UPPER_KMPH = None  # the top band has no documented upper bound
+
+# The case study, exposed as a selectable preset so the app can show the real
+# event rather than only band midpoints. Cyclone Remal, May 2024, landfall
+# between Sagar Island and Khepupara: 110-120 kmph, surge ~1.0-1.5 m
+# (CLAUDE.md). At 115 kmph the scaling law returns exactly 1.2 m.
+REMAL_PRESET = {
+    "id": "remal_observed",
+    "label": "Remal as observed (May 2024)",
+    "wind_kmph": 115.0,
+    "surge_m": 1.2,
+    "source": (
+        "Cyclone Remal landfall between Sagar Island (West Bengal) and "
+        "Khepupara (Bangladesh), May 2024. Documented landfall wind "
+        "110-120 kmph gusting 135; surge ~1.0-1.5 m above astronomical tide. "
+        "Wind and surge here are the midpoints of those two ranges."
+    ),
+}
 
 # Total demo shelter capacity as a multiple of estimated exposed population.
 # Above 1.0 so the transportation LP is feasible (its constraints require
@@ -151,22 +179,36 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 def category_band(index: int) -> tuple[str, float, float, float]:
     """(label, lower_kmph, upper_kmph, representative_kmph) for a category.
 
-    The representative is the **midpoint** of the band, i.e. the typical
-    intensity for that IMD category rather than its worst case. It is
-    returned in every response, so a client can display or re-derive the
-    exact wind rather than treating the category as the number.
+    For categories 0-5 the representative is the **midpoint** of the band:
+    IMD documents a lower threshold for each, and the next threshold up is
+    that band's documented upper edge, so the midpoint is well defined.
+    (Categories 0-5 come out at 22.5, 31, 41, 56, 77 and 105 kmph.)
 
-    Consequence, stated here because it is surprising: the surge regression
-    cannot resolve anything below ~115 kmph (see MEMORY.md "Flagged for
-    review" #8 — n=4 training points, and the fitted line goes negative at
-    low wind). Categories 0-4 therefore return 0 m and category 5 returns
-    ~0.06 m. That is the model being honest, not the API failing to wire
-    something up, and it is not worked around here.
+    **Category 6 is different, and used to be wrong.** IMD defines Super
+    Cyclonic Storm as **>= 120 kmph with no upper bound** — the table is
+    open-ended at the top. A band with one edge has **no midpoint**. This
+    code previously invented a 250 kmph ceiling (`BAND_UPPER_KMPH`) and used
+    the midpoint of that fiction, **185 kmph**, which is not a documented IMD
+    value and sits 65-75 kmph above the real Cyclone Remal the project is
+    anchored on. The ceiling is gone; category 6 now uses the documented
+    **120 kmph** threshold, and `BAND_UPPER_KMPH` is reported as `None` so a
+    client can see the band really is open-ended rather than silently
+    assuming a cap.
+
+    Consequence, stated because it surprises: 120 kmph is the *lowest* wind
+    in the top band, so the slider's maximum is no longer a worst case. The
+    open-ended top of the scale is real — a much stronger Super Cyclonic
+    Storm produces far more surge than 120 kmph — and the API deliberately
+    does not pretend otherwise. Clients wanting a worst case should pass an
+    explicit wind rather than rely on category 6.
     """
     threshold, label = _CATEGORY_BANDS[index]  # tuple order is (kmph, label)
     lower = _BAND_LOWER_KMPH[index]
-    upper = _BAND_LOWER_KMPH[index + 1] if index < 6 else BAND_UPPER_KMPH
-    return label, lower, upper, (threshold + upper) / 2 if index < 6 else (120.0 + BAND_UPPER_KMPH) / 2
+    if index < 6:
+        upper = _BAND_LOWER_KMPH[index + 1]
+        return label, lower, upper, (threshold + upper) / 2
+    # Open-ended band: no documented upper bound, so no midpoint exists.
+    return label, lower, None, float(threshold)
 
 
 @lru_cache(maxsize=7)
@@ -185,7 +227,13 @@ def _flood_shape(result: FloodResult):
 
 
 def _category_header(index: int) -> dict:
-    """The category context every endpoint's response opens with."""
+    """The category context every endpoint's response opens with.
+
+    Every response states the `method` that produced the surge number, the
+    `anchor` it was scaled from, and a `limitation` string. A response that
+    carried a bare `surge_m` let a client present a screening estimate as if
+    it were a site-specific forecast; these three fields are what stop that.
+    """
     label, lower, upper, wind = category_band(index)
     surge = surge_for_category(index)
     return {
@@ -193,8 +241,18 @@ def _category_header(index: int) -> dict:
         "imd_category": label,
         "band_kmph": {"lower": lower, "upper": upper},
         "wind_kmph": wind,
-        "wind_is_band_midpoint": True,
+        # False only for the open-ended top band, where the representative is
+        # the documented threshold rather than a midpoint of a documented band.
+        "wind_is_band_midpoint": upper is not None,
         "surge_m": surge.surge_m,
+        "method": surge.method,
+        "anchor": {
+            "wind_kmph": surge.anchor_wind_kmph,
+            "surge_m": surge.anchor_surge_m,
+            "event": REMAL_PRESET["label"],
+            "source": REMAL_PRESET["source"],
+        },
+        "limitation": SURGE_LIMITATION,
         "surge": surge.to_dict(),
     }
 
@@ -251,22 +309,40 @@ def health() -> dict:
 
 @app.get("/categories")
 def categories() -> dict:
-    """The seven IMD bands the slider steps through."""
+    """The seven IMD bands the slider steps through, plus the case study.
+
+    `presets` is the important addition. The seven bands are a classification
+    scheme, not a set of events, and none of their midpoints is the storm this
+    project is about — Remal made landfall at 110-120 kmph, which falls
+    *inside* the 90-120 band rather than at its 105 kmph midpoint, and above
+    the 120 threshold that opens the top band. So a client that can only step
+    through categories 0-6 has no way to show the actual case study. The
+    preset gives it one, by name and by id.
+    """
     return {
         "source": "India Meteorological Department cyclone wind classification (3-min mean)",
-        "representative_wind": "band midpoint",
+        "representative_wind": (
+            "band midpoint for categories 0-5; for category 6 (Super Cyclonic "
+            "Storm) IMD documents no upper bound, so the representative is the "
+            "documented 120 kmph threshold and band_kmph.upper is null"
+        ),
+        "method": SURGE_METHOD,
+        "anchor": {"wind_kmph": ANCHOR_WIND_KMPH, "surge_m": ANCHOR_SURGE_M},
+        "limitation": SURGE_LIMITATION,
         "categories": [
             {
                 **_category_header(index),
                 "note": (
-                    "the surge model cannot resolve below ~115 kmph, so this "
-                    "band returns 0 m of surge (see surge.loo_mae_m)"
-                    if surge_for_category(index).surge_m == 0
+                    "this band produces less surge than the DEM's 1 m vertical "
+                    "resolution can represent, so the flood model returns no "
+                    "inundation for it"
+                    if 0 < surge_for_category(index).surge_m < 1.0
                     else ""
                 ),
             }
             for index in range(7)
         ],
+        "presets": [REMAL_PRESET],
     }
 
 

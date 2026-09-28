@@ -480,10 +480,15 @@ not visually verified**.
   every query); kumi/mail.ru time out on full-bbox queries from here.
   fetch_osm_infra.py currently uses overpass.openstreetmap.fr (works,
   ~10 s per query).
-- **Surge model accuracy:** LOOCV MAE is 2.36 m — honest but large,
-  because n=4 with 3 features. Adding more real RSMC New Delhi bulletin
-  points (stretch item in Task.md) is the fix — do not swap the regression
-  for a lookup table.
+- **Surge model accuracy: SUPERSEDED 2026-09-28.** The LOOCV MAE of 2.36 m
+  belonged to the retired regression, which was replaced by anchored quadratic
+  scaling (`surge_m = 1.2 * (wind_kmph / 115) ** 2`). There is no fit and no
+  error bar any more; the archived measurements are in
+  `backend/experiments/surge_regression/README.md` and the reasoning in
+  "Flagged for review" §30. The real accuracy problem is now §31: one anchor
+  and an open-ended top band, which leaves the top of the slider exposing
+  nothing. Adding real RSMC New Delhi bulletin points is still the fix, and it
+  is now a prerequisite rather than a stretch item.
 - **NEW 2026-09-28 — the flood polygon is 112,655 vertices / 4.6 MB at
   category 6. This will not render smoothly on a phone, and the map screen
   is Stage 2.** Measured, not estimated, off a live `/surge-zone?category=6`:
@@ -517,6 +522,33 @@ not visually verified**.
   dependency-free distance filter applied client-side, so the map has a
   bounded vertex count today. It reduces what is *drawn*; it does **not**
   reduce the 4.6 MB that crosses the wire, which is the part that will
+
+- **NEW 2026-09-28 — the same survey re-measured under anchored scaling.**
+  The table above is now historical: it describes the retired model's category
+  6. Re-measured off a live server running the anchored scaling law, with
+  gzip enabled:
+
+  | cat | band (kmph) | wind | midpoint? | surge_m | land km2 | drawn km2 | polys | gz bytes |
+  |---|---|---|---|---|---|---|---|---|
+  | 0 Depression | 17–28 | 22.5 | yes | 0.0459 | 0.0 | 0.0 | 0 | 927 |
+  | 1 Deep Depression | 28–34 | 31.0 | yes | 0.0872 | 0.0 | 0.0 | 0 | 932 |
+  | 2 Cyclonic Storm | 34–48 | 41.0 | yes | 0.1525 | 0.0 | 0.0 | 0 | 926 |
+  | 3 Severe Cyclonic Storm | 48–64 | 56.0 | yes | 0.2846 | 0.0 | 0.0 | 0 | 935 |
+  | 4 Very Severe Cyclonic Storm | 64–90 | 77.0 | yes | 0.5380 | 0.0 | 0.0 | 0 | 941 |
+  | 5 Extremely Severe | 90–120 | 105.0 | yes | 1.0004 | 264.26 | **0.0** | 0 | 965 |
+  | 6 Super Cyclonic Storm | 120–∞ | 120.0 | **no** | 1.3066 | 347.67 | **0.0** | 0 | 1,008 |
+
+  Three things to read off this, none of them good:
+  1. **The payload problem is solved by accident, for the wrong reason.**
+     Every response is now under 1 KB (vs 4.6 MB) because the flood extent
+     draws *nothing*, not because the geometry got cheaper. The `SIMPLIFY_TOL_DEG`
+     decision is still open and the 112,655-vertex problem is still real for
+     any surge high enough to consolidate the flood.
+  2. **Cats 5 and 6 draw nothing at all.** `dropped_detail_km2` equals the full
+     land area in both, so every fragment is sub-0.5 km². The map is empty at
+     the top of the slider.
+  3. **No category exposes infrastructure** — see "Flagged for review" §31.
+     This is the blocking finding, not the payload.
   actually be felt on a phone.
 
   Also measured, and it is the same story by another route: **categories 0–5
@@ -846,6 +878,81 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     happen often, a cron permission rule in settings would make the
     "wait for quota, then run the named check" loop automatic instead of
     something that silently never fires.
+30. **NEW 2026-09-28 — the surge regression was replaced with anchored
+    scaling. AWAITING THE HUMAN'S DECISION.** `surge_m = 1.2 * (wind_kmph /
+    115) ** 2`, anchored on Cyclone Remal (115 kmph = midpoint of the
+    documented 110-120 kmph landfall wind; 1.2 m = midpoint of the documented
+    ~1.0-1.5 m surge). The old model is preserved, not deleted, in
+    `backend/experiments/surge_regression/` with the measurements that
+    displaced it in its README, and is off the runtime path.
+
+    **CLAUDE.md and PRD.md are now WRONG about this and were deliberately not
+    edited.** Both describe the surge model as a "trained regression" over a
+    compiled historical-cyclone table, and name `scikit-learn` /
+    `LinearRegression` as the ML layer. There is no trained model any more.
+    Three further doc drifts fall out of the same change and are also
+    deliberately unfixed:
+      * the "ML" row in CLAUDE.md's tech-stack table (scikit-learn, DBSCAN);
+      * the "Reference code" block showing the `LeaveOneOut` /
+        `LinearRegression` snippet — that snippet is now *wrong code* being
+        presented as the reference, and it is exactly the code that failed;
+      * the Module A assignment ("train the regression model with
+        leave-one-out CV"), which no longer describes work to be done.
+    Someone with authority over those docs should decide whether to rewrite
+    them or to scope the regression back in.
+
+    **A real regression came with this and needs its own decision — see §31.
+    The two are linked; the second is the cost of the first.**
+31. **NEW 2026-09-28 — the top IMD band now exposes nothing, so the entire
+    Module B exposure chain is dead at every category.** This is the
+    consequence of §30 and it is the most serious finding in the project so
+    far.
+
+    Category 6's representative wind was 185 kmph — the midpoint of an
+    *invented* 250 kmph ceiling, not a documented value, and 65-75 kmph above
+    the real Cyclone Remal. It has been corrected to the documented 120 kmph
+    threshold, because IMD publishes Super Cyclonic Storm as >=120 kmph with
+    **no upper bound**, so there is no midpoint to take. That is more honest
+    and it is what the instruction asked for, and it is also catastrophic for
+    the demo:
+
+    | | retired model | anchored scaling |
+    |---|---|---|
+    | cat 6 wind | 185 kmph (invented) | 120 kmph (documented threshold) |
+    | cat 6 surge | 3.863 m | 1.3066 m |
+    | land flooded | 1,820 km2 | 347.67 km2 |
+    | hospitals exposed | >0 | **0** |
+    | polygon drawn | 833.5 km2 | **0** |
+
+    The mechanism is the DEM's 1 m vertical quantum, not the surge model.
+    SRTM is integer-valued, so 1.31 m of surge reaches only cells at exactly
+    1 m elevation — a thin, scattered coastal fringe. It contains no mapped
+    hospital or substation, and it shatters into fragments all below
+    `MIN_PART_KM2`, so `dropped_detail_km2` equals the entire land area and
+    the map draws nothing. Cats 0-4 flood nothing at all (their surge is below
+    1 m). **Net effect: `/exposure` reports zero assets and `/allocation`
+    returns an empty assignment at all seven positions.** The app's core
+    loop — "which hospitals go underwater, and who evacuates where" — has no
+    data behind it.
+
+    Options, all a human's call: (a) keep 120 and accept a dead demo until
+    more surge anchors exist; (b) make the slider a kmph control with the
+    Remal preset at 115, so the open-ended band is honestly open rather than
+    pinned to its floor; (c) lower `MIN_PART_KM2` so the 1 m fringe draws
+    (presentation-only, and it would put speckle on the map); (d) re-scope to
+    the regression until real surge data exists. **Nothing was changed here —
+    `MIN_PART_KM2`, `SIMPLIFY_TOL_DEG` and the band mapping are all
+    untouched pending this decision.**
+
+    Test handling: the two product tests that genuinely assert this behaviour
+    (`test_finds_real_exposed_assets_at_peak`, `test_lp_solves_and_assigns_everyone`)
+    are marked `xfail(strict=True)`, so they stay visible and will **fail
+    loudly** the moment the gap closes — that is the signal to remove the
+    marker. The seven advisory tests that were cascading were not xfailed;
+    they were re-pointed at a synthetic non-empty allocation
+    (`payloads_with_allocation` / `synthetic_allocation_result`), because
+    they test the *advisory* layer, not the flood physics, and had been
+    silently passing vacuously against an empty allocation.
 
 ## Environment / credentials status
 
@@ -889,27 +996,41 @@ counts via the existing `ExposureRow`, and `decimatePolygon` from `api.ts` to
 bound the vertex count.
 
 **The slider needs a design decision before the screen is honest, though.**
-Six of the seven positions draw an empty map (cats 0–4 clamped, cat 5 below
-the DEM's 1 m vertical floor). The screen should say *why* — "below the surge
-model's resolution" is a different message from "nothing to evacuate here",
-and the difference is the whole credibility of the demo. Recommend the empty
-state name the cause and cite `surge.loo_mae_m` rather than implying safety.
+All seven positions now draw an empty map: cats 0–4 produce less surge than
+the DEM's 1 m vertical floor, and cats 5–6 flood land but shatter into
+sub-0.5 km² fragments so `drawn_area_km2` is 0. The screen should say *why* —
+"below the surge model's resolution" is a different message from "nothing to
+evacuate here", and the difference is the whole credibility of the demo.
+Recommend the empty state name the cause and cite `surge.method` +
+`surge.anchor_surge_m` rather than implying safety. (`surge.loo_mae_m` is the
+field this used to suggest; it is gone, and there is no error bar to quote,
+because there is no fit.)
 
-**Three decisions are owed, none of which is code I should decide:**
+**Four decisions are owed, none of which is code I should decide:**
 
-1. **The `SIMPLIFY_TOL_DEG` call.** Gzip got the wire cost to 578 KB; the
-   render cost is untouched. Raising the server-side tolerance to ~0.005–0.01°
-   is the real fix, and it trades drawn detail against payload.
-2. **The 1.2 m anchor is unreachable.** Cat 6's representative wind (185 kmph)
-   is ~1.5× the real Cyclone Remal, and the slider jumps 0.062 → 3.863 m
-   straight past 1.2 m. Either the slider becomes a kmph control, or a band
-   is added for 117–140 kmph, or the narrative stops claiming the anchor.
-   This is the one finding that could undermine the demo's central claim.
+1. **The `SIMPLIFY_TOL_DEG` call — now moot until §31 is resolved.** Gzip got
+   the wire cost to 578 KB; the render cost was untouched. Under anchored
+   scaling every payload is under 1 KB, but only because the flood draws
+   nothing. Do not read that as the problem being solved. Raising the
+   server-side tolerance to ~0.005–0.01° is still the real fix, and it trades
+   drawn detail against payload.
+2. **RESOLVED — the 1.2 m anchor is now reachable, and reaching it exposed a
+   worse problem.** The old cat 6 wind (185 kmph) was an invented value, and
+   the slider jumped 0.062 → 3.863 m straight past 1.2 m. Anchoring the model
+   on 115 kmph fixed that and added an explicit `remal_observed` preset at
+   exactly 1.2 m. But correcting cat 6 to the documented 120 kmph threshold
+   left the top of the slider exposing nothing — see "Flagged for review" §31,
+   which is now the blocking item. Options are listed there.
 3. **The 827 MB deploy decision.** `starter` is 512 MB like free and would not
    help; **standard (2 GB, ~$25/mo)** is the first tier that fits, and the
    *preferred* fix is precomputing all seven categories offline, which would
    drop peak memory to the ~138 MB import baseline. `render.yaml` still says
-   `plan: free`; no precompute started.
+   `plan: free`; no precompute started. Note that precompute would bake in
+   whichever surge model is current, so it should not start before §31.
+4. **Whether CLAUDE.md and PRD.md get rewritten or the regression gets
+   re-scoped** — "Flagged for review" §30. Both documents currently describe a
+   trained model that no longer exists, and CLAUDE.md's "Reference code" block
+   contains the failed regression as the reference snippet.
 
 **The live `POST /advisory` capture is still outstanding.** The single allowed
 attempt returned **HTTP 503** (3 attempts, 2 s + 4 s backoff, 42 s wall clock).
@@ -1000,6 +1121,76 @@ any demo, record a backup capture.
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-28 — Claude Code: surge regression replaced with anchored scaling
+
+- **The swap.** `surge_m = 1.2 * (wind_kmph / 115) ** 2`. `predict_surge` now
+  takes one argument instead of three, has no `SURGE_MIN_M`/`SURGE_MAX_M`
+  clamp, no `load_dem()`, and no joblib. `SurgeResult` lost
+  `loo_mae_m`, `raw_prediction_m`, `clamped`, `forward_speed_kmph`,
+  `approach_angle_flag` and their `*_assumed` flags; gained `method`,
+  `anchor_wind_kmph`, `anchor_surge_m`. The retired code, model and tests are
+  in `backend/experiments/surge_regression/`, off the runtime path, with the
+  measurements that displaced them in the README and in `regression.py`'s
+  docstring.
+
+- **Category mapping, re-derived against the IMD table.** Cats 0–5 take their
+  band midpoint. **Cat 6 cannot**: IMD documents Super Cyclonic Storm as
+  >=120 kmph with no upper bound, so there is no midpoint. The old 185 kmph
+  was the midpoint of an invented 250 kmph ceiling. Cat 6 is now 120.0 with
+  `band_kmph.upper: null` and `wind_is_band_midpoint: false`, so a client
+  cannot mistake it for a midpoint.
+
+- **The Remal preset exists because the bands cannot reach the case study.**
+  Remal made landfall at 110–120 kmph: inside the 90–120 band, above the 120
+  threshold, and equal to no band's midpoint. `/categories` now returns
+  `presets: [{id: "remal_observed", wind_kmph: 115.0, surge_m: 1.2, ...}]` so
+  the app can select the actual case study by name.
+
+- **A `NameError` was live on `/categories` and only the test suite caught
+  it.** `main.py` referenced `SURGE_METHOD` at line 328 but never imported it;
+  the import list had `SURGE_LIMITATION` and stopped. `/surge-zone` did not
+  touch that line, so the live server returned 200s while `TestClient` — which
+  runs the same app but hit `/categories` — raised. Worth remembering that a
+  manual curl sweep can miss a route you did not curl.
+
+- **Fourteen tests failed on the swap. Most were asserting the old values;
+  the interesting ones were not.**
+  - 5 were stale for real reasons: 4 collapsed on the missing import, 1
+    asserted `loo_mae_m` and `forward_speed_assumed` still travel with the
+    polygon. Rewritten against the new documented behaviour.
+  - 2 were genuine product tests that now fail because nothing is exposed
+    (`xfail(strict=True)`, §31).
+  - 7 were advisory tests cascading off the empty allocation. **They had been
+    passing vacuously** — validating an empty plan against an empty
+    allocation, so there was nothing to violate. Re-pointed at a synthetic
+    non-empty allocation (`payloads_with_allocation` for the unit tests,
+    `synthetic_allocation_result` monkeypatching `main.allocation_for_category`
+    for the three that drive the real route). That is a better test design
+    regardless: the advisory layer should not be tested through the DEM.
+  - One test's *technique* was also weak and is fixed: `test_uses_the_modelled_area_not_the_drawn_area`
+    asserted `str(drawn) not in prompt`, which only worked because the drawn
+    figure was a long distinctive decimal. At 0.0 it collides with "120.0
+    kmph" in ordinary prompt text. It now checks the drawn figure is not the
+    one *labelled* FLOODED AREA.
+
+- **Two of the plan-coverage tests hardcoded `covers only 7/` against a
+  12-locality real allocation.** They could only ever pass while that exact
+  allocation existed. Now derived from the list length, and the stubs emit
+  `names[:-1]` rather than `names[:5]` so the plan is genuinely partial at any
+  allocation size.
+
+- **`mobile/api.ts` updated, `tsc --noEmit` exits 0.** `SurgeResult` and
+  `CategoryHeader` rewritten; `band_kmph.upper` is now `number | null`, and
+  `CategoriesResponse` gained `method`, `anchor`, `limitation`, `presets` and
+  a new `SurgePreset` type.
+
+- **Full suite: 200 passed, 3 skipped, 2 xfailed** (plus 6 in the archived
+  regression directory). No live Gemini calls — the 3 `@requires_key` tests
+  skip without `.env`.
+
+- **Not done, deliberately:** no Stage 2 map code, no precompute, no polygon
+  changes, no edit to CLAUDE.md or PRD.md.
 
 ### 2026-09-28 — Claude Code: map deps, gzip middleware, per-category diagnosis
 

@@ -1,10 +1,16 @@
 """Tests for the DEM loader and the surge model (Module A inputs, Module B use).
 
-The surge model is weak by construction (n=4, LOOCV MAE 2.36 m), and these
-tests exist to make sure its weaknesses stay *visible* rather than being
-quietly smoothed over: the clamp, the estimate flag, and the MAE all have to
-survive into the result, because Rules.md requires that no consumer can
-mistake the number for an observation.
+The surge model is `surge_m = 1.2 * (wind_kmph / 115) ** 2` — anchored
+quadratic scaling from one observed event (Cyclone Remal, May 2024), not a
+fitted regression. The retired regression and the measurements that displaced
+it are in `backend/experiments/surge_regression/`.
+
+What these tests protect is the *character* of the model, not a set of
+remembered outputs: that it hits its anchor exactly, that it is monotone, that
+doubling wind quadruples surge, and that it never emits a number without the
+method, the anchor, and the limitation string attached. A scaling law with
+those properties cannot quietly start extrapolating, which is precisely how
+the regression failed.
 """
 
 import numpy as np
@@ -12,10 +18,13 @@ import pytest
 
 from backend.simulation.dem import load_dem
 from backend.simulation.surge import (
-    SURGE_MAX_M,
-    SURGE_MIN_M,
+    ANCHOR_SURGE_M,
+    ANCHOR_WIND_KMPH,
+    SURGE_LIMITATION,
+    SURGE_METHOD,
     imd_category,
     predict_surge,
+    surge_for_wind,
 )
 
 
@@ -112,50 +121,83 @@ class TestImdCategories:
 
 
 class TestSurgePrediction:
-    def test_remal_anchor_reproduces(self):
-        """Remal's documented row: 115 kmph, 16 km/h forward, head-on -> 1.2 m."""
-        result = predict_surge(115, 16, 1)
-        assert result.surge_m == pytest.approx(1.2, abs=0.35)
+    """The scaling law's defining properties. Not its output values."""
 
-    def test_output_is_always_clamped_into_range(self):
-        for wind in range(20, 260, 5):
-            r = predict_surge(wind)
-            assert SURGE_MIN_M <= r.surge_m <= SURGE_MAX_M
+    def test_115_kmph_gives_exactly_1_2_m(self):
+        """The anchor, exactly. Not approximately — exactly.
 
-    def test_clamp_flag_reports_actual_manipulation(self):
-        # The weak fit goes negative at low wind; the clamp must be disclosed.
-        low = predict_surge(31)
-        assert low.raw_prediction_m < 0
-        assert low.surge_m == SURGE_MIN_M
-        assert low.clamped is True
+        This is the property the retired regression could not offer: it hit
+        1.2 m at 115 kmph only because 115 kmph was one of its four training
+        rows, and it missed by 1.479 m on leave-one-out. Here 115 kmph is the
+        definition, not an interpolation.
+        """
+        assert predict_surge(115).surge_m == pytest.approx(1.2, abs=1e-9)
+        assert surge_for_wind(115) == pytest.approx(1.2, abs=1e-9)
 
-    def test_clamp_flag_false_when_prediction_is_valid(self):
-        mid = predict_surge(120, 15, 1)
-        assert mid.raw_prediction_m > 0
-        assert mid.surge_m == mid.raw_prediction_m
-        assert mid.clamped is False
+    def test_output_is_monotone_in_wind(self):
+        """Non-decreasing everywhere, strictly increasing above zero wind."""
+        values = [surge_for_wind(w) for w in np.arange(0, 300, 0.5)]
+        assert all(b >= a for a, b in zip(values, values[1:]))
+        positive = [v for w, v in zip(np.arange(0, 300, 0.5), values) if w > 0]
+        assert all(b > a for a, b in zip(positive, positive[1:]))
 
-    def test_extreme_wind_is_capped(self):
-        extreme = predict_surge(250)
-        assert extreme.surge_m == SURGE_MAX_M
-        assert extreme.clamped is True
+    def test_doubling_wind_quadruples_surge(self):
+        """The quadratic exponent, checked directly rather than assumed."""
+        for wind in (20.0, 57.5, 80.0, 115.0, 200.0):
+            assert surge_for_wind(wind * 2) == pytest.approx(
+                surge_for_wind(wind) * 4, rel=1e-9
+            )
+
+    def test_never_negative_and_never_needs_a_clamp(self):
+        """The retired model needed a [0, 4] clamp. This one cannot violate it.
+
+        Checked across and beyond the slider's range, including winds above
+        anything the app will ever send.
+        """
+        for wind in np.arange(0, 500, 1.0):
+            assert surge_for_wind(wind) >= 0.0
+        assert surge_for_wind(0) == 0.0
+
+    def test_rejects_negative_wind(self):
+        with pytest.raises(ValueError):
+            predict_surge(-1)
 
     def test_always_flagged_as_estimate(self):
-        """Even with all three features supplied, a 4-point fit is an estimate."""
-        assert predict_surge(120, 15, 1).is_estimate is True
+        """Even at the anchor, 1.2 m is a scaled midpoint, not an observation."""
+        assert predict_surge(115).is_estimate is True
+        assert predict_surge(200).is_estimate is True
 
-    def test_mae_is_carried_through(self):
-        assert predict_surge(120).loo_mae_m == pytest.approx(2.36, abs=0.01)
+    def test_result_carries_method_and_anchor(self):
+        r = predict_surge(150)
+        assert r.method == SURGE_METHOD == "anchored_quadratic_scaling"
+        assert r.anchor_wind_kmph == ANCHOR_WIND_KMPH == 115.0
+        assert r.anchor_surge_m == ANCHOR_SURGE_M == 1.2
 
-    def test_defaults_are_flagged_as_assumed(self):
-        r = predict_surge(120)
-        assert r.forward_speed_assumed is True
-        assert r.approach_angle_assumed is True
-        supplied = predict_surge(120, 15, 1)
-        assert supplied.forward_speed_assumed is False
-        assert supplied.approach_angle_assumed is False
+    def test_limitation_names_what_the_model_omits(self):
+        for phrase in ("tide", "pressure", "bathymetry", "storm size"):
+            assert phrase in SURGE_LIMITATION
+        assert "one observed event" in SURGE_LIMITATION
 
-    def test_result_serialises(self):
+    def test_result_serialises_without_retired_fields(self):
+        """The old shape is gone, and its absence is asserted, not assumed.
+
+        `clamped`, `raw_prediction_m` and `loo_mae_m` described a fitted
+        model. Leaving them in the payload would let a client keep reading
+        numbers that no longer mean anything.
+        """
         payload = predict_surge(120).to_dict()
-        for key in ("wind_kmph", "surge_m", "is_estimate", "loo_mae_m", "clamped"):
+        for key in ("wind_kmph", "surge_m", "is_estimate", "method",
+                    "anchor_wind_kmph", "anchor_surge_m"):
             assert key in payload
+        for retired in ("clamped", "raw_prediction_m", "loo_mae_m",
+                        "forward_speed_kmph", "approach_angle_flag",
+                        "forward_speed_assumed", "approach_angle_assumed"):
+            assert retired not in payload
+
+    def test_takes_wind_only(self):
+        """The retired model took three features, two of them assumed.
+
+        A one-argument call is the whole API now; anything else is a bug.
+        """
+        with pytest.raises(TypeError):
+            predict_surge(115, 16, 1)  # type: ignore[call-arg]

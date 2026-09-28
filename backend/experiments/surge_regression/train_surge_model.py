@@ -22,7 +22,7 @@ from pathlib import Path
 from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import LeaveOneOut, cross_val_predict
 
-OUT_PATH = Path(__file__).resolve().parents[2] / "data" / "surge_model.pkl"
+OUT_PATH = Path(__file__).resolve().parent / "surge_model.pkl"
 FEATURES = ["wind_kmph", "forward_speed_kmph", "approach_angle_flag"]
 NAMES = ["Remal 2024", "Helen 2013", "Lehar 2013", "Mandous 2021"]
 

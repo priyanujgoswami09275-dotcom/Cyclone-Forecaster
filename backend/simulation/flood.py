@@ -258,8 +258,6 @@ def run_flood_model(
     wind_kmph: float,
     dem: Dem | None = None,
     n_steps: int = DEFAULT_STEPS,
-    forward_speed_kmph: float | None = None,
-    approach_angle_flag: int | None = None,
 ) -> FloodResult:
     """Full flood simulation for a storm intensity. The Module B entry point.
 
@@ -274,7 +272,7 @@ def run_flood_model(
     exposed, so the timeline is real data — only the drawing is cumulative.
     """
     dem = dem or load_dem()
-    surge = predict_surge(wind_kmph, forward_speed_kmph, approach_angle_flag)
+    surge = predict_surge(wind_kmph)
 
     cell_km2 = dem.cell_area_km2()
     ocean = dem.ocean_mask()

@@ -115,6 +115,111 @@ def payloads():
     }
 
 
+# The two localities the synthetic allocation below carries, and the
+# in-district one it deliberately omits. Named here so the fixtures and the
+# assertions about them cannot drift apart.
+SYNTHETIC_LOCALITIES = ["Kakdwip", "Namkhana", "Gosaba"]
+OUT_OF_DISTRICT = "Kolkata"
+
+
+def _synthetic_allocation() -> dict:
+    """An allocation with two assigned localities, in the real response shape.
+
+    Why this exists: these tests are about the ADVISORY layer — that the plan
+    covers every allocated locality, that out-of-district names are excluded,
+    that the prompt names exactly what was allocated. None of that depends on
+    the flood model, but all of it depends on the allocation being non-empty,
+    and the allocation is empty at every category since the top IMD band was
+    re-anchored to its documented 120 kmph threshold (see MEMORY.md "Flagged
+    for review" and TestExposure in test_module_c.py).
+
+    Driving these through the real endpoint meant they were silently testing
+    the DEM's 1 m vertical quantum rather than the advisory logic — and when
+    the physics changed they failed for reasons that had nothing to do with
+    what they were written to protect. A synthetic allocation makes the
+    dependency explicit and keeps the coverage the tests were providing.
+
+    Shape copied from `allocate_shelters`, not invented: node / population /
+    assignments[{shelter, people, distance_km}].
+    """
+    return {
+        "category": CATEGORY,
+        "localities_evaluated": len(SYNTHETIC_LOCALITIES),
+        "allocation": [
+            {
+                "node": name,
+                "population": 12_000,
+                "assignments": [
+                    {
+                        "shelter": "Sagar Island MPCS",
+                        "people": 12_000,
+                        "distance_km": 4.2,
+                    }
+                ],
+            }
+            for name in SYNTHETIC_LOCALITIES
+        ],
+        "shelter_loads": [
+            {
+                "shelter": "Sagar Island MPCS",
+                "capacity_people": 50_000,
+                "assigned": 24_000,
+            }
+        ],
+        "unmet_demand": 0,
+        "total_person_km": 100.8,
+        "message": "optimal assignment found (HI-GHS linear program)",
+        "shelter_status": main.shelter_dataset_status(),
+        "capacity_basis": {
+            "shelters_are_real": False,
+            "rule": (
+                "DERIVED capacity, NOT surveyed. Placeholder figures pending "
+                "verification against district records."
+            ),
+        },
+        "population_method": main.population_methodology(),
+        "is_estimate": True,
+    }
+
+
+@pytest.fixture
+def synthetic_allocation_result(monkeypatch):
+    """Patch the handler's allocation helper so `/advisory` sees a populated one.
+
+    The three handler-level tests below drive the real `POST /advisory` route,
+    so unlike the unit tests they cannot be handed a fixture — they get
+    whatever the endpoint computes. With the real allocation empty at every
+    category, the stubs were emitting an empty evacuation plan, which the
+    validator had no reason to complain about, and the tests passed or failed
+    for reasons unrelated to what they were written to check.
+
+    Patching `main.allocation_for_category` fixes it at the seam the handler
+    actually calls, so everything downstream — prompt building, validation,
+    the correction pass, the coverage label — runs for real against a
+    non-empty allocation.
+    """
+    result = {
+        "assignment": _synthetic_allocation()["allocation"],
+        "shelter_loads": _synthetic_allocation()["shelter_loads"],
+        "unmet_demand": 0,
+        "total_person_km": 100.8,
+        "message": "optimal assignment found (HI-GHS linear program)",
+        "status": main.shelter_dataset_status(),
+    }
+    monkeypatch.setattr(main, "allocation_for_category", lambda category: result)
+    return result
+
+
+@pytest.fixture(scope="module")
+def payloads_with_allocation(payloads):
+    """`payloads` with a non-empty allocation substituted in.
+
+    `surge` and `exposure` stay real, because the prompt's interaction with
+    those numbers is part of what is under test.
+    """
+    return {**payloads, "allocation": _synthetic_allocation()}
+
+
 def a_valid_advisory(localities: list[str]) -> DistrictAdvisory:
     """A hand-built advisory that satisfies every rule validate_advisory checks."""
     return DistrictAdvisory(
@@ -200,13 +305,24 @@ class TestSchema:
 
 class TestPrompt:
     def test_uses_the_modelled_area_not_the_drawn_area(self, payloads):
-        """The two figures differ by ~2x at peak. Prompting on the drawn one
-        would have the model understate the flood by half."""
+        """The two figures differ substantially at peak. Prompting on the drawn
+        one would have the model understate the flood.
+
+        The negative half of this assertion used to be a bare
+        `str(drawn) not in prompt`, which only worked because the drawn figure
+        happened to be a long distinctive decimal. At the anchored-scaling top
+        band the drawn area is 0.0, and "0.0" occurs in the prompt for
+        unrelated reasons ("120.0 kmph"), so the substring test passed/failed
+        on a coincidence. It now checks the drawn figure is not the one
+        *labelled as the flooded area*, which is the actual requirement and
+        cannot be satisfied by an unrelated number elsewhere in the text.
+        """
+        surge = payloads["surge"]
         prompt = build_prompt(
             payloads["surge"], payloads["exposure"], payloads["allocation"]
         )
-        assert f"FLOODED AREA: {payloads['surge']['final_land_area_km2']} km2" in prompt
-        assert str(payloads["surge"]["drawn_area_km2"]) not in prompt
+        assert f"FLOODED AREA: {surge['final_land_area_km2']} km2" in prompt
+        assert f"FLOODED AREA: {surge['drawn_area_km2']} km2" not in prompt
 
     def test_labels_infrastructure_counts_as_district_wide(self, payloads):
         """Exposure has no per-locality breakdown; the prompt must not imply one."""
@@ -268,19 +384,19 @@ class TestPrompt:
 
 class TestValidator:
     @pytest.fixture
-    def known(self, payloads):
-        return [row["node"] for row in payloads["allocation"]["allocation"]]
+    def known(self, payloads_with_allocation):
+        return [row["node"] for row in payloads_with_allocation["allocation"]["allocation"]]
 
-    def test_accepts_a_compliant_advisory(self, payloads, known):
-        assert validate_advisory(a_valid_advisory(known), payloads["allocation"]) == []
+    def test_accepts_a_compliant_advisory(self, payloads_with_allocation, known):
+        assert validate_advisory(a_valid_advisory(known), payloads_with_allocation["allocation"]) == []
 
-    def test_catches_an_oversized_sms(self, payloads, known):
+    def test_catches_an_oversized_sms(self, payloads_with_allocation, known):
         draft = a_valid_advisory(known)
         draft.sms_dispatch_draft = "x" * 200
-        violations = validate_advisory(draft, payloads["allocation"])
+        violations = validate_advisory(draft, payloads_with_allocation["allocation"])
         assert any("sms_dispatch_draft" in v and "200" in v for v in violations)
 
-    def test_catches_an_invented_locality(self, payloads, known):
+    def test_catches_an_invented_locality(self, payloads_with_allocation, known):
         draft = a_valid_advisory(known)
         draft.evacuation_plan.append(
             EvacuationPriority(
@@ -289,33 +405,33 @@ class TestValidator:
                 reasoning="Seems bad.",
             )
         )
-        violations = validate_advisory(draft, payloads["allocation"])
+        violations = validate_advisory(draft, payloads_with_allocation["allocation"])
         assert any("Atlantis Nagar" in v for v in violations)
 
-    def test_catches_missing_shelter_disclosure(self, payloads, known):
+    def test_catches_missing_shelter_disclosure(self, payloads_with_allocation, known):
         """The API's shelters are placeholders. A draft that never says so
         reads as a real facility count — the exact misreading §13 warns about.
         """
-        assert payloads["allocation"]["shelter_status"]["is_demo_data"] is True
+        assert payloads_with_allocation["allocation"]["shelter_status"]["is_demo_data"] is True
         draft = a_valid_advisory(known)
         draft.executive_summary = "Evacuate the low-lying delta immediately."
         draft.sms_dispatch_draft = "Cyclone alert. Evacuate low-lying areas now."
-        violations = validate_advisory(draft, payloads["allocation"])
+        violations = validate_advisory(draft, payloads_with_allocation["allocation"])
         assert any("disclosure" in v for v in violations)
 
-    def test_disclosure_in_either_field_counts(self, payloads, known):
+    def test_disclosure_in_either_field_counts(self, payloads_with_allocation, known):
         draft = a_valid_advisory(known)
         draft.sms_dispatch_draft = "Cyclone alert: shelter capacities are provisional. Evacuate now."
-        assert validate_advisory(draft, payloads["allocation"]) == []
+        assert validate_advisory(draft, payloads_with_allocation["allocation"]) == []
 
-    def test_sms_boundary_is_measured_not_trusted(self, payloads, known):
+    def test_sms_boundary_is_measured_not_trusted(self, payloads_with_allocation, known):
         """159 passes, 160 fails. The rule is 'under 160', and it is checked by
         len() on the real string, not by believing the prompt was obeyed."""
         draft = a_valid_advisory(known)
         draft.sms_dispatch_draft = "y" * 159
-        assert validate_advisory(draft, payloads["allocation"]) == []
+        assert validate_advisory(draft, payloads_with_allocation["allocation"]) == []
         draft.sms_dispatch_draft = "y" * 160
-        assert validate_advisory(draft, payloads["allocation"])
+        assert validate_advisory(draft, payloads_with_allocation["allocation"])
 
 
 # --------------------------------------------------------------------------
@@ -657,7 +773,9 @@ class TestHandlerPayload:
         assert body["validated"] is True
         assert body["advisory"]["sms_dispatch_draft"]
 
-    def test_the_returned_advisory_passed_validation(self, client):
+    def test_the_returned_advisory_passed_validation(
+        self, client, synthetic_allocation_result
+    ):
         body = client.post("/advisory?category=6&origin=kakdwip").json()
         result = DistrictAdvisory(**body["advisory"])
         assert validate_advisory(result, main.allocation(6)) == []
@@ -892,8 +1010,8 @@ class TestPlanCoverage:
     """
 
     @pytest.fixture
-    def known(self, payloads):
-        return [row["node"] for row in payloads["allocation"]["allocation"]]
+    def known(self, payloads_with_allocation):
+        return [row["node"] for row in payloads_with_allocation["allocation"]["allocation"]]
 
     @pytest.fixture(autouse=True)
     def _configured(self, monkeypatch):
@@ -901,30 +1019,46 @@ class TestPlanCoverage:
         present — otherwise they pass or fail on the machine's `.env`."""
         monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
 
-    def test_a_full_plan_is_not_flagged(self, payloads, known):
-        assert plan_coverage(a_valid_advisory(known), payloads["allocation"])[
+    def test_a_full_plan_is_not_flagged(self, payloads_with_allocation, known):
+        assert plan_coverage(a_valid_advisory(known), payloads_with_allocation["allocation"])[
             "label"
         ] == f"{len(known)}/{len(known)}"
-        assert validate_advisory(a_valid_advisory(known), payloads["allocation"]) == []
+        assert validate_advisory(a_valid_advisory(known), payloads_with_allocation["allocation"]) == []
 
-    def test_a_partial_plan_is_a_violation(self, payloads, known):
-        """The exact shape the live run produced."""
-        draft = a_valid_advisory(known[:7])
-        violations = validate_advisory(draft, payloads["allocation"])
-        assert any("covers only 7/" in v for v in violations), violations
+    def test_a_partial_plan_is_a_violation(self, payloads_with_allocation, known):
+        """The shape the live run produced: a plan covering some of the
+        allocation is a violation, not a shorter but acceptable plan.
 
-    def test_the_violation_names_every_missing_locality(self, payloads, known):
+        The counts are derived from the allocation rather than hardcoded, so
+        the test keeps testing the rule when the allocation's size changes —
+        the original pinned the literal "covers only 7/" against a 12-locality
+        real allocation, which meant it could only ever pass or fail on
+        whether that specific allocation happened to exist.
+        """
+        partial = known[:-1]
+        draft = a_valid_advisory(partial)
+        violations = validate_advisory(draft, payloads_with_allocation["allocation"])
+        assert any(
+            f"covers only {len(partial)}/{len(known)}" in v for v in violations
+        ), violations
+
+    def test_the_violation_names_every_missing_locality(
+        self, payloads_with_allocation, known
+    ):
         """Because that string is what the correction pass feeds back to the
         model — a bare count gives it nothing to act on."""
-        draft = a_valid_advisory(known[:7])
+        partial = known[:-1]
+        draft = a_valid_advisory(partial)
         violation = next(
-            v for v in validate_advisory(draft, payloads["allocation"]) if "Missing" in v
+            v
+            for v in validate_advisory(draft, payloads_with_allocation["allocation"])
+            if "Missing" in v
         )
-        for name in known[7:]:
+        for name in known[len(partial) :]:
             assert name in violation, name
 
     def test_coverage_counts_allocation_localities_not_plan_entries(
-        self, payloads, known
+        self, payloads_with_allocation, known
     ):
         """The code-built origin entry is not an allocation locality, so a
         complete plan reads N/N rather than being inflated to N+1/N."""
@@ -935,12 +1069,14 @@ class TestPlanCoverage:
                 locality_name="Sagar", priority_level="CRITICAL", reasoning="r"
             ),
         )
-        assert plan_coverage(result, payloads["allocation"])["label"] == (
+        assert plan_coverage(result, payloads_with_allocation["allocation"])["label"] == (
             f"{len(known)}/{len(known)}"
         )
-        assert validate_advisory(result, payloads["allocation"], "Sagar") == []
+        assert validate_advisory(result, payloads_with_allocation["allocation"], "Sagar") == []
 
-    def test_missing_priorities_are_not_invented_in_code(self, client, monkeypatch):
+    def test_missing_priorities_are_not_invented_in_code(
+        self, client, monkeypatch, synthetic_allocation_result
+    ):
         """The instruction is explicit: a priority is a judgement, so a
         half-covered plan must fail, not be quietly padded by a guess."""
         monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
@@ -949,37 +1085,40 @@ class TestPlanCoverage:
         def half_covers(surge, exposure, allocation, context="", corrections=""):
             seen.append(1)
             names = [r["node"] for r in allocation["allocation"]]
-            return a_valid_advisory(names[:5])
+            return a_valid_advisory(names[:-1])
 
         monkeypatch.setattr(main, "generate_advisory", half_covers)
         response = client.post("/advisory?category=6&origin=kakdwip")
         assert response.status_code == 502
         violations = response.json()["detail"]["violations"]
         # Counts are not hardcoded: the code-built origin entry covers Kakdwip,
-        # so the covered number is 6 of 11, not the 5 the stub emitted.
+        # so the covered number is one higher than the plan the stub emitted.
         assert any("covers only" in v for v in violations), violations
         assert any("Missing:" in v for v in violations), violations
         # Both passes tried, and neither invented the missing priorities.
         assert len(seen) == 2
 
     def test_the_correction_pass_is_told_which_names_are_missing(
-        self, client, monkeypatch
+        self, client, monkeypatch, synthetic_allocation_result
     ):
         corrections_seen: list[str] = []
 
         def half_then_full(surge, exposure, allocation, context="", corrections=""):
             names = [r["node"] for r in allocation["allocation"]]
             if not corrections:
-                return a_valid_advisory(names[:4])
+                return a_valid_advisory(names[:-1])
             corrections_seen.append(corrections)
             return a_valid_advisory(names)
 
         monkeypatch.setattr(main, "generate_advisory", half_then_full)
         body = client.post("/advisory?category=6&origin=kakdwip").json()
         assert body["validation"]["attempts"] == 2
+        # The stub drops the LAST allocation locality, so that is the one the
+        # correction string has to name.
+        all_names = [r["node"] for r in main.allocation(6)["allocation"]]
+        missing = all_names[-1:]
         # Kakdwip is not among them: the origin entry is code-built, so the
         # model was never asked to supply it and must not be told it is missing.
-        missing = [r["node"] for r in main.allocation(6)["allocation"]][4:]
         assert "Kakdwip" not in corrections_seen[0]
         for name in missing:
             if name == "Kakdwip":
@@ -1022,17 +1161,25 @@ class TestPlanCoverage:
 class TestOutOfDistrictExcluded:
     """§17/#24: Tamluk is in Purba Medinipur, not a 24 Parganas district."""
 
-    def test_the_prompt_never_names_an_out_of_district_place(self, payloads):
+    def test_the_prompt_never_names_an_out_of_district_place(
+        self, payloads_with_allocation
+    ):
         """The prompt is what the model writes from. A place that reaches here
         can end up in a real person's SMS as a place to evacuate."""
         prompt = build_prompt(
-            payloads["surge"], payloads["exposure"], payloads["allocation"]
+            payloads_with_allocation["surge"],
+            payloads_with_allocation["exposure"],
+            payloads_with_allocation["allocation"],
         )
         assert "Tamluk" not in prompt
 
-    def test_the_prompt_names_exactly_the_allocation_localities(self, payloads):
+    def test_the_prompt_names_exactly_the_allocation_localities(
+        self, payloads_with_allocation
+    ):
         prompt = build_prompt(
-            payloads["surge"], payloads["exposure"], payloads["allocation"]
+            payloads_with_allocation["surge"],
+            payloads_with_allocation["exposure"],
+            payloads_with_allocation["allocation"],
         )
         listed = next(
             line for line in prompt.splitlines() if line.startswith("LOCALITIES IN THIS")

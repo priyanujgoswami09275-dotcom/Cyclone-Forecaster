@@ -118,20 +118,35 @@ export class ApiError extends Error {
 // Shared response fragments
 // ---------------------------------------------------------------------------
 
-/** Provenance of the surge number — the model is an estimate and says so. */
+/**
+ * Provenance of the surge number — the model is an estimate and says so.
+ *
+ * This mirrors the anchored scaling law `1.2 * (wind_kmph / 115) ** 2`. It
+ * used to describe a fitted regression and carried that model's diagnostics:
+ * `loo_mae_m`, `raw_prediction_m`, `clamped`, and the two `*_assumed` flags
+ * for inputs the app never observed. There is no fit now and nothing is
+ * assumed, so those are gone rather than left as decoration — reading them
+ * would mean reading a number that no longer means anything. The replacement
+ * provenance is `method` plus the anchor the number is scaled from.
+ */
 export interface SurgeResult {
   wind_kmph: number;
   imd_category: string;
   surge_m: number;
-  raw_prediction_m: number;
-  clamped: boolean;
-  /** Leave-one-out mean absolute error. The honest error bar on `surge_m`. */
-  loo_mae_m: number;
+  /** Identifies the method. "anchored_quadratic_scaling" today. */
+  method: string;
+  /** The observed event every number is scaled from: Cyclone Remal, May 2024. */
+  anchor_wind_kmph: number;
+  anchor_surge_m: number;
   is_estimate: boolean;
-  forward_speed_kmph: number;
-  approach_angle_flag: number;
-  forward_speed_assumed: boolean;
-  approach_angle_assumed: boolean;
+}
+
+/** The single event the surge model is anchored to, with its citation. */
+export interface SurgeAnchor {
+  wind_kmph: number;
+  surge_m: number;
+  event: string;
+  source: string;
 }
 
 /**
@@ -142,10 +157,18 @@ export interface SurgeResult {
 export interface CategoryHeader {
   category: number;
   imd_category: string;
-  band_kmph: { lower: number; upper: number };
+  /**
+   * `upper` is null for category 6: IMD documents Super Cyclonic Storm as
+   * >=120 kmph with no ceiling, so the band is open-ended and has no
+   * midpoint. Anything that assumed a number here would be inventing one.
+   */
+  band_kmph: { lower: number; upper: number | null };
   wind_kmph: number;
   wind_is_band_midpoint: boolean;
   surge_m: number;
+  method: string;
+  anchor: SurgeAnchor;
+  limitation: string;
   surge: SurgeResult;
 }
 
@@ -180,19 +203,39 @@ export interface Scoping {
 // Endpoint response types
 // ---------------------------------------------------------------------------
 
+/**
+ * A named scenario the app can select directly, by `id` — not by stepping to
+ * a category. The seven IMD bands are a classification scheme, not a set of
+ * events, and none of their representative winds is the storm this project is
+ * about: Remal made landfall at 110-120 kmph, which straddles the 90-120
+ * band and sits above the 120 threshold that opens the top band. A UI that can
+ * only step through categories 0-6 therefore cannot show the actual case
+ * study, which is why this exists.
+ */
+export interface SurgePreset {
+  id: string;
+  label: string;
+  wind_kmph: number;
+  surge_m: number;
+  source: string;
+}
+
 export interface CategoriesResponse {
   source: string;
   representative_wind: string;
-  categories: {
-    category: number;
-    imd_category: string;
-    band_kmph: { lower: number; upper: number };
-    wind_kmph: number;
-    wind_is_band_midpoint: boolean;
-    surge_m: number;
-    surge: SurgeResult;
+  method: string;
+  anchor: { wind_kmph: number; surge_m: number };
+  limitation: string;
+  categories: (CategoryHeader & {
+    /**
+     * Present and non-empty when the band produces less surge than the DEM's
+     * 1 m vertical resolution can represent, so the flood model returns no
+     * inundation for it. A UI should say so rather than show an empty map
+     * with no explanation.
+     */
     note?: string;
-  }[];
+  })[];
+  presets: SurgePreset[];
 }
 
 export interface LocalitiesResponse {
