@@ -62,9 +62,9 @@ step" before starting any work.
 |---|---|---|
 | A. Data pipeline & surge ML model | Done | All 6 deliverables. DEM resolved (real GEE SRTM, tagged + committed). Stretch item (more RSMC points) still open. |
 | B. Simulation engine (flood propagation, routing, shelter allocation) | In progress | Engine complete and tested on real data. Only the shelter *dataset* is missing — no real locations/capacities exist to use (see blockers). |
-| C. Backend / API (FastAPI) | Done | `backend/main.py` + `backend/locations.py`. All contract endpoints live and curl-verified. `/advisory` is live (Module D below). **Display overlay layer added 2026-09-28** — `backend/tools/render_overlays.py` + `data/overlays/` + `GET /overlays`; display-only, §32. |
+| C. Backend / API (FastAPI) | Done | `backend/main.py` + `backend/locations.py`. All contract endpoints live and curl-verified. `/advisory` is live (Module D below). **Display overlay layer added 2026-09-28** — `backend/tools/render_overlays.py` + `data/overlays/` + `GET /overlays`; display-only, §32. **`GET /track` added 2026-09-29** — the case study's real IBTrACS track; an endpoint, not a mount, because a blank `USA_WIND` must not read as calm. |
 | D. AI advisory layer (Gemini) | Done | `backend/ai/advisory.py` + the `POST /advisory` handler. Schema, prompt, call, an honesty validator, district-scoped localities, a capacity-retry wrapper, and `load_dotenv()` key loading. 70 tests. **Three live advisories produced**; all three rounds of defects are now closed (§20–§25). Two operational notes, not code gaps: the free tier is 20 calls/day (§26) and eight border-cluster localities still need a boundary dataset (§24). |
-| E. Mobile app (Expo / React Native) | In progress | Design system + `theme.typography` + `api.ts` (Stage 1) all landed 2026-09-28. **Stage 2, the map screen, landed 2026-09-28** (`1f23721`): `MapView` on a fixed Sagar Island region, flood as a `<Overlay>` raster, slider over `/categories` fetching on `onSlidingComplete`, Remal preset, markers, roads, locality picker, empty state. **Stage 3 remains: the advisory modal wiring and `POST /advisory`.** Never run on a device. |
+| E. Mobile app (Expo / React Native) | In progress | Design system + `theme.typography` + `api.ts` (Stage 1) all landed 2026-09-28. **Stage 2, the map screen, landed 2026-09-28** (`1f23721`): `MapView` on a fixed Sagar Island region, flood as a `<Overlay>` raster, slider over `/categories` fetching on `onSlidingComplete`, Remal preset, markers, roads, locality picker, empty state. **Stage 3 remains: the advisory modal wiring and `POST /advisory`.** **The real track layer landed 2026-09-29** (`c3f3549`): `TrackResponse`/`getTrack()` in `api.ts`, a `Polyline` plus 19 waypoint pins with UTC-time and wind callouts, and a source caption. Never run on a device. |
 | F. Deployment | In progress | `render.yaml` + pinned `requirements.txt` landed 2026-09-28 (Stage 0). **Blocked on a plan decision** — the backend does not fit 512 MB; see "Known issues / blockers". |
 
 *(Status values: Not started / In progress / Blocked / Done)*
@@ -200,7 +200,18 @@ step" before starting any work.
 - `mobile/app.config.ts` — **new 2026-09-28.** Reads `GOOGLE_MAPS_ANDROID_API_KEY` from the env and injects `android.config.googleMaps`, so a billable Google credential never reaches `app.json`. Unset → config byte-identical to `app.json`.
 - `mobile/.env.example` — committed template for `EXPO_PUBLIC_API_URL` + `GOOGLE_MAPS_ANDROID_API_KEY`. **Must live under `mobile/`, not the repo root**: Expo reads `.env` from the directory holding `app.json`. `mobile/.env` is gitignored (verified).
 - `mobile/app.json`, `tsconfig.json`, `babel.config.js` — minimal Expo managed scaffold
-- Typecheck: `cd mobile && npx tsc --noEmit` → clean, all **15** project files covered
+- **`GET /track` + `tests/test_track.py` (23 tests, 2026-09-29).** The case
+  study's real best track: 19 fixes, `path` + `waypoints`, `wind_kt` **null**
+  where IBTrACS reported none (5 of 19), knots→km/h server-side, `timezone:
+  UTC`, RFC 3339 timestamps, and a `disclosure` string. Reads the committed
+  `data/remal_track.geojson`; never fetched live. An endpoint rather than a
+  static mount — the reasoning is in `load_track()`'s docstring.
+- **`mobile/tests/track.test.mjs` (4 tests, 2026-09-29).** Run with
+  `cd mobile && node --test 'tests/*.test.mjs'` — the stdlib runner, no Jest
+  rig, which works *because* `api.ts` imports nothing from react-native. Plain
+  `.mjs` on purpose: a `.ts` test would need `types: ["node"]` +
+  `allowImportingTsExtensions` added to the app's own tsconfig.
+- Typecheck: `cd mobile && npx tsc --noEmit` → clean, all **16** project files covered
 *(List real files/paths as they get created. Keep this in sync with reality
 — this is what stops the next session from re-deriving something that
 already exists, or trusting a file that was later deleted.)*
@@ -228,10 +239,10 @@ design system itself.
 
 Stage 2 landed 2026-09-28 (`1f23721`). Everything in Module E's brief is
 now built except the advisory wiring: the map screen, the intensity slider,
-the flood layer, live exposure counts, the locality picker, and the disabled
-state for the empty-exposure case. The **Remal track `Polyline` and the
-`expo-clipboard` SMS copy remain unbuilt** — they belong with the advisory
-modal, which is Stage 3.
+the flood layer, live exposure counts, the locality picker, the disabled state
+for the empty-exposure case, and — as of 2026-09-29 — **the Remal track
+`Polyline` with a pin per fix**. Only the **`expo-clipboard` SMS copy remains
+unbuilt**, and it belongs with the advisory modal, which is Stage 3.
 
 The app has still never been run on a device or simulator, so everything
 above is **typechecked but not visually verified** (open since
@@ -240,6 +251,24 @@ means in practice is listed under "Flagged for review" below.
 
 ## Known issues / blockers
 
+- **NEW 2026-09-29 — the track is real data with two properties the UI has to
+  respect.** 5 of its 19 fixes have **no reported wind** (IBTrACS leaves
+  `USA_WIND` blank as the storm crossed the Bay on 27 May, and
+  `fetch_ibtracs.py` writes that blank as `0.0`); `/track` serves those as
+  `wind_kt: null` + `wind_reported: false` and the mobile callout says "Wind
+  not reported for this fix". **A `0 kmph` label on any of those five would be
+  a fabricated measurement on a map of a real cyclone.** Related: IBTrACS
+  `USA_WIND` is a **1-minute** (JTWC) estimate, while IMD's published winds and
+  the rest of this app are **3-minute** — comparable in magnitude, not the same
+  statistic.
+- **NEW 2026-09-29 — most of the track is off-screen at boot, and that is
+  worth knowing before a demo.** The opening region is Sagar Island
+  (21.68 N, ±0.18°) and the track runs **18.75 N → 24.2 N, 88.4 E → 90.4 E**,
+  so only the landfall stretch is visible without panning; the genesis in the
+  south and the dissipation over Bangladesh are a few screens away. A
+  "fit to track" control would fix it and was deliberately **not** built
+  (YAGNI for a layer nobody has to interact with — the caption names the fix
+  count and the date span). Say so if the demo needs the whole path on screen.
 - **GEE auth: RESOLVED 2026-09-27.** Credentials obtained, `data/dem.tif`
   fetched (real `USGS/SRTMGL1_003`, 50 m, EPSG:4326, 2898×3117) and committed.
   Provenance stamped into the raster's tags. No further GEE work needed.
@@ -1252,6 +1281,20 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     Not edited, per the standing instruction; logging it here instead. Same
     list as #30: the doc and the code have diverged enough that a rewrite is
     probably cheaper than a patch.
+36. **NEW 2026-09-29 — `Design.md` specifies no colour for the cyclone track
+    layer, and the app now draws one anyway.** The token table assigns
+    `water` to the flood, `danger` to compromised roads and CRITICAL,
+    `caution`/`safe` to priority levels, `primary` to the one main action —
+    and says nothing about a storm's own path. The track polyline and its 19
+    waypoint pins use `text` (Onyx), which is a token that already exists and
+    reads as a neutral record rather than a hazard, so no hex was invented and
+    the four colours that *mean* something on this map stay distinct. **The
+    decision that is actually owed: should a historical track be neutral at
+    all?** A third option exists and was not taken — draw it in `primary`, as
+    the one deliberate accent — but that colour is reserved for "Generate
+    Advisory" in Design.md's own reasoning, so it was not spent. Worth a human
+    look, and the same look should decide whether the waypoint pins need to be
+    visually smaller than the infra markers.
 
 ## Environment / credentials status
 
@@ -1296,89 +1339,47 @@ lockfile), `.claude/` (settings + skills).
 
 ## Next step
 
-**Stage 2 (the map screen) is next, and the overlay layer has just answered
-its hardest question.** The three native modules are installed (`086efe1`), so
-`tsc` covers the map code. The screen no longer needs `/surge-zone` at all:
-the flood is drawn as a `<Overlay>` from the committed PNG plus its bounds in
-`overlays.json`, which is exactly the shape `react-native-maps` wants and
-removes 7.0 MB from the slider's critical path. `decimatePolygon` in `api.ts`
-is now unused by the map — leave it, it still serves the advisory path.
+**Module E Stage 3 — the advisory flow. Stage A of the track viewer landed
+2026-09-29 (`e660035` backend, `c3f3549` mobile); Stage B is the queued half.**
 
-Everything for Stage 2 is already derived: initial region hardcoded to Sagar
-Island, intensity slider over categories read from `/categories` (not
-hardcoded) firing on `onSlidingComplete` only, hospitals/substations as
-Markers (their geometry is `LineString`, so a marker takes `coordinates[0]` —
-there is no `Point` in the payload), `roads_cut_off` as a red `Polyline`,
-localities from `/localities` defaulting to `sagar`, counts via the existing
-`ExposureRow`.
+The parts that already exist, verified by reading them, not assumed:
 
-**One design decision the screen still owes before it is honest.** The empty
-state is not one state. Cats 0–4 produce less surge than the DEM's 1 m
-vertical floor, so they flood nothing at all; cats 5–6 flood land. "Below the
-surge model's resolution" is a different message from "nothing to evacuate
-here", and the difference is the whole credibility of the demo. Name the cause
-and cite `surge.method` + `surge.anchor_surge_m` rather than implying safety.
-(`surge.loo_mae_m` is gone — there is no error bar to quote, because the
-anchored scaling has no fit.)
+- **`PrimaryButton` is already mounted in `MapScreen.tsx`** with
+  `label="Generate Advisory"`, a `spinner` prop available, and
+  `disabled={exposedCount === 0 || exposureLoading}` plus a `disabledHint`
+  line. Its `onPress` is an empty arrow with the comment "Stage 3 owns the
+  POST." **So the disabled-when-no-allocation behaviour already exists, keyed
+  on the `/exposure` count rather than on `/allocation`** — worth a deliberate
+  decision rather than a second gate, and see the open question below.
+- **`api.ts` already has everything Stage 3 needs**: `postAdvisory(category,
+  origin)`, the `DistrictAdvisory` / `EvacuationPriority` types (field is
+  `locality_name`, §16), and the `ApiError` taxonomy with
+  `kind`/`status`/`detail`/`retryAfterSeconds`/`violations` already parsed off
+  the wire. Branch on `kind`, never on a bare status.
+- **`originId` already exists** in `MapScreen` state (defaults to `sagar`) and
+  `LocalityPicker` already writes it. The advisory call reads that state.
+- **`AdvisoryModal`, `PriorityChip` and `GhostButton` exist** and are
+  content-agnostic by design (the modal takes `children`). `expo-clipboard` is
+  **installed** (0.57-era, in `package.json` since `086efe1`) but nothing
+  imports it yet.
+- The advisory endpoint is live, tested (74 tests) and has produced three real
+  Gemini advisories. The screen is the bottleneck, not the API.
 
-**Three decisions are owed, none of which is code I should decide:**
+Failure states to implement, each already typed in `api.ts`:
+`config` (EXPO_PUBLIC_API_URL unset — a build problem, say so) / `timeout` /
+`network` ("couldn't reach the server", no diagnosis) / `capacity` (503 +
+`Retry-After`, show a countdown and offer retry) / `validation` (show
+`violations`, not "something went wrong") / `upstream`.
 
-1. **The `SIMPLIFY_TOL_DEG` call — now narrowed, because §32 exists.** It
-   was briefly moot: under the broken bands every payload was under 1 KB,
-   but only because the flood drew nothing. With cats 5 and 6 exposing real
-   geometry again, **cat 6 is 936 KB gzipped and cat 5 is 513 KB**. The
-   overlay layer solved this *for the app* — the map never fetches the
-   geometry — but `/surge-zone` itself is unchanged, so the vertex problem
-   is still there for any other consumer. If nothing else consumes it, this
-   is now a low-priority cleanup rather than a phone blocker. Note it is
-   entangled with the 827 MB deploy decision below: the categories that are
-   expensive to render are the same ones that are expensive to hold in
-   memory.
-2. **The 827 MB deploy decision.** `starter` is 512 MB like free and would not
-   help; **standard (2 GB, ~$25/mo)** is the first tier that fits, and the
-   *preferred* fix is precomputing all seven categories offline, which would
-   drop peak memory to the ~138 MB import baseline. `render.yaml` still says
-   `plan: free`; no precompute started. Precompute would bake in whichever
-   surge model and band table are current, so it should wait until §30 and
-   §31's doc decision is settled.
-3. **Whether CLAUDE.md and PRD.md get rewritten or the regression gets
-   re-scoped** — "Flagged for review" §30. Both documents currently describe a
-   trained model that no longer exists, and CLAUDE.md's "Reference code" block
-   contains the failed regression as the reference snippet. **The unit fix
-   adds a fifth drift to that list**: neither document carries an IMD band
-   table today, so nothing in them is wrong about the bands, but if a band
-   table is added it must be the km/h column, not the knots one.
+**Decisions still owed a human, unchanged by this round:** §26 the 429 story
+(an exhausted 20/day quota still surfaces as 502, which is the wrong thing to
+show an operator); §24 the eight unresolved border localities; the
+`SIMPLIFY_TOL_DEG` call; the 865 MB deploy decision; and §30/§35 whether
+CLAUDE.md and PRD.md get rewritten or the surge regression re-scoped.
 
-**The live `POST /advisory` capture is still outstanding — this is now the
-fourth 503.** A fresh single attempt on 2026-09-28 (item 0 of the overlay
-round) returned **HTTP 503** on all 3 attempts over 6 s: Gemini 3.8 Flash at
-capacity. Not retried, and `data/cached_advisory_cat6_sagar.json` is
-correctly **absent** — the one-attempt rule is to report and save nothing on
-error, and that is what happened. Three separate sessions have now drawn the
-same result, so this is a capacity pattern, not bad luck. The free tier
-resets at midnight Pacific and allows 20 calls/day, so the next attempt has
-to be made by hand after the reset. Stage 4's fallback cannot be built until
-a real advisory is captured.
-
-
-**The mobile advisory flow does not exist yet — that is now the top item.**
-The audit behind this round found no API client, no request, no origin
-plumbing and no error handling in `mobile/`; `AdvisoryModal` is a
-presentational shell and `App.tsx` is a font gate. The backend contract it
-would call is real, tested, and has had four fixes land on it in the last two
-rounds, so the screen is now the bottleneck, not the API. The audit logged the
-specific things the screen must get right — a **120s timeout** (worst case is
-6 Gemini calls and 12s of backoff), `origin` = the tapped locality id, and
-handling for loading / 503+`Retry-After` / 502-with-violations / network
-failure — so they don't have to be re-derived. See the session log entry.
-
-**Still outstanding: one live check, blocked on the clock.** Four things a
-live run is the only way to confirm are in place: the plan must cover every
-allocation locality (§23), Tamluk is gone from the prompt (§24), the origin
-reasoning is punctuated (§25), and a capacity block retries three times on
-2s/4s before reporting 503 with an attempt count (§28). None has been
-exercised against the real model; the free tier's 20 calls/day reset at
-**midnight Pacific**.
+**Still outstanding and blocked on the clock:** the live `POST /advisory`
+capture. Four sessions have hit the same 503 at capacity. The free tier resets
+at midnight Pacific and allows 20 calls/day, so it must be triggered by hand:
 
 ```
 venv/bin/uvicorn backend.main:app --port 8000
@@ -1386,62 +1387,83 @@ curl -X POST "localhost:8000/advisory?category=6&origin=sagar"      # (a)
 curl -X POST "localhost:8000/advisory?category=2&origin=kakdwip"    # (b)
 ```
 
-**This must be triggered by a human after 00:00 PDT / 12:30 IST.** An attempt
-to schedule a one-shot wake-up at the reset was denied by the harness
-classifier ("Unauthorized Persistence"), so nothing will fire on its own. A
-cron permission rule in settings would allow that next time.
-
-Report the raw JSON for each, plus `validation.attempts` and
-`validation.gemini_calls`. **(b) uses `kakdwip`** because it is reachable at
-category 2 (9.28 km to the Namkhana shelter) *and* is in the allocation, so
-it exercises the in-allocation origin path that (a)'s Sagar cannot — Sagar
-has no allocation row and gets a code-built entry instead. Canning, Gosaba
-and Baruipur are all UNREACHABLE at category 2, so they would test the same
-edge case again. Category 2 is 41 kmph → 0.0 m surge: the documented dead
-zone, where the flood map is empty and the advisory should still be honest
-about that rather than inventing impact.
-
-After that: **Module E, the mobile app** — the largest remaining gap. The
-design system is in place and the API it will call is real and tested against
-real Gemini output:
-
-1. `react-native-maps` with a hardcoded initial region on Sagar Island — no
-   location permission (PRD).
-2. Static render first: cyclone track `Polyline` + infra `Marker`s from the
-   committed GeoJSON, so the screen is provable before any network call.
-3. Slider → `/surge-zone` + `/exposure`; render the flood `Polygon`, the
-   exposure counts, and compromised roads as red dashed polylines.
-4. "Generate Advisory" button → `POST /advisory` → `AdvisoryModal`
-   (already built, presentational). This is the only Gemini call in the app;
-   never wire it to `onChange` (Rules.md). **The button must handle three
-   distinct failures, because they mean different things to a person standing
-   in the rain:** 503-with-Retry-After → "the model is busy, try again in a
-   minute"; 502-with-violations → "the draft failed its checks, re-run";
-   429 → "the demo's daily quota is spent". Do not collapse them into one
-   "something went wrong".
-5. `expo-clipboard` for the SMS copy button — still not installed.
-
-Apply `theme.typography` while you are in there: the tokens exist, no
-component uses them ("Flagged for review" §1).
-
-Module F after that: deploy to Render, point the app at it, pre-warm before
-any demo, record a backup capture.
-
-**Three decisions still owed a human, all of which the app will inherit:**
-- **§24 — the border cluster.** Eight localities on the western district
-  boundary that the dataset cannot resolve. Anantapur is the one I would
-  check first.
-- **§26 — 429 handling.** An exhausted quota currently surfaces as a 502
-  "upstream failure", which is the wrong story for an operator. It should be
-  a 503 with a Retry-After, and the live tests should skip on it like they do
-  on 503.
-- **§26 — the 20/day budget.** A demo that taps "Generate Advisory" more than
-  a couple of times, plus a test suite run, will exhaust the day. Decide now
-  whether the demo key is a paid one.
-
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-29 — Z.Code (OpenCode): Stage A of the track viewer — the real Remal track on the map
+
+**Scope.** One of two staged halves; committed and reported separately per
+the brief, and Stage B (the advisory wiring) was deliberately not started.
+
+**The find that shaped the round: someone else's Stage A was already half
+built, uncommitted.** `backend/main.py` had 179 uncommitted lines adding
+`GET /track` and `tests/test_track.py` (286 lines) was untracked — neither in
+`git log`, neither in this file. Rather than overwrite it, the user was asked;
+the answer was to adopt it. **Before adopting, it was reviewed rather than
+trusted**, and two real defects were found in it:
+
+  1. Both docstrings claimed "**six** of the nineteen fixes" carry an
+     unreported wind. The committed file has **five** (2024-05-27, 03:00Z
+     through 15:00Z). Corrected in both files. The *assertions* stayed
+     `> 0` on purpose — pinning the count would break the suite the next time
+     the file is re-fetched clean, which is the failure mode the test was
+     written to avoid.
+  2. A test named `..._is_a_clear_503_style_error` asserted 500. Renamed to
+     say what it checks.
+
+It is genuinely good work and it passes: **271 passed, 3 skipped**, of which
+23 are the track tests. Also verified against a real uvicorn (port 8031 —
+8021 was already taken by something else), not just `TestClient`: 200, 19
+waypoints, `path` passing through every waypoint, lat 18.75–24.2 N / lon
+88.4–90.4 E.
+
+**The decision the brief delegated: endpoint, not a mount like `/overlays`.**
+The adopted docstring already argues it, and the argument holds. `/overlays`
+is a mount because a PNG is bytes-in-bytes-out with a sidecar bounds file. The
+track has work no file server can do: `fetch_ibtracs.py` writes a blank
+`USA_WIND` as `0.0`, so **5 of 19 fixes would draw a cyclone that stalls dead
+in the middle of the Bay and restarts** unless the server separates "not
+reported" from "calm"; knots are converted to km/h once, server-side, next to a
+stated `timezone: UTC`; and a malformed file is a named 500 rather than a
+subtly wrong map. A mount would be less code and wrong on all three.
+
+**Mobile: the two things that are deliberately quiet.** The waypoint label is
+**sliced out of the RFC 3339 string, not formatted from a `Date`** — a
+`Date`-based label reads **17:30 on a phone in Kolkata** for a 12:00Z fix
+(verified, not assumed), so the app would report a different time for the same
+real fix depending on who was looking. And a fix with no reported wind says
+"Wind not reported for this fix" rather than `0 kmph`. Both are pinned by
+tests, and the null case is the one the backend endpoint exists to protect.
+
+**Mobile tests needed no framework.** `mobile/tests/track.test.mjs`, run with
+`node --test 'tests/*.test.mjs'` — 4 tests, zero dependencies, possible only
+because `api.ts` imports nothing from react-native (the property its own header
+claims). It is plain `.mjs` on purpose: as a `.ts` file it would have needed
+`types: ["node"]` and `allowImportingTsExtensions` added to **the app's own
+tsconfig**, which is a worse trade than leaving one test file unchecked.
+
+**The colour gap, flagged rather than papered over.** Design.md assigns
+nothing to a track layer, so the line and the 19 pins use the existing `text`
+(Onyx) token — a neutral record, distinct from `water`/flood,
+`danger`/damage, `caution`/`safe`/severity. No hex invented. New "Flagged for
+review" §36 asks the question a human should answer: should a historical track
+be neutral at all?
+
+**Also built:** a one-line source caption above the intensity control naming
+the storm, the fix count, `IBTrACS v04r00`, and "a record of what happened —
+not a forecast". Visible provenance for real numbers, in the same muted voice
+the model's own limitation uses.
+
+**Honest limits.** The app has still **never run on a device** — this is
+typechecked and unit-tested, not seen. Whether 19 pins plus 19 native callouts
+plus 251 road polylines stutter on a mid-range Android is unknown. The track
+polyline and pins are drawn with `tracksViewChanges` at its **default**, unlike
+`AssetMarker` which sets it to `false` for 34 markers: a callout is the point
+of these pins, and there is no device here to verify which wins.
+
+**Verification.** `npx tsc --noEmit` clean. `node --test` 4/4. Backend suite
+271 passed, 3 skipped (the 3 are the opt-in live-Gemini tests; no quota spent).
 
 ### 2026-09-28 — Claude Code: Stage 2 map screen (§33) — the first screen
 
