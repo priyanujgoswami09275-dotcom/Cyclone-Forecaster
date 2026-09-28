@@ -63,7 +63,7 @@ step" before starting any work.
 | A. Data pipeline & surge ML model | Done | All 6 deliverables. DEM resolved (real GEE SRTM, tagged + committed). Stretch item (more RSMC points) still open. |
 | B. Simulation engine (flood propagation, routing, shelter allocation) | In progress | Engine complete and tested on real data. Only the shelter *dataset* is missing — no real locations/capacities exist to use (see blockers). |
 | C. Backend / API (FastAPI) | Done | `backend/main.py` + `backend/locations.py`. All contract endpoints live and curl-verified. `/advisory` is live (Module D below). |
-| D. AI advisory layer (Gemini) | Done | `backend/ai/advisory.py` + the `POST /advisory` handler. Schema, prompt, call, an honesty validator, and `load_dotenv()` key loading. 44 tests. **Three live advisories produced**; the third is clean on all three honesty rules after this round's fixes (§20–§25). Two known-but-unfixed gaps: the plan covers only some allocation localities (§23) and Tamluk remains in the allocation (§24). |
+| D. AI advisory layer (Gemini) | Done | `backend/ai/advisory.py` + the `POST /advisory` handler. Schema, prompt, call, an honesty validator, district-scoped localities, a capacity-retry wrapper, and `load_dotenv()` key loading. 70 tests. **Three live advisories produced**; all three rounds of defects are now closed (§20–§25). Two operational notes, not code gaps: the free tier is 20 calls/day (§26) and eight border-cluster localities still need a boundary dataset (§24). |
 | E. Mobile app (Expo / React Native) | In progress | Design system landed 2026-09-27 (`theme.ts`, fonts, font gate, 5 themed primitives); `theme.typography` added 2026-09-28. No screen logic yet — see "Module E: what is themed vs. unstyled" below. The API it will call is now real, so the map screen can be built against actual response shapes. |
 | F. Deployment | Not started | |
 
@@ -94,12 +94,12 @@ step" before starting any work.
   is gitignored (the ignore rule was missing until 2026-09-28 and is now
   added and verified). `load_dotenv()` never overwrites an already-set
   variable, so exported/CI/Render environments still win.
-- `tests/test_module_d.py` — 44 tests. 42 run with Gemini stubbed and need no
-  key; 2 live tests are marked `requires_key` and skip when
-  `GEMINI_API_KEY` is unset. Suite is **162 passing, 2 skipped** — but see
-  the note in "Environment / credentials status": `.env` is now populated, so
-  those 2 really run, really spend a Gemini call each, and can fail 502 on a
-  capacity block.
+- `tests/test_module_d.py` — 74 tests. 71 run with Gemini stubbed and need no
+  key; **3 live tests are opt-in and skip unless `RUN_LIVE_TESTS=1`**, so a
+  populated `.env` no longer implies a quota spend. Suite is **197 passing,
+  3 skipped**. To spend quota deliberately:
+  `RUN_LIVE_TESTS=1 venv/bin/pytest tests/test_module_d.py` — budget 3 live
+  calls per full run of that file, against a free tier of 20/day (§26).
 - `backend/locations.py` — locality list (id / name / coords / search radius),
   the building-centroid loader with a numpy bbox pre-filter, and the
   study-area scoping. Owns the origin→coordinate mapping `/routes` needs.
@@ -111,9 +111,10 @@ step" before starting any work.
 - `backend/data_pipeline/fetch_osm_places.py`,
   `backend/data_pipeline/fetch_osm_buildings.py` — the two pre-fetch scripts
   for the above. Pre-fetch only; never called from a handler (Rules.md).
-- `tests/test_module_c.py` — 37 tests on the API layer: 422 validation,
+- `tests/test_module_c.py` — 46 tests on the API layer: 422 validation,
   honesty metadata present *and correct*, `/routes`↔`/allocation` agreement,
-  no-network-calls-from-a-handler. **162 tests pass in total** (2 skipped).
+  district scoping (Tamluk denied, border cluster retained), and
+  no-network-calls-from-a-handler. **192 tests pass in total** (3 skipped).
 - `data/dem.tif` — **real SRTM**, USGS/SRTMGL1_003 via Google Earth Engine
   (`getDownloadURL`, crs=EPSG:4326, scale=50), 2898×3117 px, ~46×50 m cells.
   Provenance stamped into the raster's own GeoTIFF tags by
@@ -163,8 +164,8 @@ step" before starting any work.
 - `data/roads.geojson` — 3712 real OSM ways (arterials)
 - `data/surge_model.pkl` — joblib dict {model, features, loo_mae}; LOOCV MAE = 2.36 m
 - `backend/data_pipeline/` — fetch_ibtracs.py, fetch_osm_infra.py (now takes dataset names as argv), fetch_dem.py, tag_dem.py, train_surge_model.py
-- `tests/` — **162 passing, 2 skipped** (was 119): test_module_d.py (44, new —
-  2 skip without `GEMINI_API_KEY`), test_module_c.py (38),
+- `tests/` — **197 passing, 3 skipped** (was 119): test_module_d.py (74, new —
+  3 skip without `GEMINI_API_KEY`), test_module_c.py (46),
   test_flood.py (21), test_dem_and_surge.py (30), test_module_b.py (22), plus
   Module A's 9. Run `venv/bin/pytest tests/`. No network access needed.
 - `venv/` + `requirements.txt` (now includes rasterio, shapely, scipy, networkx,
@@ -220,6 +221,70 @@ not visually verified**.
 - **GEE auth: RESOLVED 2026-09-27.** Credentials obtained, `data/dem.tif`
   fetched (real `USGS/SRTMGL1_003`, 50 m, EPSG:4326, 2898×3117) and committed.
   Provenance stamped into the raster's tags. No further GEE work needed.
+- **RESOLVED 2026-09-28 (Stage 0) — both Render deploy risks closed.**
+  1. **`requirements.txt` pinned nothing — now pinned.** Every line carries a
+     floor (`rasterio>=1.3,<2`, `scipy>=1.11`, `shapely>=2.0`, numpy>=1.26,
+     scikit-learn>=1.3, fastapi>=0.110, google-genai>=2.0, …) with the locally
+     installed version noted alongside each. `rasterio` also gets an upper
+     bound: 2.x is a major version with its own GDAL ABI.
+  2. **No `render.yaml` — added.** Render picks Python via `PYTHON_VERSION`,
+     which takes **precedence over a `.python-version` file** (docs checked
+     2026-09-28), so the blueprint uses the env var as the single source of
+     truth rather than shipping two files that can disagree. `startCommand:
+     uvicorn backend.main:app --host 0.0.0.0 --port $PORT`,
+     `healthCheckPath: /health`, `plan: free`.
+  **`GEMINI_API_KEY` is `sync: false` with no value** — Render's documented
+  way to declare a dashboard-only secret. The file says only that a key is
+  required; the real one goes in Dashboard > Environment. A value in
+  `render.yaml` would be a secret in git (Rules.md).
+  **`osmnx` removed, and the whole transitive tree with it.** Not one line of
+  this project imported it — `backend/simulation/routing.py` builds its graph
+  from the committed `data/roads.geojson` and says in its own module docstring
+  why osmnx is deliberately unused (it queries Overpass live, which Rules.md
+  forbids from a handler, and would re-download the network on every cold
+  start). Verified at runtime, not just by grep: after sweeping every endpoint
+  of the live app, `osmnx`, `geopandas`, `fiona` and `pyogrio` are **all
+  absent from `sys.modules`**. geopandas 1.1.4 was riding in transitively.
+- **NEW 2026-09-28 — BLOCKER: the backend will not fit on Render's free tier.**
+  Measured, not guessed. Render's free Python web plan is **0.1 CPU and
+  512 MB RAM** (docs, 2026-08/09). The backend's measured peak:
+
+  | point | current RSS | **peak RSS** |
+  |---|---|---|
+  | interpreter only | 17 MB | 17 MB |
+  | after `import backend.main` | 138 MB | 138 MB |
+  | after `GET /health` (startup path) | 335 MB | **372 MB** |
+  | after `GET /surge-zone?category=6` | 741 MB | 778 MB |
+  | after `GET /routes?category=6` | 791 MB | 826 MB |
+  | after `POST /advisory` (**Gemini stubbed**) | 793 MB | **827 MB** |
+
+  **827 MB peak is 1.6× the 512 MB limit.** Attribution: imports 138 MB,
+  `load_dem()` +79 MB (the elevation array itself is only 36 MB — the rest is
+  GDAL overhead), and **`surge_zone()` alone is +420 MB**, the flood
+  propagation over the 2898×3117 grid. Caching all seven categories adds only
+  +9 MB more, so this is **transient working memory during the computation,
+  not a leak** — but transient is exactly what an OOM kill needs.
+  **Not fixed.** Cheapest levers first: the BFS keeps `visited`/`frontier`
+  copies per step over a 9M-cell grid (they only need to be bool/uint8); the 10
+  timeline frames are materialised for every category when the API only ever
+  returns the final one; and the DEM could be cropped to the bbox before the
+  CA runs. **Decide before deploying:** `plan: paid` is a one-line change and
+  sidesteps all of it.
+- **Data files for deploy: all committed, no action needed.** All ten files
+  under `data/` are tracked and total **~23 MB** — `roads.geojson` 6,
+  `buildings.csv.gz` 5, `dem.tif` 3, `delta_roads.geojson` 3, then
+  `surge_model.pkl` / `hospitals.geojson` / `places.geojson` /
+  `remal_track.geojson` / `shelters.json` / `substations.geojson` at ~1 each.
+  `.gitignore` ignores `*.geojson`/`*.tif`/`*.pkl` **except** under `data/`, so
+  the deploy needs the repo clone and nothing more. 23 MB is comfortably
+  inside a git repo, though it will be in every clone and every Render build
+  cache.
+- **`GEMINI_API_KEY` stays out of the repo, permanently.** `.env` is ignored
+  at `.gitignore:9`, `.env.*` too (with `!.env.example` so the template is
+  committed and holds no secret). Set it in the **Render dashboard** under
+  Environment, not in `render.yaml` — a `render.yaml` containing a key would
+  be a tracked secret. `load_dotenv()` no-ops when the variable is already
+  set, so the dashboard value wins and local `.env` is only a convenience.
 - **Shelter locations/capacities (ACTIVE BLOCKER for Module B item 5, does
   NOT block the API):** there is no real shelter dataset to load. OSM
   `amenity=shelter` in the bbox is 21 gazebos/bus shelters with no capacity
@@ -368,7 +433,7 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     Fixing it means a wider `data/delta_roads.geojson` fetch, not a code
     change.
 15. **`httpx` warns that `starlette.testclient` should move to `httpx2`.**
-    Harmless for the 162-test suite today. If a future Starlette/FastAPI
+    Harmless for the 192-test suite today. If a future Starlette/FastAPI
     release hard-fails on it, `tests/test_module_c.py` and
     `tests/test_module_d.py` are the only files affected — the app itself
     never uses httpx, which is a `fastapi.testclient` dependency only and is
@@ -481,37 +546,104 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     **Still open:** an unparseable `priority_level` is a hard 502 with no
     retry — `generate_advisory` raises rather than asking again, because a
     malformed response is exactly what the correction pass exists for.
-23. **The advisory reaches only a fraction of the localities it is given.**
-    Flagged, not fixed. `/allocation` at category 6 has 12 localities; the
-    second live run's plan named 5 of them (plus the code-built origin), the
-    third named 7 (plus the origin). The model chooses a subset and
-    `validate_advisory` only checks that named localities *exist* in the
-    data — never that they *cover* it, so an under-covered plan validates
-    clean. Two real consequences: a locality the user is told about may not
-    appear in its own advisory's plan, and the DEM-era block list the
-    demo is presumably built around is silently partial. Whether coverage
-    should be enforced (one entry per allocation locality) or merely
-    disclosed is a product decision, not a bug fix.
-24. **Tamluk (wrong district) is still in the allocation — could have been
-    included by chance.** Flagged, not fixed, and **not fixed by #23's
-    subsetting either.** This is #17 restated because the third live run
-    shows the exposure is live rather than theoretical: Tamluk is in
-    `LOCALITIES IN THIS ALLOCATION` in the prompt, and in run 2 the model
-    named 5 of 12 localities — if one of those five had been Tamluk, the
-    SMS would have told a real person in Purba Medinipur to evacuate on
-    South 24 Parganas advice. It did not happen in either run, which is
-    luck, not a control. **The district allow/deny list in
-    `backend/locations.py` (§17) remains the real fix and was explicitly out
-    of scope this round.**
-25. **Cosmetic, unfixed: the code-built origin reasoning reads as a
-    run-on.** `_ensure_origin_in_plan` interpolates `/routes`' reason
-    verbatim, and that string has no trailing period, so the sentence
-    renders as "…This is road-data coverage, not flooding Evacuation
-    cannot proceed along the mapped road network from here…". The facts
-    are correct and the entry is at index 0 where it belongs; only the
-    punctuation between the quoted reason and the next sentence is wrong.
-    Left alone per the "report and wait, do not fix from the result"
-    instruction for this round.
+23. **RESOLVED 2026-09-28 — under-coverage is now a violation, not a
+    silent gap.** The plan named 5 of 12 allocation localities in run 2 and
+    7 of 12 in run 3, and nothing noticed: `validate_advisory` only checked
+    that named localities *exist* in the data, never that they *cover* it.
+    `ai.advisory.plan_coverage()` is now the single definition, shared by the
+    validator and by the response metadata so the two cannot drift, and
+    `validate_advisory` raises a violation naming **every** missing locality —
+    because that string is what the correction pass feeds back to the model,
+    and a bare count gives it nothing to act on. SYSTEM_PROMPT rule 3 now
+    says "one entry per locality, no more and no fewer". Priorities for
+    missing localities are deliberately **not** invented in code: a level is a
+    judgement, so a half-covered plan fails (502 after the correction pass)
+    rather than being padded by a guess. `validation.plan_coverage` exposes
+    "N/M" over allocation localities. **Consequence worth knowing:** the first
+    live run after this change is also the first real test of whether the
+    model complies with full coverage — both previous runs under-covered, so
+    the correction pass firing on coverage is expected, not alarming.
+24. **RESOLVED 2026-09-28 — Tamluk is denied, in the data layer.**
+    `backend/locations.py` now has `DISTRICT_DENY` (name → the district it
+    really belongs to) and it is the *authoritative* scoping mechanism; the
+    latitude cut survives only as a coarse guard against the clipped Kolkata
+    suburbs and says so. The extract carries no `admin_level` tags and no
+    boundary geometry, so membership cannot be computed — it has to be named,
+    and naming it is what makes the removal reviewable. Tamluk is gone from
+    `/localities`, `/allocation`, `/routes` and the Gemini prompt; the denial
+    is published in `scoping().out_of_district_excluded` with its real
+    district so it reads as a decision rather than a data gap.
+    **`BORDER_CLUSTER` is the part that needs a human.** Eight localities sit
+    on or near the western South 24 Parganas / Purba Medinipur boundary, and
+    the dataset cannot settle them: Anantapur, Nandakumar, Syampur, Bajkul,
+    Dholmari, Basantia, Junput, Henria. They are **kept** and published under
+    `scoping().unresolved_border_localities`, because dropping a real delta
+    village on a hunch is the worse error — but at least one (my read of
+    Anantapur, ~6 km east of Tamluk in the same band) is plausibly also Purba
+    Medinipur. **Settle these against a real boundary dataset.**
+25. **RESOLVED 2026-09-28 — the run-on is fixed.** `main._as_sentence()`
+    normalises whitespace and guarantees a terminal stop before `/routes`'
+    reason is spliced into the code-built origin reasoning, so the entry no
+    longer reads "…road-data coverage, not flooding Evacuation cannot
+    proceed…".
+26. **NEW 2026-09-28 — the free tier is 20 requests per day, and it is
+    gone.** `gemini-3.8-flash` allows
+    `generate_content_free_tier_requests` = **20 per project per model per
+    day**, resetting at midnight Pacific. Three full suite runs (each making
+    2–3 live calls) plus the earlier probes and runs exhausted it, and this
+    round's live checks got `429 RESOURCE_EXHAUSTED`. **This is a direct
+    consequence of running the suite repeatedly against a live key**, and
+    unlike the 503 capacity block (#19) it is a hard limit — waiting 30s does
+    not help. **A 429 is a `ClientError`, not a `ServerError`, so
+    `_generate_with_capacity_retry` does not catch it and it surfaces as a
+    502.** That is arguably wrong: an exhausted quota is a "come back later",
+    i.e. a 503 with a Retry-After, not an upstream failure. Changing it was
+    out of scope this round. **Decide before the demo** — either widen the
+    live-test skip to 429 as well as 503, or always run the suite with `.env`
+    moved aside. Running `pytest tests/` three times a day exhausts the quota
+    every time.
+    **Still true on 2026-09-28 (second round):** the retry ladder is 2s/4s/8s
+    with a 3-attempt ceiling, so a 429 costs one call, not three — but it is
+    still not caught by `_is_capacity_error`, which gates on 503/UNAVAILABLE
+    only, as specified.
+    **Mitigation is now the code, not the habit.** Live tests are opt-in via
+    `RUN_LIVE_TESTS=1` rather than gated on key-presence, so a populated
+    `.env` no longer means `pytest tests/` spends quota. That closes the
+    accidental-spend path (three suite runs a day is what exhausted it), and
+    it was verified by running the suite *with* `.env` present: 3 skipped,
+    0 calls made. The residual gap is that a 429 still surfaces as a 502
+    rather than a "come back later" — unchanged, still open.
+27. **NEW 2026-09-28 — a live test was missing its skip guard.**
+    `test_no_unverified_number_reaches_a_live_advisory` had no
+    `@requires_key` and no skip of its own, so it made a real Gemini call on
+    any machine that happened to have `.env` — while its own docstring claimed
+    "Skipped without a key". Added the marker. It only showed up while
+    checking that the suite was green with `.env` moved aside, which is the
+    only way this class of bug is visible.
+28. **RESOLVED 2026-09-28 — exhausted capacity is 503 again; the 502 change is
+    reverted.** This went 503 → 502 → 503 inside one day, and the whole trail
+    is kept rather than cleaned up, because a reader who finds both codes
+    discussed in the history should know which is current and that every move
+    was deliberate. **Current: 503 with `Retry-After: 60`**, at both
+    `GeminiCapacityError` handlers in `main.py`. 503 is the semantically
+    correct code for "the model is busy, the identical request is likely to
+    work shortly"; 502 says "this service failed to get a usable answer from
+    upstream", which is exactly what the three retries were there to prevent.
+    The 502 round was changed on request and is now reverted on request. The
+    message body keeps the full story either way ("at capacity, not a fault in
+    this service", the attempt count, the measured wait), so a client reading
+    only the status gets the actionable code and a human reading the body gets
+    the detail. Three tests moved back with it.
+    **Left in place from that round, because each was a separate ask and is
+    independently useful:** the 2/4/8s backoff ladder, the *measured* (not
+    `sum()`-assumed) wait in the message, and `validation.gemini_calls`.
+29. **NEW 2026-09-28 — the live check cannot be scheduled.** Trying to set a
+    one-shot cron at the quota reset was denied by the harness classifier
+    ("Unauthorized Persistence"), so the outstanding `POST /advisory` runs have
+    to be triggered by hand after midnight Pacific. If this is going to
+    happen often, a cron permission rule in settings would make the
+    "wait for quota, then run the named check" loop automatic instead of
+    something that silently never fires.
 
 ## Environment / credentials status
 
@@ -526,11 +658,13 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
       `load_dotenv()` does not overwrite an already-exported variable, so CI
       and Render (which inject the key into the environment) work unchanged.
       Without a key `POST /advisory` returns 503 and `/health` reports
-      `advisory_ready: false`. **Note:** because `.env` is present, the
-      `@requires_key` live tests in `tests/test_module_d.py` now really run
-      and really cost a Gemini call each — expect two live failures if the
-      model is capacity-blocked (#19 addendum), which is a real signal, not a
-      test defect. Delete `.env` to get the skip-guard behaviour back.
+      `advisory_ready: false`.
+      **QUOTA — read before running the suite.** With `.env` present the 3
+      `@requires_key` tests really call Gemini, and the free tier allows
+      **20 calls/day/project/model**, resetting at midnight Pacific (#26).
+      Run `pytest tests/` with `.env` moved aside unless you intend to spend
+      quota. A capacity block (503) now skips with a reason; an exhausted
+      quota (429) does not, and surfaces as a 502.
 - [ ] Backend deployed (Render / Railway) — URL: _none yet_
 - [x] Expo project initialized — `mobile/`, Expo SDK 57.0.25, deps installed, `npx tsc --noEmit` clean
 - [ ] Expo app run on a device/simulator — never launched; theme is typechecked only (spec §10.5)
@@ -538,12 +672,63 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
 
 ## Next step
 
-Modules A–D are built and the advisory has now been produced live three
-times, cleanly on the last. **The highest-value next action is Module E — the
-mobile app**, the largest remaining gap. The design system is in place and
-the API it will call is real and tested against real Gemini output, so the
-map screen can be built against actual response shapes rather than invented
-ones:
+**Stage 0 is committed and the mobile build is staged behind it.** Stage 1 is
+`mobile/api.ts`: `EXPO_PUBLIC_API_URL` base, a 120s `AbortController` timeout
+on `POST /advisory` and shorter on the GETs, types mirroring the backend
+response shapes, and an error type that separates 503 (read `Retry-After`),
+502 (carry `detail.violations`), timeout, and network failure. Every timeout
+and every "worst case" number it needs is already derived in the mobile
+advisory audit entry in the session log — do not re-derive it.
+
+**One decision owed before any deploy:** the backend peaks at **827 MB**
+against Render free's **512 MB** (§ "Known issues / blockers"). Either
+`plan: paid` (one line) or do the flood-propagation memory work. It does not
+block mobile work and should not be allowed to delay it.
+
+
+**The mobile advisory flow does not exist yet — that is now the top item.**
+The audit behind this round found no API client, no request, no origin
+plumbing and no error handling in `mobile/`; `AdvisoryModal` is a
+presentational shell and `App.tsx` is a font gate. The backend contract it
+would call is real, tested, and has had four fixes land on it in the last two
+rounds, so the screen is now the bottleneck, not the API. The audit logged the
+specific things the screen must get right — a **120s timeout** (worst case is
+6 Gemini calls and 12s of backoff), `origin` = the tapped locality id, and
+handling for loading / 503+`Retry-After` / 502-with-violations / network
+failure — so they don't have to be re-derived. See the session log entry.
+
+**Still outstanding: one live check, blocked on the clock.** Four things a
+live run is the only way to confirm are in place: the plan must cover every
+allocation locality (§23), Tamluk is gone from the prompt (§24), the origin
+reasoning is punctuated (§25), and a capacity block retries three times on
+2s/4s before reporting 503 with an attempt count (§28). None has been
+exercised against the real model; the free tier's 20 calls/day reset at
+**midnight Pacific**.
+
+```
+venv/bin/uvicorn backend.main:app --port 8000
+curl -X POST "localhost:8000/advisory?category=6&origin=sagar"      # (a)
+curl -X POST "localhost:8000/advisory?category=2&origin=kakdwip"    # (b)
+```
+
+**This must be triggered by a human after 00:00 PDT / 12:30 IST.** An attempt
+to schedule a one-shot wake-up at the reset was denied by the harness
+classifier ("Unauthorized Persistence"), so nothing will fire on its own. A
+cron permission rule in settings would allow that next time.
+
+Report the raw JSON for each, plus `validation.attempts` and
+`validation.gemini_calls`. **(b) uses `kakdwip`** because it is reachable at
+category 2 (9.28 km to the Namkhana shelter) *and* is in the allocation, so
+it exercises the in-allocation origin path that (a)'s Sagar cannot — Sagar
+has no allocation row and gets a code-built entry instead. Canning, Gosaba
+and Baruipur are all UNREACHABLE at category 2, so they would test the same
+edge case again. Category 2 is 41 kmph → 0.0 m surge: the documented dead
+zone, where the flood map is empty and the advisory should still be honest
+about that rather than inventing impact.
+
+After that: **Module E, the mobile app** — the largest remaining gap. The
+design system is in place and the API it will call is real and tested against
+real Gemini output:
 
 1. `react-native-maps` with a hardcoded initial region on Sagar Island — no
    location permission (PRD).
@@ -553,40 +738,338 @@ ones:
    exposure counts, and compromised roads as red dashed polylines.
 4. "Generate Advisory" button → `POST /advisory` → `AdvisoryModal`
    (already built, presentational). This is the only Gemini call in the app;
-   never wire it to `onChange` (Rules.md). **Wire the button to a
-   user-triggered request that retries on 502** — the model is capacity-
-   blocked intermittently and the handler has no internal 503 retry (#19
-   addendum), so a single tap failing on stage is a live risk.
+   never wire it to `onChange` (Rules.md). **The button must handle three
+   distinct failures, because they mean different things to a person standing
+   in the rain:** 503-with-Retry-After → "the model is busy, try again in a
+   minute"; 502-with-violations → "the draft failed its checks, re-run";
+   429 → "the demo's daily quota is spent". Do not collapse them into one
+   "something went wrong".
 5. `expo-clipboard` for the SMS copy button — still not installed.
 
 Apply `theme.typography` while you are in there: the tokens exist, no
 component uses them ("Flagged for review" §1).
 
-Two Module D decisions are still owed a human, and both should be settled
-before the app renders the plan on screen, because the app will present
-whatever the backend returns:
-- **§23 — plan coverage.** The plan names 7 of 12 allocation localities and
-  nothing checks that. Either enforce one entry per locality, or disclose the
-  partiality in the advisory. Right now a locality can be absent from a plan
-  that was written about it.
-- **§24 (and §17) — Tamluk.** A town in Purba Medinipur is in the
-  allocation and therefore in the prompt. Needs the district allow/deny list
-  in `backend/locations.py`.
-
 Module F after that: deploy to Render, point the app at it, pre-warm before
 any demo, record a backup capture.
 
-**Before any demo, re-read the live-call notes:** the model 503s
-intermittently, the first HTTP attempt failed 502 and the second eight
-seconds later succeeded (#19 addendum), and the retry threshold in
-`main.advisory()` is **one** retry on a *validation* violation — a guess, not
-a measurement, still never exercised by a live run. If a live call shows a
-high violation rate the fix is the system prompt or `validate_advisory`, not
-more retries; each retry spends quota.
+**Three decisions still owed a human, all of which the app will inherit:**
+- **§24 — the border cluster.** Eight localities on the western district
+  boundary that the dataset cannot resolve. Anantapur is the one I would
+  check first.
+- **§26 — 429 handling.** An exhausted quota currently surfaces as a 502
+  "upstream failure", which is the wrong story for an operator. It should be
+  a 503 with a Retry-After, and the live tests should skip on it like they do
+  on 503.
+- **§26 — the 20/day budget.** A demo that taps "Generate Advisory" more than
+  a couple of times, plus a test suite run, will exhaust the day. Decide now
+  whether the demo key is a paid one.
 
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-28 — Claude Code (ponytail): Module E Stage 0 — deploy prep
+
+- **Scope:** Stage 0 of the mobile build, staged deliberately — commit and
+  report between each stage. No live Gemini calls; the `/advisory` path was
+  exercised with a stubbed `generate_advisory`.
+
+**The one that matters: Render's free tier will OOM this backend.** Render's
+free Python web plan is **0.1 CPU / 512 MB** (docs checked this round).
+Measured peak, on the real app, with Gemini stubbed:
+
+| point | current | **peak** |
+|---|---|---|
+| after startup (`GET /health`) | 335 MB | **372 MB** |
+| after `POST /advisory` | 793 MB | **827 MB** |
+
+**827 MB is 1.6× the limit.** It is not a leak — caching all seven categories
+adds only 9 MB — it is transient working memory inside `surge_zone()`, which
+alone is **+420 MB** for the BFS flood propagation over a 2898×3117 grid
+(9M cells). `load_dem()` is +79 MB, of which the elevation array is 36 MB and
+the rest is GDAL. **Not fixed** — fixing it is a design decision (narrow the
+BFS arrays to bool, stop materialising 10 timeline frames when the API returns
+only the last, crop the DEM to the bbox) versus one line in `render.yaml`:
+`plan: paid`. Flagged for the user rather than chosen.
+
+**Deploy prep shipped:**
+- `requirements.txt` **pinned** — it had not a single `==` or `>=` in it, so
+  every deploy resolved to whatever was newest and could break on a source
+  line that was working the day before. Floors set, installed versions noted
+  per line, `rasterio` upper-bounded (`<2`) because 2.x carries its own GDAL
+  ABI.
+- `render.yaml` **added**. Render selects Python by the `PYTHON_VERSION`
+  env var, which **takes precedence over a `.python-version` file** — checked
+  the docs rather than guessing, and used the env var so there is one source
+  of truth instead of two that can drift. `PYTHON_VERSION: 3.13.7`,
+  `uvicorn backend.main:app --host 0.0.0.0 --port $PORT`,
+  `healthCheckPath: /health`. **`GEMINI_API_KEY` is `sync: false` with no
+  value** — the file records only that a key is required; the real one goes in
+  the dashboard.
+- **`osmnx` removed.** It was imported by zero lines of this project.
+  `backend/simulation/routing.py` builds the road graph from the committed
+  `data/roads.geojson` and explains in its own docstring why osmnx is
+  deliberately not used: it queries Overpass live, which Rules.md forbids
+  from a request handler, and would re-download the network on every cold
+  start. Removing it also removes **geopandas 1.1.4, fiona and pyogrio**,
+  which came in transitively and were never imported either.
+  **Verified two ways**, because a grep alone does not prove a runtime
+  property: `pip uninstall` was denied (rightly — it mutates the shared venv),
+  so instead every endpoint of the live app was swept and `sys.modules`
+  inspected. `osmnx`, `geopandas`, `fiona`, `pyogrio` — all **absent**.
+  Suite green: **197 passed, 3 skipped**. `npx tsc --noEmit` clean.
+
+**Deferred, flagged not done:** `earthengine-api` and `requests` are in
+`requirements.txt` but are used *only* by `backend/data_pipeline/fetch_*.py`,
+never by the running service. They cost deploy build time for a script that
+will not run on Render. Kept because the team's DEM/OSM fetch workflow needs
+them, and a `requirements.txt` that breaks `fetch_dem.py` to save 200 MB of
+build cache is a bad trade for a hackathon. Split into
+`requirements-dev.txt` if the deploy ever gets slow.
+
+
+### 2026-09-28 — Claude Code: mobile advisory audit (read-only), live tests opt-in, 503 reverted
+
+- **Scope:** a read-only audit of the mobile advisory flow, plus two authorised
+  changes (live tests opt-in, capacity status reverted). No Gemini calls this
+  round. §28 closed.
+
+**Audit finding, and it is the headline: there is no mobile advisory flow.**
+`AdvisoryModal.tsx` is a content-agnostic presentational shell — it takes
+`children`, and its own docstring says so ("binding this component to a
+`DistrictAdvisory` … would make a presentational primitive depend on backend
+modules that do not exist yet"). `App.tsx` is 72 lines and is a font gate plus
+a placeholder `<Text>`; it contains **zero** references to advisory, origin or
+category. A grep for `fetch(`/`axios`/`API_BASE`/`EXPO_PUBLIC` across all app
+code returns **nothing** — every hit is inside `node_modules`. There is no API
+client module, no timeout, and no error handling, because none of it was ever
+written. Items 1, 2 and 3 of this audit are therefore not "gaps in the
+handling" but "the layer does not exist yet"; answering them per-state
+(loading / 503 / 502 / network / violations) would be inventing findings.
+
+What the audit *can* say is the contract those states will have to satisfy, and
+it is worth writing down before the screen is built:
+
+- `POST /advisory?category={0..6}&origin={locality id}` — `origin` must be the
+  tapped locality's `id` from `GET /localities`. The backend 404s on an unknown
+  id and 422s on a missing one. Nothing hardcodes it today because nothing
+  calls it.
+- **Worst-case backend latency, now that the retry ladder exists:** 3 Gemini
+  calls on the first pass + 2s + 4s backoff = 2 capacity retries, then the
+  correction pass can add up to 3 more calls and 2s + 4s. Call it **6 Gemini
+  calls and 12s of sleeping**, on top of 6 × model latency. A realistic
+  worst case is therefore **60–90s**; there is no client timeout to beat
+  because there is no client. Set one at 120s. React Native's `fetch` has no
+  default timeout, so an unset one hangs indefinitely — a "loading" spinner
+  that never resolves is the failure mode to design against, not a false
+  error.
+- States to handle, all currently unhandled because none exist: loading
+  (needs progress — `PrimaryButton` already has a spinner prop for exactly
+  this); **503 + `Retry-After: 60`** (now that §28 is reverted, the modal can
+  read the header and say "come back in a minute" instead of "something
+  broke"); 502 with `detail.violations` (an array — the honest-failure path,
+  and the user should read the violations, not "error"); and network failure,
+  which is indistinguishable from a timeout and should be worded as "couldn't
+  reach the server", not "the server failed".
+
+**Change 1 — live tests are opt-in.** `RUN_LIVE_TESTS=1` now gates them
+alongside key-presence, instead of key-presence alone. This is the fix for
+§26's accidental-spend path: the quota was exhausted by *running the suite*,
+not by any deliberate check, and key-presence gating meant a configured
+machine spent 3 calls on every `pytest tests/`. Verified by running the suite
+**with `.env` present and holding a real key** — 115 passed, 3 skipped, 0
+calls made. Run them with
+`RUN_LIVE_TESTS=1 venv/bin/pytest tests/test_module_d.py`.
+
+**Change 2 — capacity exhaustion is 503 again.** Reverted at both
+`GeminiCapacityError` handlers, `Retry-After: 60` kept, three tests moved
+back. The full 503 → 502 → 503 trail is recorded in §28 rather than cleaned
+up, and the constants block in `main.py` says which is current. The 2/4/8s
+ladder, the measured wait, and `gemini_calls` all stay — they were separate
+asks and none of them depended on the status code.
+
+**Deploy readiness (item 5), report only.** All ten files under `data/` are
+already tracked and total **~23 MB** (`roads.geojson` 6, `buildings.csv.gz`
+5, `dem.tif` 3, `delta_roads.geojson` 3, the rest ~1 each); `.gitignore`
+deliberately un-ignores `data/*` while ignoring the artifacts elsewhere. Local
+Python is **3.13.7** and `rasterio 1.5.1`, `scipy 1.18.1`, `shapely 2.1.2`,
+`geopandas 1.1.4` all install on it, so cp313 wheels exist for every heavy
+dependency. **Two real deploy risks:** `requirements.txt` pins **no versions
+at all**, and there is **no `render.yaml` or `runtime.txt`**, so Render picks
+its own Python — which need not be 3.13. Details and the fix in "Known
+issues / blockers".
+
+### 2026-09-28 — Claude Code: capacity ladder to 2/4/8, exhaustion as 502, attempt counts
+
+> **Historical.** The 502 in this entry's title was reverted the same day;
+> capacity exhaustion is **503** again. See §28. The backoff ladder, the
+> measured wait and `gemini_calls` from this round all still stand.
+
+- **Scope:** a re-issue of the same four items as the entry below, three of
+  which were already built. The genuinely new work was the fourth; the rest
+  was verified rather than rewritten.
+
+**Step 0 was already done.** The three verified fixes (priority enum,
+origin-in-plan, verified emergency contacts) were committed in the previous
+round as `5c569bc`, whose message says so verbatim. `.env` confirmed ignored
+at `.gitignore:9` and absent from `git add -A --dry-run`. **No second commit
+was made for them** — a new one with that description would have been empty at
+best and wrong at worst.
+
+**1, 2, 3 — already implemented and tested; re-verified, not changed.** §25
+punctuation (`main._as_sentence`, `TestReasoningPunctuation`, 5 tests), §23
+coverage (`ai.advisory.plan_coverage` + the validator violation +
+`TestPlanCoverage`, 8 tests), §24 deny list (`locations.DISTRICT_DENY`,
+applied upstream of both `/allocation` and `build_prompt`;
+`TestOutOfDistrictExcluded` asserts the prompt never names Tamluk). Item 2's
+"correction-retry path, for the first time" was also already covered by
+`test_the_correction_pass_is_told_which_names_are_missing`, which drives the
+full handler: first pass half-covers, correction string is captured, second
+pass completes, `attempts == 2`.
+
+**One prompt change.** SYSTEM_PROMPT rule 3 had absorbed the coverage
+instruction, which put two opposite instructions in one paragraph — rule 3
+forbids naming anything outside the allocation, and buried in the same
+paragraph is the demand to name *all* of it. Split: rule 3 is the no-invention
+ban alone, and **rule 9** is the coverage requirement, with the "and
+surrounding areas" merge explicitly forbidden. Pinned by a new test.
+
+**4 — capacity handling, genuinely changed.** Three deltas from the spec I had
+already built:
+
+| | before | now |
+|---|---|---|
+| backoff | 2s, 5s | **2s, 4s, 8s** ladder, ceiling 3 |
+| exhausted | 503 | **502**, `Retry-After: 60` kept |
+| attempts | not reported | **`validation.gemini_calls`** |
+
+`CAPACITY_BACKOFF_SECONDS = (2, 4, 8)` with `CAPACITY_MAX_ATTEMPTS = 3` means
+only 2s and 4s fire — three attempts have two gaps — and the 8s rung is there
+so raising the ceiling needs no new numbers. Both facts are pinned by tests,
+because a "slept == [2, 4]" assertion alone would not catch a cap change that
+silently reused a rung.
+
+The reported wait is now **measured** (`waited`, accumulated as it sleeps)
+rather than `sum(CAPACITY_BACKOFF_SECONDS)`, which would have claimed 14s when
+6s elapsed. `test_the_reported_wait_is_measured_not_assumed` pins it.
+
+`_generate_with_capacity_retry` now returns `(advisory, attempts)`. Two call
+sites unpack it; the correction pass adds its count to the total.
+
+**`gemini_calls` vs `attempts` — two numbers, deliberately.** `attempts` is
+correction passes (1, or 2 when the first draft broke a check) and keeps its
+old meaning. `gemini_calls` is HTTP calls actually made, including the ones
+that came back 503. A client seeing two slow advisories can now tell "tried
+once" from "tried three times, the model stayed busy" — which is the whole
+reason the attempt count was asked for.
+
+**A deliberate reversal, recorded so it is not mistaken for a slip.** The
+exhaustion status was **503** in the previous round, argued in a comment as
+"503 says busy, 502 says Gemini is broken". This round specified 502. Changed,
+and the original reasoning is kept in the comment above the constants rather
+than deleted, so the next reader sees that 503 was chosen once, on purpose,
+and is not chosen now. `status_code=502` → `503` at the two
+`GeminiCapacityError` handlers reverts it. The message text and the
+`Retry-After` header still carry the "at capacity, not a fault in this
+service" story, so it survives in the body either way.
+
+**Suite: 197 passed, 3 skipped** (was 192/3), run with `.env` moved aside.
+`TestCapacityRetry` grew 8 → 12; `TestPrompt` gained the rule-9 test.
+
+**The live check did not run, and this time the reason is the clock, not
+overrun.** Quota resets at midnight Pacific; it was 23:28 PDT. I tried to
+schedule a one-shot wake-up for the reset and the harness classifier denied
+it ("Unauthorized Persistence"), so it will not fire on its own — **the live
+call has to be triggered manually after 00:00 PDT / 12:30 IST.** A cron
+permission rule would let me automate this next time.
+
+### 2026-09-28 — Claude Code: district scoping, 503 handling, punctuation, coverage
+
+- **Scope:** four fixes from the review of the third live run, plus two live
+  checks. The prior round was committed first and separately (`5c569bc`) so
+  this round's changes could not be mixed into it.
+
+**1 — District scoping (`backend/locations.py`).** `DISTRICT_DENY` (name →
+the district it really belongs to) is now the authoritative mechanism;
+`STUDY_AREA_MAX_LAT` survives only as a coarse guard against the clipped
+Kolkata suburbs and says so in its own comment and in the disclosure. Tamluk
+is denied → gone from `/localities` (45, not 46), `/allocation` (11, not 12),
+`/routes` (404) and the prompt. Two things make the deny list trustworthy: the
+value records *why*, and `_deny_list_audit()` reports any entry that is not
+in the extract, because a typo there fails open and silently does nothing.
+
+**The list I did not apply, for review** — 8 localities on or near the
+western S24P/Purba Medinipur boundary, in `BORDER_CLUSTER`, **kept and
+published** under `scoping().unresolved_border_localities`:
+
+| Locality | lat, lon | Why it is doubtful |
+|---|---|---|
+| Anantapur | 22.32, 87.96 | ~6 km E of Tamluk, same band — **my top suspect** |
+| Syampur | 22.30, 88.03 | same latitude as Tamluk, 1.2 km E |
+| Nandakumar | 22.20, 87.92 | 8 km S of Tamluk, 11 km W of Mahishadal |
+| Bajkul | 22.02, 87.82 | 2.6 km inside the bbox's western edge |
+| Henria | 21.97, 87.80 | on the western edge itself |
+| Dholmari | 21.81, 87.83 | 3.1 km inside the edge |
+| Basantia | 21.80, 87.81 | 1.1 km inside the edge |
+| Junput | 21.73, 87.81 | 1.1 km inside the edge |
+
+The extract has no `admin_level` tags and no boundary geometry, so this could
+not be looked up — only reasoned about from coordinates. I did not drop them:
+a wrong guess removes a real delta village from a real advisory, which is the
+worse error than admitting uncertainty. Settle against a boundary dataset.
+
+**2 — 503 handling (`main.py`).** `_generate_with_capacity_retry` retries the
+**same pinned model** up to 3 attempts, sleeping 2s then 5s, and raises
+`GeminiCapacityError` on exhaustion, which the handler turns into a 503 with
+`Retry-After: 60` and a message that says the model is at capacity rather
+than that Gemini is broken. It covers the correction pass too — a block there
+still deserves a 503, not a 502. `_is_capacity_error` gates on 503/UNAVAILABLE
+so a 500 is *not* retried: that one is ours to fix, and retrying it just
+spends quota. No model rotation, per Rules.md. `_sleep` is an indirection so
+tests can stub the wait without patching the stdlib.
+
+**3 — Punctuation.** `main._as_sentence()` collapses whitespace and guarantees
+a terminal stop before `/routes`' reason is spliced into the code-built origin
+reasoning. That reason is assembled from several diagnostic fragments, so it
+is exactly the kind of string that arrives without punctuation.
+
+**4 — Plan coverage.** `ai.advisory.plan_coverage()` is one definition shared
+by the validator and the response metadata, so the "N/M" a client reads cannot
+drift from the number that was checked. Under-coverage is a violation that
+names every missing locality, because that string is what the correction pass
+feeds back. **Missing priorities are not invented in code** — a level is a
+judgement, so a half-covered plan fails rather than being padded by a guess.
+SYSTEM_PROMPT rule 3 now says "one entry per locality, no more and no fewer".
+
+**5 — Live tests skip on capacity.** `_advisory_body()` skips with the model's
+own words when the 503 names capacity, and still fails hard on anything else,
+so the suite stops flapping on someone else's load without going blind to our
+own bugs.
+
+**Bugs I introduced and fixed in the same round** — all three were my test
+premises, not the product code, and each was worth the detour:
+- `_generate_with_capacity_retry(**kwargs)` was called with **positional**
+  args, so every stubbed advisory became a `TypeError` → 502. Caught by 19
+  tests at once.
+- A coverage test asserted "5/11" when the code-built origin entry makes it
+  6/11: inserting Kakdwip legitimately covers one more allocation locality.
+  Two tests had hardcoded a number the origin guarantee shifts.
+- `TestPlanCoverage` had no key fixture, so it passed only because `.env`
+  existed. And `test_no_unverified_number_reaches_a_live_advisory` had **no
+  `@requires_key` at all** despite a docstring claiming it was skipped without
+  a key — a real live call on any machine with `.env`. Only visible because I
+  ran the suite with `.env` moved aside, which is now the habit.
+
+**Suite: 192 passed, 3 skipped** (was 162/2). The 3 skips are the live tests.
+
+**The live checks did not run, and the reason is mine.** The free tier allows
+**20 requests/day/project/model**, resetting at midnight Pacific. Three full
+suite runs this session (2–3 live calls each) plus the earlier probes
+exhausted it, and both live checks got `429 RESOURCE_EXHAUSTED`. I did not
+substitute a fake or a cached result. Note the asymmetry that made this bite:
+a 429 is a `ClientError`, not a `ServerError`, so the new capacity retry does
+**not** catch it and it still surfaces as a 502 — which is the wrong story for
+an exhausted quota, and is flagged as §26 rather than fixed in passing.
 
 ### 2026-09-28 — Claude Code: three fixes from the live advisory review
 

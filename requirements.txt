@@ -1,22 +1,45 @@
-requests
-numpy
-scikit-learn
-joblib
-earthengine-api
-pytest
+# Pinned 2026-09-28 (Stage 0). These were completely unpinned, which meant a
+# deploy resolved to whatever was newest on the day and could fail on a source
+# break in a file that was already working — the worst kind to debug on a free
+# tier. Floors are set from what the code actually uses, deliberately loose
+# enough to accept a few releases of drift, tight enough that an API this
+# project depends on cannot vanish under it. Verified locally against Python
+# 3.13.7; actual installed versions are noted per line.
+
+# Module A — data pipeline (pre-fetch only; the deployed service never imports
+# these, they run once on a laptop to produce data/*.geojson + data/dem.tif)
+requests>=2.31          # installed 2.32.x — Overpass / IBTrACS fetch scripts
+earthengine-api>=0.1.380  # installed 0.1.x — fetch_dem.py only
+
+# Module A — surge model + training
+numpy>=1.26             # installed 2.5.3
+scikit-learn>=1.3       # installed 1.9.1 — LinearRegression + leave-one-out CV
+joblib>=1.3             # installed 1.5.x — surge_model.pkl load
 
 # Module B — simulation engine
-rasterio
-shapely
-scipy
-networkx
-osmnx
+rasterio>=1.3,<2        # installed 1.5.1 — SRTM DEM. Upper bound: rasterio 2.x
+                         # is a major version with its own GDAL ABI.
+shapely>=2.0            # installed 2.1.2 — polygon geometry
+scipy>=1.11             # installed 1.18.1 — linprog for the shelter allocation
+networkx>=3.0           # installed 3.7 — Dijkstra over the road graph
 
 # Module C — FastAPI backend
-fastapi
-uvicorn[standard]
-httpx  # fastapi.testclient dependency, for tests/test_module_c.py only
+fastapi>=0.110          # installed 0.141.1
+uvicorn[standard]>=0.27 # installed 0.54.0
+httpx>=0.27             # installed 0.28.x — fastapi.testclient, tests only
 
 # Module D — AI advisory layer
-google-genai  # Gemini call in backend/ai/advisory.py
-python-dotenv # loads .env (gitignored) so GEMINI_API_KEY need not be exported
+google-genai>=2.0       # installed 2.25.0 — Gemini call in backend/ai/advisory.py
+python-dotenv>=1.0      # loads .env (gitignored); no-ops if the var is already
+                         # set, so Render's dashboard value wins
+
+# Tests
+pytest>=7.4
+
+# REMOVED 2026-09-28: osmnx. It was never imported by a single line of this
+# project — backend/simulation/routing.py builds its graph from the committed
+# data/roads.geojson and explains in its own module docstring why osmnx is
+# deliberately not used (it queries the Overpass API live, which Rules.md
+# forbids from a request handler, and would re-download the network on every
+# cold start). Dropping it also drops geopandas 1.1.4 and its fiona/pyogrio
+# tree, which came in transitively and are not imported directly either.

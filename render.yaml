@@ -1,0 +1,38 @@
+# Render blueprint. Added 2026-09-28 (Stage 0).
+#
+# Why a blueprint at all: without one, Render picks its own Python version and
+# its own build command, and neither is pinned anywhere in the repo. That is
+# how a service that works locally fails on deploy day.
+#
+# Docs checked 2026-09-28: Render selects Python via the `PYTHON_VERSION`
+# environment variable, which takes precedence over a `.python-version` file
+# at the repo root. This uses the env var for exactly that reason — one source
+# of truth, highest precedence, and visible in the blueprint. A
+# `.python-version` file would also work but would be silently overridden the
+# moment this key exists, and two files that can disagree is one too many.
+
+services:
+  - type: web
+    name: cyclone-forecaster-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # $PORT is supplied by Render and must not be hardcoded to 8000. --host
+    # 0.0.0.0 is required: uvicorn otherwise binds loopback only and Render's
+    # proxy cannot reach it.
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      # Local is 3.13.7 and every heavy dependency (rasterio, scipy, shapely)
+      # has a cp313 wheel, so this is a known-good interpreter rather than a
+      # hopeful one. Verified locally on 3.13.7.
+      - key: PYTHON_VERSION
+        value: 3.13.7
+
+      # Dashboard-only secret. `sync: false` with NO value is the documented
+      # way to declare this: Render never writes a value into this file, and
+      # anyone reading the repo learns only that a key is required. Put the
+      # real key in Dashboard > Environment. A value here would be a secret
+      # committed to git (Rules.md).
+      - key: GEMINI_API_KEY
+        sync: false
