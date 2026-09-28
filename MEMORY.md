@@ -64,8 +64,8 @@ step" before starting any work.
 | B. Simulation engine (flood propagation, routing, shelter allocation) | In progress | Engine complete and tested on real data. Only the shelter *dataset* is missing — no real locations/capacities exist to use (see blockers). |
 | C. Backend / API (FastAPI) | Done | `backend/main.py` + `backend/locations.py`. All contract endpoints live and curl-verified. `/advisory` is live (Module D below). |
 | D. AI advisory layer (Gemini) | Done | `backend/ai/advisory.py` + the `POST /advisory` handler. Schema, prompt, call, an honesty validator, district-scoped localities, a capacity-retry wrapper, and `load_dotenv()` key loading. 70 tests. **Three live advisories produced**; all three rounds of defects are now closed (§20–§25). Two operational notes, not code gaps: the free tier is 20 calls/day (§26) and eight border-cluster localities still need a boundary dataset (§24). |
-| E. Mobile app (Expo / React Native) | In progress | Design system landed 2026-09-27 (`theme.ts`, fonts, font gate, 5 themed primitives); `theme.typography` added 2026-09-28. No screen logic yet — see "Module E: what is themed vs. unstyled" below. The API it will call is now real, so the map screen can be built against actual response shapes. |
-| F. Deployment | Not started | |
+| E. Mobile app (Expo / React Native) | In progress | Design system landed 2026-09-27 (`theme.ts`, fonts, font gate, 5 themed primitives); `theme.typography` added 2026-09-28. **API client `mobile/api.ts` landed 2026-09-28** — types mirrored off a running backend, 120 s advisory timeout, error taxonomy, GeoJSON normalisers. No screen yet — see "Module E: what is themed vs. unstyled" below. |
+| F. Deployment | In progress | `render.yaml` + pinned `requirements.txt` landed 2026-09-28 (Stage 0). **Blocked on a plan decision** — the backend does not fit 512 MB; see "Known issues / blockers". |
 
 *(Status values: Not started / In progress / Blocked / Done)*
 
@@ -268,8 +268,35 @@ not visually verified**.
   copies per step over a 9M-cell grid (they only need to be bool/uint8); the 10
   timeline frames are materialised for every category when the API only ever
   returns the final one; and the DEM could be cropped to the bbox before the
-  CA runs. **Decide before deploying:** `plan: paid` is a one-line change and
-  sidesteps all of it.
+  CA runs.
+- **NEW 2026-09-28 — the plan question, answered with numbers but NOT acted
+  on.** The three paid tiers, by the one number that matters here (827 MB
+  measured peak vs. the tier's ceiling):
+
+  | plan | RAM | vs. 827 MB peak | cost |
+  |---|---|---|---|
+  | free | 512 MB | **does not fit** (1.6× over) | $0 |
+  | starter | 512 MB | **does not fit** — same ceiling as free | ~$7/mo |
+  | **standard** | **2 GB** | **fits**, ~2.4× headroom | **~$25/mo** |
+
+  So `starter` is not the step up people assume it is — it is the *same* 512 MB
+  as free, and buying it fixes nothing. The first tier that actually clears the
+  measurement is **standard**. `plan: free` therefore either works or it does
+  not, and on the measurement it does not.
+
+  **The preferred fix is not to buy memory — it is to precompute all seven
+  categories offline.** Surge category is a finite closed set (IMD wind bands
+  0–6), the flood result is deterministic for a given category, and it changes
+  only when the DEM or the model changes. So the whole 420 MB `surge_zone()`
+  computation is really a build-time step that is currently being repeated on
+  demand inside a web service. Precomputing turns the hot path into a dict
+  lookup, drops peak memory to the ~138 MB import baseline, and fits free with
+  room to spare — it also makes the free tier's cold start tolerable, which the
+  30–50 s restart otherwise makes worse.
+
+  **Deliberately NOT done: `render.yaml` still says `plan: free`, and no
+  precompute has been started.** The user asked for this finding to be recorded
+  and left as a decision. Both remain open.
 - **Data files for deploy: all committed, no action needed.** All ten files
   under `data/` are tracked and total **~23 MB** — `roads.geojson` 6,
   `buildings.csv.gz` 5, `dem.tif` 3, `delta_roads.geojson` 3, then
@@ -322,6 +349,46 @@ not visually verified**.
   because n=4 with 3 features. Adding more real RSMC New Delhi bulletin
   points (stretch item in Task.md) is the fix — do not swap the regression
   for a lookup table.
+- **NEW 2026-09-28 — the flood polygon is 112,655 vertices / 4.6 MB at
+  category 6. This will not render smoothly on a phone, and the map screen
+  is Stage 2.** Measured, not estimated, off a live `/surge-zone?category=6`:
+
+  | quantity | category 6 |
+  |---|---|
+  | polygons | 308 |
+  | rings | 24,911 |
+  | total vertices | **112,655** |
+  | JSON payload | **4,608,374 bytes (4.6 MB)** |
+  | `final_land_area_km2` | 1,820.83 |
+  | `drawn_area_km2` | 833.5 |
+
+  The backend already simplifies to `SIMPLIFY_TOL_DEG = 0.0015` (~170 m) and
+  drops fragments under 0.5 km², and it *reports* the loss honestly
+  (`dropped_detail_km2` = 987.3). The remaining 4.6 MB is simply what this
+  delta looks like at a resolution a phone can draw. `react-native-maps`
+  `<Polygon>` with 308 polygons / 112k vertices will stutter, and re-fetching
+  4.6 MB on every slider step is a connection problem before it is a
+  rendering one.
+
+  **The right fix is server-side, not client-side**: raise
+  `SIMPLIFY_TOL_DEG` (and/or `MIN_PART_KM2`) until the peak payload lands
+  under ~500 KB, which at this latitude is roughly 0.005–0.01°. That is a
+  backend change and was **NOT made** — it trades drawn detail against
+  payload, which is a judgement call about what the demo is claiming to show,
+  and `drawn_area_km2` already exists precisely so the UI can stay honest
+  about the loss. **Decision owed before the map screen is finished.**
+
+  Interim: `mobile/api.ts` ships `decimateRing`/`decimatePolygon`, a
+  dependency-free distance filter applied client-side, so the map has a
+  bounded vertex count today. It reduces what is *drawn*; it does **not**
+  reduce the 4.6 MB that crosses the wire, which is the part that will
+  actually be felt on a phone.
+
+  Also measured, and it is the same story by another route: **categories 0–5
+  return an empty geometry collection.** The surge model cannot resolve below
+  ~115 kmph, so every band under Severe Cyclonic Storm floods nothing and
+  `geometries` is `[]`. The map must read that as "nothing floods at this
+  intensity", not as a failed request.
 
 ## Flagged for review
 
@@ -672,18 +739,46 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
 
 ## Next step
 
-**Stage 0 is committed and the mobile build is staged behind it.** Stage 1 is
-`mobile/api.ts`: `EXPO_PUBLIC_API_URL` base, a 120s `AbortController` timeout
-on `POST /advisory` and shorter on the GETs, types mirroring the backend
-response shapes, and an error type that separates 503 (read `Retry-After`),
-502 (carry `detail.violations`), timeout, and network failure. Every timeout
-and every "worst case" number it needs is already derived in the mobile
-advisory audit entry in the session log — do not re-derive it.
+**Stage 1 (`mobile/api.ts`) is committed. Stage 2 is the map screen, and it is
+blocked on two things that are not code.**
 
-**One decision owed before any deploy:** the backend peaks at **827 MB**
-against Render free's **512 MB** (§ "Known issues / blockers"). Either
-`plan: paid` (one line) or do the flood-propagation memory work. It does not
-block mobile work and should not be allowed to delay it.
+1. **Three native deps are not installed.** `react-native-maps`,
+   `@react-native-community/slider` and `expo-clipboard` are all absent from
+   `mobile/node_modules` and from `mobile/package.json`. The map screen cannot
+   be built or typechecked without at least the first two, and they need
+   `npx expo install` (network + a native module link). This was not run
+   unprompted — it mutates `package.json` and the lockfile.
+
+2. **The flood payload decision.** 112,655 vertices / 4.6 MB at category 6
+   (§ "Known issues / blockers"). `api.ts` ships a client-side decimator so
+   the map is *drawable* today, but the 4.6 MB still crosses the wire on every
+   slider step. The real fix — raising `SIMPLIFY_TOL_DEG` server-side — is a
+   backend change that trades drawn detail against payload, and it was left
+   for a decision rather than made silently.
+
+Everything else for Stage 2 is unblocked and already derived: initial region
+hardcoded to Sagar Island, intensity slider over categories 0-6 firing
+`/surge-zone` and `/exposure` on `onSlidingComplete` only, final flood frame
+first, hospitals/substations as Markers (note: their geometry is `LineString`,
+so a marker takes `coordinates[0]` — there is no `Point` anywhere in the
+payload), `roads_cut_off` as a red `Polyline`, localities from `/localities`
+defaulting to `sagar`, counts via the existing `ExposureRow`, and categories
+0-5 rendering "nothing floods at this intensity" rather than an error.
+
+**One decision owed before any deploy:** the backend peaks at **827 MB**.
+`starter` is 512 MB like free and would not help; **standard (2 GB, ~$25/mo)**
+is the first tier that fits, and the *preferred* fix is not to buy it at all
+but to precompute all seven categories offline, which would drop peak memory
+to the ~138 MB import baseline and make the free tier viable. `render.yaml`
+still says `plan: free` and no precompute has been started — both are open
+deliberately. It does not block mobile work and should not be allowed to.
+
+**The live `POST /advisory` capture is still outstanding.** This round's
+single allowed attempt returned **HTTP 503** — all 3 attempts, 2 s + 4 s of
+backoff, 42 s wall clock, "This model is currently experiencing high demand".
+No `gemini_calls` or `validation` block exists, because it was an error, not a
+200. Not retried, per instruction. The free tier also resets at midnight
+Pacific, so the next attempt has to be made by hand after the reset.
 
 
 **The mobile advisory flow does not exist yet — that is now the top item.**
@@ -767,6 +862,67 @@ any demo, record a backup capture.
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-28 — Claude Code: housekeeping, live-capture attempt, Module E Stage 1 (api.ts)
+
+- **Housekeeping.** Two commits, as asked, with `.env` confirmed absent from
+  both (gitignored, and `git add -A --dry-run` shows it is not even
+  stageable): `8a7a0b2` (docs + `docs/agents/*`) and `58f9b4d` (backend +
+  tests).
+- **Dependency sweep — nothing to preserve.** Grepped
+  `backend/data_pipeline/`, `tests/`, root `*.py` and all of `backend/` for
+  `^\s*(import|from)\s+(osmnx|geopandas|fiona|pyogrio)\b`: **zero hits
+  everywhere.** The only mentions of those four anywhere in the project are
+  two docstrings that explain why they are deliberately *not* used
+  (`backend/simulation/exposure.py:3-4`, `backend/simulation/routing.py:3-4`).
+  **No `requirements-dev.txt` was created** — there is nothing to put in one.
+  Separately worth knowing: `requests` and `earthengine-api` are imported
+  *only* by the five `backend/data_pipeline/fetch_*.py` scripts, and both are
+  already in `requirements.txt`, so a data re-fetch works from a clean
+  install.
+- **Live capture: ONE attempt, returned 503, stopped as instructed.** At
+  `00:19 PDT` the quota had reset, so the window was open. The ladder behaved
+  exactly as designed — 3 attempts, 2 s + 4 s of backoff, `503` with
+  `Retry-After: 60` — but the model stayed at capacity, giving **HTTP 503 in
+  42.02 s**: *"This model is currently experiencing high demand."* No
+  `gemini_calls` or `validation` block exists, because the response is an
+  error rather than a 200. Not retried.
+- **The capture file was written and then deleted.** It had been saved to
+  `data/cached_advisory_cat6_sagar.json` as instructed, but the body was the
+  503 error payload, not an advisory. Leaving it would have been a real
+  latent bug: Stage 4's fallback loads that exact path as a "cached example",
+  so the app would have shipped a Gemini error message as if it were
+  generated advice. Removed, and the path is currently empty on purpose. The
+  capture is still owed before that fallback can be built.
+- **Module E Stage 1 — `mobile/api.ts`.** Types were mirrored **off a running
+  instance**, not off the source: every non-Gemini endpoint was curled and
+  its shape dumped, because a type that drifts from the wire compiles fine
+  and then renders `undefined`. Three things that came out of reading the real
+  payloads rather than assuming them:
+  - Infra geometry is **`LineString` for hospitals and substations too**, not
+    `Point` — they come from the same OSM extract. A `Marker` has to take
+    `coordinates[0]`. There is no `Point` geometry anywhere in the response.
+  - The flood geometry key is **`coordinates` for `MultiPolygon`**, not
+    `geometries`. A first probe of mine read the wrong key and looked like a
+    backend defect; it was a defect in the probe. Recorded because the same
+    mistake is easy to repeat.
+  - **Categories 0–5 return an empty geometry collection** — the surge model
+    cannot resolve below ~115 kmph, so those bands flood nothing. Empty means
+    "nothing floods", not "the request failed".
+  - Timeouts are derived in the file: **120 s** on `POST /advisory` (worst
+    case = 3 + 3 Gemini calls, 12 s of backoff, 6 model latencies ≈ 60–90 s)
+    and **45 s** on the GETs, where `/surge-zone` is slow on a cold cache but
+    never touches Gemini. Lowering the advisory timeout would show a failure
+    while the backend is still working, and the retry would spend more quota.
+- **Verification.** `tsc --noEmit` exits 0, and `--listFiles` confirms
+  `mobile/api.ts` is genuinely in the program rather than the check passing
+  vacuously. Backend suite: **197 passed, 3 skipped** — the 3 skips are the
+  opt-in live Gemini tests, with `RUN_LIVE_TESTS` unset. No live Gemini call
+  was made this round.
+- **What could not be verified without a device:** everything. Nothing in
+  `api.ts` has executed — `fetch` behaviour, the `AbortError` vs `TypeError`
+  split, `Retry-After` parsing, and the decimation arithmetic are all
+  reasoned, not observed. The first real exercise is Stage 2.
 
 ### 2026-09-28 — Claude Code (ponytail): Module E Stage 0 — deploy prep
 
