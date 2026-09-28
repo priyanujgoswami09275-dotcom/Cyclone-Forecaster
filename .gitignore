@@ -15,6 +15,19 @@ node_modules/
 .expo/
 *.tsbuildinfo
 
+# Tooling state at the repo root, not app dependencies. The Expo app's own
+# manifests are `mobile/package.json` and `mobile/package-lock.json` and are
+# tracked; these root ones belong to the Claude Code CLI install and the
+# skills installer, which follow the cwd they were launched from.
+#
+# The leading slash is load-bearing. A bare `package.json` matches at ANY
+# depth and would also match mobile/package.json, which is committed and
+# load-bearing. Anchored to the root, these cannot reach it.
+/.claude/
+/package.json
+/package-lock.json
+/skills-lock.json
+
 # data-fetch artifacts are only committed when they live under data/
 *.geojson
 *.tif
