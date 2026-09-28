@@ -350,3 +350,97 @@ class TestEndpoint:
         assert len(categories) == 7
         for cat in categories:
             assert f"cat{cat['category']}" in ids
+
+
+class TestBoundsSanity:
+    """The bounds are consumed positionally and never validated upstream.
+
+    `react-native-maps` maps `bounds[0]` -> `northEast` and `bounds[1]` ->
+    `southWest` without looking at the numbers, so a transposed or collapsed
+    bounding box does not raise there. The image is placed against a mirrored
+    box and, over this bbox, the result still looks like a plausible map with
+    the flood somewhere the model never said. The failure is silent at every
+    layer that could have caught it, which is why it is asserted at the
+    boundary where the committed file is read.
+    """
+
+    GOOD = {"west": 87.799988, "south": 21.299954, "east": 89.200013, "north": 22.601613}
+
+    def test_the_committed_index_passes(self, index):
+        """The assertion is only worth having if today's data clears it."""
+        for entry in index["overlays"]:
+            main.assert_overlay_bounds(entry["id"], entry["bounds"])
+
+    def test_correct_bounds_are_accepted(self):
+        main.assert_overlay_bounds("cat5", dict(self.GOOD))
+
+    @pytest.mark.parametrize(
+        "bounds,expected",
+        [
+            # The transpositions. Either axis alone is enough to mirror the box.
+            (
+                {"west": 89.200013, "south": 21.299954, "east": 87.799988, "north": 22.601613},
+                "west=89.200013, east=87.799988, expected west < east",
+            ),
+            (
+                {"west": 87.799988, "south": 22.601613, "east": 89.200013, "north": 21.299954},
+                "south=22.601613, north=21.299954, expected south < north",
+            ),
+        ],
+    )
+    def test_transposed_bounds_are_rejected_by_name(self, bounds, expected):
+        with pytest.raises(main.OverlayBoundsError) as caught:
+            main.assert_overlay_bounds("cat4", bounds)
+        message = str(caught.value)
+        assert "cat4" in message, f"the failing entry must be named, got {message!r}"
+        assert expected in message
+
+    @pytest.mark.parametrize("bounds", [
+        # Degenerate, not transposed: a zero-area box is equally unplaceable,
+        # and `>` rather than `>=` catches it for free.
+        {"west": 88.5, "south": 21.299954, "east": 88.5, "north": 22.601613},
+        {"west": 87.799988, "south": 21.9, "east": 89.200013, "north": 21.9},
+    ])
+    def test_collapsed_bounds_are_rejected(self, bounds):
+        with pytest.raises(main.OverlayBoundsError):
+            main.assert_overlay_bounds("remal_observed", bounds)
+
+    @pytest.mark.parametrize("bounds", [
+        {},
+        {"west": 87.8, "south": 21.3, "east": 89.2},  # north missing
+        {"west": 87.8, "south": 21.3, "east": None, "north": 22.6},
+        {"west": "west", "south": 21.3, "east": 89.2, "north": 22.6},
+    ])
+    def test_malformed_bounds_are_rejected(self, bounds):
+        with pytest.raises(main.OverlayBoundsError) as caught:
+            main.assert_overlay_bounds("cat0", bounds)
+        assert "cat0" in str(caught.value)
+
+    def test_an_unnamed_entry_still_reports_something(self):
+        with pytest.raises(main.OverlayBoundsError) as caught:
+            main.assert_overlay_bounds("<unnamed>", {"west": 1, "south": 0, "east": 0, "north": 1})
+        assert "<unnamed>" in str(caught.value)
+
+    def test_the_endpoint_rejects_a_transposed_index(self, tmp_path, monkeypatch):
+        """End to end, through `/overlays`, with a deliberately transposed
+        fixture: the file on disk is fine, one entry in it is not, and the
+        response must name which one rather than serve a mirrored box."""
+        good = dict(self.GOOD)
+        transposed = {**good, "west": good["east"], "east": good["west"]}
+        index_doc = {
+            "overlays": [
+                {"id": "cat5", "image": "flood_cat5.png", "bounds": good},
+                {"id": "cat6", "image": "flood_cat6.png", "bounds": transposed},
+            ]
+        }
+        fake_dir = tmp_path / "overlays"
+        fake_dir.mkdir()
+        (fake_dir / "overlays.json").write_text(json.dumps(index_doc))
+
+        monkeypatch.setattr(main, "OVERLAY_DIR", fake_dir)
+        response = TestClient(main.app).get("/overlays")
+
+        assert response.status_code == 500
+        assert "cat6" in response.json()["detail"]
+        # The well-formed entry is not the one named.
+        assert "cat5" not in response.json()["detail"]

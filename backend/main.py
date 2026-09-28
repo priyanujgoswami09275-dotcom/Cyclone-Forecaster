@@ -201,6 +201,49 @@ if OVERLAY_DIR.is_dir():
     )
 
 
+class OverlayBoundsError(ValueError):
+    """A prebuilt overlay's geographic bounds are not in the order `<Overlay>` needs."""
+
+
+def assert_overlay_bounds(entry_id: str, bounds: dict) -> None:
+    """Check one entry's bounds are ordered west < east and south < north.
+
+    `react-native-maps` resolves `<Overlay bounds>` positionally —
+    `bounds[0]` becomes the `northEast` corner and `bounds[1]` the
+    `southWest` one (see `normalizeBounds` in its `src/MapOverlay.tsx`).
+    It never inspects the numbers, so transposed or degenerate bounds do
+    not raise there: the image is simply placed against a mirrored or
+    zero-area box, and on a phone over the Bay of Bengal that reads as a
+    plausible-looking map with the flood in the wrong place. Nothing
+    upstream complains, so the check belongs at the boundary where the
+    committed file is read.
+
+    Equality fails as well as inversion. A collapsed box is not a valid
+    placement either, and `>` rather than `>=` catches it for free.
+    """
+    try:
+        west = float(bounds["west"])
+        south = float(bounds["south"])
+        east = float(bounds["east"])
+        north = float(bounds["north"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise OverlayBoundsError(
+            f"overlay {entry_id!r}: bounds must carry numeric west/south/east/north, "
+            f"got {bounds!r}"
+        ) from exc
+
+    for name, low, high, low_side, high_side in (
+        ("longitude", west, east, "west", "east"),
+        ("latitude", south, north, "south", "north"),
+    ):
+        if not high > low:
+            raise OverlayBoundsError(
+                f"overlay {entry_id!r}: {name} bounds are not ordered — "
+                f"{low_side}={low}, {high_side}={high}, expected {low_side} < {high_side}. "
+                "The image would be placed against a mirrored or empty bounding box."
+            )
+
+
 # --------------------------------------------------------------------------
 # Category -> wind -> surge
 # --------------------------------------------------------------------------
@@ -414,6 +457,16 @@ def list_overlays() -> dict:
     index = json.loads(index_path.read_text())
     overlays = []
     for entry in index["overlays"]:
+        # Before this, not after: a bad entry is a bad placement, and the
+        # endpoint is the only place the committed file is read, so it is
+        # the only place a transposed box can still be caught. Fails as a
+        # 500 rather than being silently passed through — a client that
+        # cannot place the image is better served by an error than by a
+        # flood drawn in the wrong place.
+        try:
+            assert_overlay_bounds(entry.get("id", "<unnamed>"), entry.get("bounds", {}))
+        except OverlayBoundsError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
         overlays.append(
             {
                 **entry,
