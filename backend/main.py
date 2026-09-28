@@ -41,6 +41,7 @@ import math
 import os
 import time
 from dataclasses import replace
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
@@ -344,6 +345,7 @@ def root() -> dict:
             "GET /localities",
             "GET /surge-zone?category={0-6}",
             "GET /exposure?category={0-6}",
+            "GET /track",
             "GET /routes?category={0-6}&origin={block_id}",
             "GET /allocation?category={0-6}",
             "POST /advisory?category={0-6}&origin={locality_id}  (Module D, Gemini)",
@@ -484,6 +486,183 @@ def list_overlays() -> dict:
         "count": len(overlays),
         "overlays": overlays,
     }
+
+
+#: Committed IBTrACS extract for the case-study cyclone. Read-only, never
+#: fetched at request time (Rules.md) — the whole file is 6 KB, so there is
+#: nothing to gain from streaming it and every reason to check it instead.
+TRACK_PATH = REPO_ROOT / "data" / "remal_track.geojson"
+
+#: 1 knot in km/h. The source column is USA_WIND in knots; the rest of this
+#: service reasons in km/h because that is the unit IMD bands are published
+#: in, so the conversion happens once here rather than in every client.
+KNOTS_TO_KMPH = 1.852
+
+
+class TrackDataError(ValueError):
+    """The committed track file is missing, malformed, or not what it claims."""
+
+
+def _parse_track_timestamp(raw: object, waypoint_index: int) -> str:
+    """`iso_time` -> RFC 3339, or raise.
+
+    IBTrACS writes `2024-05-25 12:00:00`: no timezone marker, no offset. It is
+    UTC, and this endpoint says so in a `timezone` field rather than silently
+    attaching one — a client that needs an offset gets a truthful field
+    instead of a guess baked into a string.
+    """
+    text = str(raw).strip()
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError as exc:
+        raise TrackDataError(
+            f"waypoint {waypoint_index}: ISO_TIME {text!r} is not "
+            "'%Y-%m-%d %H:%M:%S'"
+        ) from exc
+    return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def load_track() -> dict:
+    """Parse `data/remal_track.geojson` into the shape `/track` sends.
+
+    Returns the cyclone's identity, the ordered polyline, and one entry per
+    fix. Split out from the endpoint so the parsing is testable against
+    fixtures that are not the committed file.
+
+    **Why this is an endpoint and not a static mount like `/overlays`.** The
+    overlay layer is a mount because it is a picture: bytes in, bytes out,
+    with a bounds box beside it that needed a separate index file anyway.
+    This one has real work to do that a file server cannot do at all:
+
+      1. **Missing wind must not read as calm.** The fetch script coerces a
+         blank USA_WIND to `0.0`, so five of the nineteen fixes in the
+         committed file carry `usa_wind_kt: 0.0` that mean *not reported*,
+         not 0 knots. Serving the file raw would let a client draw a
+         historical cyclone that appears to stop dead in the middle of the
+         Bay and then restart. A static mount cannot distinguish the two
+         cases; here it is a `wind_kt: null` plus `wind_reported: false`.
+      2. **Units and the timezone need stating once, server-side.** The
+         source is knots with unzoned timestamps; every client would
+         otherwise repeat the same conversion, and get it wrong
+         independently.
+      3. **A malformed file should be a clear error, not a broken map.**
+         `assert_overlay_bounds` exists for the same reason at the same
+         layer.
+
+    A mount would be less code and would quietly get all three wrong.
+    """
+    if not TRACK_PATH.exists():
+        raise TrackDataError(
+            f"{TRACK_PATH} is missing. It is a committed file; re-fetch it with "
+            "`venv/bin/python -m backend.data_pipeline.fetch_ibtracs`."
+        )
+    try:
+        doc = json.loads(TRACK_PATH.read_text())
+    except json.JSONDecodeError as exc:
+        raise TrackDataError(f"{TRACK_PATH} is not valid JSON: {exc}") from exc
+
+    features = doc.get("features")
+    if not isinstance(features, list) or not features:
+        raise TrackDataError(f"{TRACK_PATH} has no 'features' array")
+
+    line = next(
+        (f for f in features if f.get("geometry", {}).get("type") == "LineString"),
+        None,
+    )
+    if line is None:
+        raise TrackDataError(f"{TRACK_PATH} has no LineString feature (the track path)")
+
+    line_props = line.get("properties", {})
+    coordinates = line["geometry"].get("coordinates", [])
+
+    waypoints = []
+    for index, feature in enumerate(features):
+        geometry = feature.get("geometry", {})
+        if geometry.get("type") != "Point":
+            continue
+        props = feature.get("properties", {})
+        coords = geometry.get("coordinates", [])
+        if len(coords) < 2:
+            raise TrackDataError(
+                f"waypoint {index}: Point geometry needs [lon, lat], got {coords!r}"
+            )
+        # The fetch script writes 0.0 for a blank USA_WIND, so 0 is not a
+        # measurement here — it is the absence of one. Reported as null.
+        wind_kt = props.get("usa_wind_kt")
+        reported = wind_kt is not None and float(wind_kt) > 0
+        waypoints.append(
+            {
+                "sequence": len(waypoints),
+                "timestamp": _parse_track_timestamp(props.get("iso_time"), index),
+                "latitude": float(coords[1]),
+                "longitude": float(coords[0]),
+                "wind_kt": float(wind_kt) if reported else None,
+                "wind_kmph": round(float(wind_kt) * KNOTS_TO_KMPH, 1) if reported else None,
+                # Explicit rather than inferred from a null, so a client cannot
+                # accidentally treat "absent" as "zero" by reaching for the
+                # wrong field.
+                "wind_reported": reported,
+            }
+        )
+
+    if not waypoints:
+        raise TrackDataError(f"{TRACK_PATH} has a LineString but no Point features")
+
+    # The LineString and the Points are two views of one track. If they
+    # disagree in length the file is inconsistent and a client would draw a
+    # path that does not pass through the markers it also drew.
+    if len(coordinates) != len(waypoints):
+        raise TrackDataError(
+            f"{TRACK_PATH}: LineString has {len(coordinates)} positions but there "
+            f"are {len(waypoints)} Point features — the two views disagree"
+        )
+
+    # Chronological order is the whole point of a track. IBTrACS rows are
+    # already sorted by the fetch script, but that is a property of a
+    # generator, not of the artefact, and a hand-edited file need not keep it.
+    waypoints.sort(key=lambda w: w["timestamp"])
+
+    return {
+        "name": line_props.get("name"),
+        "season": line_props.get("season"),
+        "source": line_props.get("source"),
+        "wind_units": line_props.get("wind_units"),
+        "timezone": "UTC",
+        "path": [
+            {"latitude": w["latitude"], "longitude": w["longitude"]} for w in waypoints
+        ],
+        "waypoints": waypoints,
+        "waypoint_count": len(waypoints),
+        "first_timestamp": waypoints[0]["timestamp"],
+        "last_timestamp": waypoints[-1]["timestamp"],
+        "unreported_wind_count": sum(1 for w in waypoints if not w["wind_reported"]),
+        "disclosure": (
+            "Historical best-track positions for the case-study cyclone, "
+            "pre-fetched from IBTrACS and committed to data/remal_track.geojson. "
+            "Nothing here is fetched live (Rules.md). Positions are 3-hourly "
+            "best-track fixes, not a forecast, and the track is a record of what "
+            "happened — it is not this service's prediction for any other storm. "
+            "USA_WIND is the IBTrACS knots column; a fix with no reported wind "
+            "carries wind_kt: null and wind_reported: false, which is NOT the "
+            "same as 0 knots. The source file writes a blank USA_WIND as 0.0, so "
+            "this endpoint is what separates 'not reported' from 'calm'."
+        ),
+    }
+
+
+@app.get("/track")
+def get_track() -> dict:
+    """Cyclone Remal's historical track: path, waypoints, wind, disclosure.
+
+    Real observed data for the case study, from the committed IBTrACS
+    extract. It is deliberately not keyed by category: the track is a
+    historical fact and does not vary with the slider, so there is no
+    parameter to get wrong and nothing to refetch when the user drags.
+    """
+    try:
+        return load_track()
+    except TrackDataError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/localities")
