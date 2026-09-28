@@ -62,8 +62,8 @@ step" before starting any work.
 |---|---|---|
 | A. Data pipeline & surge ML model | Done | All 6 deliverables. DEM resolved (real GEE SRTM, tagged + committed). Stretch item (more RSMC points) still open. |
 | B. Simulation engine (flood propagation, routing, shelter allocation) | In progress | Engine complete and tested on real data. Only the shelter *dataset* is missing — no real locations/capacities exist to use (see blockers). |
-| C. Backend / API (FastAPI) | Done | `backend/main.py` + `backend/locations.py`. All contract endpoints live and curl-verified. `/advisory` returns 501 — that's Module D, next. |
-| D. AI advisory layer (Gemini) | Done | `backend/ai/advisory.py` + the `POST /advisory` handler. Schema, prompt, call, an honesty validator, and `load_dotenv()` key loading. 30 tests (2 skip without a key). **Still no live advisory produced** — the one attempt was blocked by `gemini-3.7-flash` returning 503, now swapped to 3.8 (§18, §19). |
+| C. Backend / API (FastAPI) | Done | `backend/main.py` + `backend/locations.py`. All contract endpoints live and curl-verified. `/advisory` is live (Module D below). |
+| D. AI advisory layer (Gemini) | Done | `backend/ai/advisory.py` + the `POST /advisory` handler. Schema, prompt, call, an honesty validator, and `load_dotenv()` key loading. 44 tests. **Three live advisories produced**; the third is clean on all three honesty rules after this round's fixes (§20–§25). Two known-but-unfixed gaps: the plan covers only some allocation localities (§23) and Tamluk remains in the allocation (§24). |
 | E. Mobile app (Expo / React Native) | In progress | Design system landed 2026-09-27 (`theme.ts`, fonts, font gate, 5 themed primitives); `theme.typography` added 2026-09-28. No screen logic yet — see "Module E: what is themed vs. unstyled" below. The API it will call is now real, so the map screen can be built against actual response shapes. |
 | F. Deployment | Not started | |
 
@@ -73,26 +73,33 @@ step" before starting any work.
 
 - `backend/main.py` — **the FastAPI app (Module C).** Implements the
   Architecture.md contract exactly: `/surge-zone`, `/exposure`, `/routes`,
-  `/allocation`, `POST /advisory` (501, Module D), plus `/`, `/health`,
-  `/categories`, `/localities`. Per-category `lru_cache` throughout:
+  `/allocation`, `POST /advisory`, plus `/`, `/health`, `/categories`,
+  `/localities`. Per-category `lru_cache` throughout:
   flood 7.5 s cold → **0.017 s warm**. Run:
   `venv/bin/uvicorn backend.main:app --port 8000`
 - `backend/ai/advisory.py` — **Module D.** `DistrictAdvisory` /
-  `EvacuationPriority` pydantic schemas, the Gemini system prompt, the
-  `gemini-3.7-flash` call, and `validate_advisory()` — the post-hoc honesty
-  checks (SMS length, invented localities, missing demo-shelter disclosure).
-  Note the field is `locality_name`, **not** CLAUDE.md's `block_name` (§16).
-  `build_prompt`/`generate_advisory` take optional `context` and
-  `corrections` keywords; with neither, it is a single clean call.
+  `EvacuationPriority` pydantic schemas (the latter with a closed
+  `Literal` priority level, §22), the Gemini system prompt, the
+  `gemini-3.8-flash` call (§19), and `validate_advisory()` — the post-hoc
+  honesty checks (SMS length, invented localities, missing demo-shelter
+  disclosure). Note the field is `locality_name`, **not** CLAUDE.md's
+  `block_name` (§16). `build_prompt`/`generate_advisory` take optional
+  `context` and `corrections` keywords; with neither, it is a single clean
+  call. `VERIFIED_HISTORICAL_POOL` and `VERIFIED_EMERGENCY_CONTACTS` are the
+  two closed lists the prompt draws from; the second exists because the
+  model invented a helpline (§21).
 - `.env.example` — committed, secret-free template for the one variable the
   app reads from the environment. `cp .env.example .env` and paste a key;
   `main.py` calls `load_dotenv()` at import so nothing needs exporting. `.env`
   is gitignored (the ignore rule was missing until 2026-09-28 and is now
   added and verified). `load_dotenv()` never overwrites an already-set
   variable, so exported/CI/Render environments still win.
-- `tests/test_module_d.py` — 30 tests. 28 run with Gemini stubbed and need no
+- `tests/test_module_d.py` — 44 tests. 42 run with Gemini stubbed and need no
   key; 2 live tests are marked `requires_key` and skip when
-  `GEMINI_API_KEY` is unset. Suite is **148 passing, 2 skipped**.
+  `GEMINI_API_KEY` is unset. Suite is **162 passing, 2 skipped** — but see
+  the note in "Environment / credentials status": `.env` is now populated, so
+  those 2 really run, really spend a Gemini call each, and can fail 502 on a
+  capacity block.
 - `backend/locations.py` — locality list (id / name / coords / search radius),
   the building-centroid loader with a numpy bbox pre-filter, and the
   study-area scoping. Owns the origin→coordinate mapping `/routes` needs.
@@ -106,7 +113,7 @@ step" before starting any work.
   for the above. Pre-fetch only; never called from a handler (Rules.md).
 - `tests/test_module_c.py` — 37 tests on the API layer: 422 validation,
   honesty metadata present *and correct*, `/routes`↔`/allocation` agreement,
-  no-network-calls-from-a-handler. **148 tests pass in total** (2 skipped).
+  no-network-calls-from-a-handler. **162 tests pass in total** (2 skipped).
 - `data/dem.tif` — **real SRTM**, USGS/SRTMGL1_003 via Google Earth Engine
   (`getDownloadURL`, crs=EPSG:4326, scale=50), 2898×3117 px, ~46×50 m cells.
   Provenance stamped into the raster's own GeoTIFF tags by
@@ -156,7 +163,7 @@ step" before starting any work.
 - `data/roads.geojson` — 3712 real OSM ways (arterials)
 - `data/surge_model.pkl` — joblib dict {model, features, loo_mae}; LOOCV MAE = 2.36 m
 - `backend/data_pipeline/` — fetch_ibtracs.py, fetch_osm_infra.py (now takes dataset names as argv), fetch_dem.py, tag_dem.py, train_surge_model.py
-- `tests/` — **148 passing, 2 skipped** (was 119): test_module_d.py (30, new —
+- `tests/` — **162 passing, 2 skipped** (was 119): test_module_d.py (44, new —
   2 skip without `GEMINI_API_KEY`), test_module_c.py (38),
   test_flood.py (21), test_dem_and_surge.py (30), test_module_b.py (22), plus
   Module A's 9. Run `venv/bin/pytest tests/`. No network access needed.
@@ -361,7 +368,7 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     Fixing it means a wider `data/delta_roads.geojson` fetch, not a code
     change.
 15. **`httpx` warns that `starlette.testclient` should move to `httpx2`.**
-    Harmless for the 148-test suite today. If a future Starlette/FastAPI
+    Harmless for the 162-test suite today. If a future Starlette/FastAPI
     release hard-fails on it, `tests/test_module_c.py` and
     `tests/test_module_d.py` are the only files affected — the app itself
     never uses httpx, which is a `fastapi.testclient` dependency only and is
@@ -388,16 +395,21 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     boundary, so it is not making a false claim, but a real advisory should
     not list a town in the neighbouring district. Fixing it means an explicit
     locality allow/deny list in `backend/locations.py`, not a latitude tweak.
-18. **A live advisory has still never been produced — and the reason
-    changed.** First live attempt 2026-09-28: a key was supplied and accepted
+18. **A live advisory has been produced — three of them, same day.** First
+    live attempt 2026-09-28: a key was supplied and accepted
     (`/health` → `advisory_ready: true`), but `POST /advisory` returned 502 on
     five attempts over ~4 minutes because **`gemini-3.7-flash` was returning
-    `503 UNAVAILABLE` ("high demand")** — see #19. So the blocker was never
-    only the missing key; a fresh key alone would have hit the same wall.
-    **The two `requires_key` tests in `tests/test_module_d.py` have still
-    never executed**, and the retry threshold in `main.advisory()` remains a
-    guess rather than a measurement. The first person to get a 200 should read
-    the output as a human, per "Next step".
+    `503 UNAVAILABLE` ("high demand")** — see #19. After the swap to 3.8, a
+    second run produced a 200 and exposed the "Immediate"/"Dial 1077"
+    defects (#21, #22, #23). After this round's three fixes, the third run
+    (`category=6&origin=sagar`) returned 200 on the second HTTP attempt with
+    a clean advisory: all 8 priority levels in capitals, Sagar present at
+    index 0 with `origin_entry_added_in_code: true`, and "dial 112" as the
+    only number anywhere. **The two `requires_key` tests in
+    `tests/test_module_d.py` have now executed for real** — they are no
+    longer a guess about a code path. The retry threshold in
+    `main.advisory()` is still a guess: no live run has yet needed the
+    correction pass, so it remains unexercised.
 19. **RESOLVED 2026-09-28 — model swapped `gemini-3.7-flash` →
     `gemini-3.8-flash`.** Not a silent edit: decided and recorded per Rules.md
     ("Pin the exact Gemini model string in code... don't silently swap model
@@ -416,21 +428,109 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     CLAUDE.md and its `AGENTS.md`/`GEMINI.md` symlinks are updated;
     `ADVISORY_MODEL` remains the single source of truth in
     `backend/ai/advisory.py`.
+    **Addendum, same day, second live run:** 3.8 is *also* intermittently
+    capacity-blocked. A read-only probe showed 3.5 failing 3/3 attempts
+    (1.4s, 2.5s, 67.0s) while 3.8 answered a trivial prompt in 13.2s, and a
+    `POST /advisory` returned 502 on attempt 1 and **200 on attempt 2 eight
+    seconds later**. So the block is transient and model-specific, and 3.8
+    remains the right pin. **The handler has no internal retry on 503** — a
+    live caller must retry the HTTP request itself, which is what both live
+    runs had to do. The correction pass in `main.advisory()` only retries on
+    a `validate_advisory` violation, never on a 503, so a capacity blip
+    surfaces as a 502 to whoever called it.
+20. **The Gemini prompt's locality rule and the requester's own locality
+    collided; the locality being asked about lost.** SYSTEM_PROMPT rule 3
+    said `evacuation_plan` localities must come *only* from the allocation
+    list. Sagar — the origin the user explicitly asked about — has no
+    at-risk population estimate, so it has no allocation row, so the one
+    locality guaranteed to be relevant was the one the model was forbidden
+    to name. It dropped out of the plan in the first two live runs.
+    Fixed in code, not prose: `main._ensure_origin_in_plan()` builds the
+    `EvacuationPriority` from `/routes` facts and inserts it at index 0 when
+    absent, with `priority_level=CRITICAL` when unreachable and `HIGH` when
+    reachable. `validate_advisory` gained an `origin` argument that exempts
+    the requesting locality from the invented-locality check — without it
+    the guarantee would just trade one violation for another. The entry is
+    **re-applied after the retry pass**, since the retry replaces the whole
+    object. Pinned by `TestOriginAlwaysPresent` (7 tests) including
+    `test_the_guarantee_survives_the_retry_path`.
+21. **The model invented a helpline number, and the doc comment invited
+    it.** The first live run's SMS read "Dial 1077 for WB disaster
+    assistance" — a plausible-looking, unverified district helpline.
+    `VERIFIED_EMERGENCY_CONTACTS` now holds exactly one entry (112,
+    India's national emergency number) and SYSTEM_PROMPT rule 8 requires
+    every number anywhere in the output to come from it, with explicit
+    permission to omit the number rather than supply one. This is the same
+    closed-list pattern as `VERIFIED_HISTORICAL_POOL` (which stopped the
+    "Immediate"/"High" style of unsourced claim in `historical_context`),
+    applied to a field where a wrong number has real-world consequences.
+    Scanned by `HELPLINE_SHAPED = r"(?<![\d.,])\d{4}(?![\d.,])"` — 4-digit
+    tokens only, since 112 is 3-digit and the legitimate numbers in the
+    output (185, 3.86, 4, 5) must not trip it. Note this catches
+    *short-code-shaped* invention, not a well-formed but wrong longer
+    number.
+22. **`priority_level` was a bare `str` with the vocabulary in a comment
+    only.** The first live run returned `"Immediate"` three times and
+    `"High"` twice; nothing rejected it, because a `str` accepts anything
+    and the documented levels lived in a trailing comment that the model
+    never saw. It is now `Literal["CRITICAL","HIGH","MEDIUM","LOW"]`, which
+    puts the four values in the schema sent to Gemini *and* fails the parse
+    locally. SYSTEM_PROMPT rule 7 states them explicitly as well, since a
+    schema constraint and a prose rule fail differently. `PRIORITY_LEVELS`
+    is the named tuple of record. Third live run: 8/8 entries in capitals.
+    **Still open:** an unparseable `priority_level` is a hard 502 with no
+    retry — `generate_advisory` raises rather than asking again, because a
+    malformed response is exactly what the correction pass exists for.
+23. **The advisory reaches only a fraction of the localities it is given.**
+    Flagged, not fixed. `/allocation` at category 6 has 12 localities; the
+    second live run's plan named 5 of them (plus the code-built origin), the
+    third named 7 (plus the origin). The model chooses a subset and
+    `validate_advisory` only checks that named localities *exist* in the
+    data — never that they *cover* it, so an under-covered plan validates
+    clean. Two real consequences: a locality the user is told about may not
+    appear in its own advisory's plan, and the DEM-era block list the
+    demo is presumably built around is silently partial. Whether coverage
+    should be enforced (one entry per allocation locality) or merely
+    disclosed is a product decision, not a bug fix.
+24. **Tamluk (wrong district) is still in the allocation — could have been
+    included by chance.** Flagged, not fixed, and **not fixed by #23's
+    subsetting either.** This is #17 restated because the third live run
+    shows the exposure is live rather than theoretical: Tamluk is in
+    `LOCALITIES IN THIS ALLOCATION` in the prompt, and in run 2 the model
+    named 5 of 12 localities — if one of those five had been Tamluk, the
+    SMS would have told a real person in Purba Medinipur to evacuate on
+    South 24 Parganas advice. It did not happen in either run, which is
+    luck, not a control. **The district allow/deny list in
+    `backend/locations.py` (§17) remains the real fix and was explicitly out
+    of scope this round.**
+25. **Cosmetic, unfixed: the code-built origin reasoning reads as a
+    run-on.** `_ensure_origin_in_plan` interpolates `/routes`' reason
+    verbatim, and that string has no trailing period, so the sentence
+    renders as "…This is road-data coverage, not flooding Evacuation
+    cannot proceed along the mapped road network from here…". The facts
+    are correct and the entry is at index 0 where it belongs; only the
+    punctuation between the quoted reason and the next sentence is wrong.
+    Left alone per the "report and wait, do not fix from the result"
+    instruction for this round.
 
 ## Environment / credentials status
 
 - [x] Google Earth Engine authenticated — done 2026-09-27, DEM fetched and committed
 - [x] FastAPI backend runs locally — `venv/bin/uvicorn backend.main:app --reload`,
       verified with curl on 2026-09-28. `httpx` installed (TestClient only).
-- [ ] `GEMINI_API_KEY` set — **STILL UNSET.** A key was pasted into one
-      session on 2026-09-28, worked (`advisory_ready: true`), and is now
-      revoked; it was never written to any file. Loading is now automatic:
-      `cp .env.example .env`, paste the rotated key in, and uvicorn picks it
-      up via `python-dotenv`. `.env` is gitignored and `.env.example` is the
-      committed secret-free template. `load_dotenv()` does not overwrite an
-      already-exported variable, so CI and Render (which inject the key into
-      the environment) still work unchanged. Without a key `POST /advisory`
-      returns 503 and `/health` reports `advisory_ready: false`.
+- [x] `GEMINI_API_KEY` set — **now in `.env`** (gitignored, never tracked).
+      A key pasted into one session on 2026-09-28 worked and was then
+      revoked; a replacement lives in `.env` and has driven three successful
+      live runs. Loading is automatic via `python-dotenv`:
+      `cp .env.example .env`, paste the key in, uvicorn picks it up on start.
+      `load_dotenv()` does not overwrite an already-exported variable, so CI
+      and Render (which inject the key into the environment) work unchanged.
+      Without a key `POST /advisory` returns 503 and `/health` reports
+      `advisory_ready: false`. **Note:** because `.env` is present, the
+      `@requires_key` live tests in `tests/test_module_d.py` now really run
+      and really cost a Gemini call each — expect two live failures if the
+      model is capacity-blocked (#19 addendum), which is a real signal, not a
+      test defect. Delete `.env` to get the skip-guard behaviour back.
 - [ ] Backend deployed (Render / Railway) — URL: _none yet_
 - [x] Expo project initialized — `mobile/`, Expo SDK 57.0.25, deps installed, `npx tsc --noEmit` clean
 - [ ] Expo app run on a device/simulator — never launched; theme is typechecked only (spec §10.5)
@@ -438,45 +538,12 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
 
 ## Next step
 
-Modules A–D are built. **The highest-value next action is not new code — it
-is a live run.** The one attempt so far was blocked by a capacity-blocked
-model, not by anything in the code (#18, #19). A demo that has never produced
-a real advisory is a demo that will fail on stage.
-
-**Do this first, before any new work:**
-
-```
-cp .env.example .env       # then paste a rotated GEMINI_API_KEY into it
-venv/bin/uvicorn backend.main:app --port 8000 &
-curl -X POST "localhost:8000/advisory?category=6&origin=sagar"
-```
-
-Use `origin=sagar` — it is the Remal landfall site. Also run
-`venv/bin/pytest tests/test_module_d.py -q`, which un-skips the 2
-`requires_key` tests.
-
-Read the output as a human, not as a schema. Specifically check:
-- does `sms_dispatch_draft` come back under 160 chars, and does it read like
-  an SMS a DM would actually send;
-- do the `evacuation_plan` localities match `/allocation`;
-- does it disclose the shelter capacities as provisional;
-- does `historical_context` name a storm from the verified pool (Amphan, Yaas,
-  Bulbul) and not an invented one.
-
-If the call 503s again, check which model: `models.list()` proves whether the
-string is valid for the key, and a four-word trivial prompt proves whether it
-is capacity. Those two probes separate "wrong model name" from "model busy"
-in one step — see #19 for how that went last time.
-
-The retry threshold in `main.advisory()` is **one** retry, chosen because it
-is cheap and a schema-shaped answer that broke a rule is usually a drafting
-slip. It is a guess, not a measurement. If the first live run shows a high
-violation rate, the fix is the system prompt or `validate_advisory`, not more
-retries — each retry spends free-tier quota.
-
-**Then Module E — the mobile app**, the largest remaining gap. The design
-system is in place and the API it will call is real and tested, so the map
-screen can be built against actual response shapes rather than invented ones:
+Modules A–D are built and the advisory has now been produced live three
+times, cleanly on the last. **The highest-value next action is Module E — the
+mobile app**, the largest remaining gap. The design system is in place and
+the API it will call is real and tested against real Gemini output, so the
+map screen can be built against actual response shapes rather than invented
+ones:
 
 1. `react-native-maps` with a hardcoded initial region on Sagar Island — no
    location permission (PRD).
@@ -486,18 +553,115 @@ screen can be built against actual response shapes rather than invented ones:
    exposure counts, and compromised roads as red dashed polylines.
 4. "Generate Advisory" button → `POST /advisory` → `AdvisoryModal`
    (already built, presentational). This is the only Gemini call in the app;
-   never wire it to `onChange` (Rules.md).
+   never wire it to `onChange` (Rules.md). **Wire the button to a
+   user-triggered request that retries on 502** — the model is capacity-
+   blocked intermittently and the handler has no internal 503 retry (#19
+   addendum), so a single tap failing on stage is a live risk.
 5. `expo-clipboard` for the SMS copy button — still not installed.
 
 Apply `theme.typography` while you are in there: the tokens exist, no
 component uses them ("Flagged for review" §1).
 
+Two Module D decisions are still owed a human, and both should be settled
+before the app renders the plan on screen, because the app will present
+whatever the backend returns:
+- **§23 — plan coverage.** The plan names 7 of 12 allocation localities and
+  nothing checks that. Either enforce one entry per locality, or disclose the
+  partiality in the advisory. Right now a locality can be absent from a plan
+  that was written about it.
+- **§24 (and §17) — Tamluk.** A town in Purba Medinipur is in the
+  allocation and therefore in the prompt. Needs the district allow/deny list
+  in `backend/locations.py`.
+
 Module F after that: deploy to Render, point the app at it, pre-warm before
 any demo, record a backup capture.
+
+**Before any demo, re-read the live-call notes:** the model 503s
+intermittently, the first HTTP attempt failed 502 and the second eight
+seconds later succeeded (#19 addendum), and the retry threshold in
+`main.advisory()` is **one** retry on a *validation* violation — a guess, not
+a measurement, still never exercised by a live run. If a live call shows a
+high violation rate the fix is the system prompt or `validate_advisory`, not
+more retries; each retry spends quota.
 
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-28 — Claude Code: three fixes from the live advisory review
+
+- **Scope:** three named defects from reading the second live advisory. The
+  two "flag but do not fix" items (§23 partial coverage, §24 Tamluk) were
+  logged and left alone, and `validate_advisory`'s *logic* was not touched —
+  the only change to it was the new `origin` argument the origin guarantee
+  requires. Then the re-run and report, no fixes from its result (§25 is the
+  one thing the new output revealed, left in place for a decision).
+
+**1. `priority_level` → closed enum.** `str` → `Literal["CRITICAL","HIGH",
+"MEDIUM","LOW"]`, with `PRIORITY_LEVELS` as the named tuple of record, and a
+SYSTEM_PROMPT rule 7 naming the four values in capitals. The previous run
+had returned "Immediate" ×3 and "High" ×2 and nothing objected, because the
+vocabulary was only ever a trailing comment. Live run 3: 8/8 in capitals.
+`TestSchema` gained a test that reads `field.annotation.__args__` and
+asserts "Immediate", "Urgent", "critical" and "HIGHEST" all raise.
+
+**2. Origin always in the plan, built in code.** SYSTEM_PROMPT rule 3 said
+plan localities must come only from the allocation list; Sagar has no
+population estimate, so it has no allocation row, so the one locality the
+user explicitly asked about was the one the model was forbidden to name —
+and rule 3 beat the request. Fixed in code, not prose:
+`main._ensure_origin_in_plan()` builds the entry from `/routes` facts
+(CRITICAL when unreachable, HIGH when reachable) and inserts it at index 0
+only when absent. `validate_advisory` gained `origin=None`, which exempts
+the requesting locality from the invented-locality check — without that the
+guarantee would just have traded one violation for another. `_origin_facts`
+was reshaped from a string helper into a dict so the status text and the
+reasoning draw on the same computed values. The retry path re-applies it
+(the retry replaces the whole object, so skipping this would lapse the
+guarantee on exactly the path hardest to notice), pinned by
+`test_the_guarantee_survives_the_retry_path`. Seven tests in
+`TestOriginAlwaysPresent`, driven by a stub that deliberately returns a plan
+naming the origin nowhere.
+
+**3. `VERIFIED_EMERGENCY_CONTACTS`.** Same closed-list shape as
+`VERIFIED_HISTORICAL_POOL`, one entry (112), plus rule 8: any number
+anywhere in the output comes from that pool or not at all, and if none fits,
+omit the number. The previous run's SMS ended "Dial 1077 for WB disaster
+assistance" — plausible, unverified, and exactly the failure this project
+exists to avoid. Five tests; the scanner is
+`(?<![\d.,])\d{4}(?![\d.,])`, deliberately 4-digit-only so the legitimate
+figures in the output (185, 3.86, 4, 5) don't trip it and 3-digit 112 needs
+a separate literal check.
+
+**Test-premise bugs fixed along the way** (my assumptions, not the code's
+fault, and the second kind is the one worth remembering):
+- `test_a_reachable_origin_is_added_as_high_not_critical` asserted CRITICAL
+  because I assumed a reachable origin was unreachable-by-flood. Kakdwip is
+  reachable at category 6 **and** in the allocation, so the stub's own entry
+  won and no code entry was added. Switched to `anantapur`, reachable and
+  *not* in the allocation — which is the case the test is actually for.
+- The emergency-pool test reused the 4-digit scanner to find "112", which is
+  3-digit, so the pool looked empty. The prompt assertion matched a phrase
+  the hard-wrapped prompt had split across a newline. Both are now
+  whitespace-normalised or literal.
+
+**Suite:** 44 tests in `tests/test_module_d.py`, 42 passing. The two
+failures are the `@requires_key` live tests, failing 502 on a 503 — **for the
+first time these have ever executed**, since `.env` now holds a key. Probed
+read-only rather than assumed: `models.list()` shows 3.7, 3.8 and 3.5 all
+valid for the key; a four-word prompt answered on 3.8 in 13.2s while 3.5
+failed 3/3 (1.4s, 2.5s, 67.0s). So the block is transient and
+model-specific, 3.8 remains the right pin, and #19's warning is confirmed
+from the other side. **No model swap was made** — the pin is correct and
+swapping on a transient 503 would be exactly the silent change Rules.md
+forbids. The 502 is a real signal about capacity, not a test defect.
+
+**Live run** (`POST /advisory?category=6&origin=sagar`, restarted server):
+attempt 1 → 502, attempt 2 eight seconds later → 200, 4569 bytes. All three
+fixes hold — Sagar at index 0 with `origin_entry_added_in_code: true` and
+the `/routes` reason quoted verbatim, all 8 priority levels in capitals, and
+"dial 112" the only number in the whole payload (no 1077). Validated on
+attempt 1 of the internal correction pass, so that path is still unexercised.
 
 ### 2026-09-28 — Claude Code: live observation run + dotenv wiring + model swap
 

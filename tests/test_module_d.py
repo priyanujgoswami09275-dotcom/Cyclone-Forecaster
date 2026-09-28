@@ -20,9 +20,11 @@ human job.
 from __future__ import annotations
 
 import os
+import re
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from backend import main
 from backend.ai import advisory
@@ -119,6 +121,28 @@ class TestSchema:
         deliberate rather than accidental.
         """
         assert advisory.ADVISORY_MODEL == "gemini-3.8-flash"
+
+    def test_priority_level_is_a_closed_enum_not_a_bare_string(self):
+        """The first live run returned "Immediate" three times and nothing
+        caught it, because the four levels were only ever a comment. Now the
+        schema itself rejects anything else."""
+        field = EvacuationPriority.model_fields["priority_level"]
+        assert set(literal for literal in field.annotation.__args__) == {
+            "CRITICAL",
+            "HIGH",
+            "MEDIUM",
+            "LOW",
+        }
+        for bad in ("Immediate", "Urgent", "critical", "HIGHEST"):
+            with pytest.raises(ValidationError):
+                EvacuationPriority(locality_name="X", priority_level=bad, reasoning="r")
+
+    def test_system_prompt_names_the_four_levels(self):
+        """A Literal constrains the decoder; the prompt is what makes the model
+        actually use them, and it used to say nothing at all."""
+        for level in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+            assert level in advisory.SYSTEM_PROMPT
+        assert "Immediate" in advisory.SYSTEM_PROMPT, "should name what not to use"
 
 
 class TestPrompt:
@@ -299,6 +323,162 @@ class TestHandlerFailures:
         detail = response.json()["detail"]
         assert "Atlantis Nagar" in detail["violations"][0]
         assert "withheld" in detail["message"]
+
+
+class TestOriginAlwaysPresent:
+    """The requesting locality must be in evacuation_plan, every time.
+
+    The first live run asked for `sagar` and got an advisory that never
+    mentioned Sagar — not in the plan, not in the summary — while the prompt
+    context we sent it said "IT is UNREACHABLE at this intensity". Sagar has no
+    population estimate, so it is not in the allocation locality list, and
+    system-prompt rule 3 told the model to use only those. The entry is now
+    built in code, from the same routing facts the prompt was given.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _stub(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+        # Deliberately returns an advisory that mentions the origin nowhere, the
+        # exact failure being guarded against.
+        monkeypatch.setattr(
+            main,
+            "generate_advisory",
+            lambda surge, exposure, allocation, context="", corrections="": (
+                a_valid_advisory([r["node"] for r in allocation["allocation"]])
+            ),
+        )
+
+    def test_origin_missing_from_allocation_is_still_added(self, client):
+        assert "Sagar" not in [r["node"] for r in main.allocation(6)["allocation"]]
+        body = client.post("/advisory?category=6&origin=sagar").json()
+        plan = body["advisory"]["evacuation_plan"]
+        assert plan[0]["locality_name"] == "Sagar", "must lead the plan"
+        assert body["generated_for"]["origin_in_allocation"] is False
+
+    def test_origin_status_is_sourced_from_routing_not_invented(self, client):
+        body = client.post("/advisory?category=6&origin=sagar").json()
+        entry = body["advisory"]["evacuation_plan"][0]
+        assert entry["priority_level"] == "CRITICAL", "unreachable is the top priority"
+        # The reasoning must match what the router actually said, not the model's
+        # own account of the situation.
+        assert body["generated_for"]["origin_reachable"] is False
+        assert "UNREACHABLE" in entry["reasoning"]
+        assert "not flooding" in entry["reasoning"] or "road-data" in entry["reasoning"]
+
+    def test_no_population_figure_is_invented_for_the_origin(self, client):
+        body = client.post("/advisory?category=6&origin=sagar").json()
+        reasoning = body["advisory"]["evacuation_plan"][0]["reasoning"]
+        assert "no at-risk population estimate" in reasoning
+
+    def test_a_reachable_origin_is_added_as_high_not_critical(self, client):
+        """Anantapur is reachable at category 6 but has no allocation row, so
+        the code-built entry is what puts it in the plan. Unreachable is the
+        only condition that earns CRITICAL."""
+        body = client.post("/advisory?category=6&origin=anantapur").json()
+        assert body["generated_for"]["origin_reachable"] is True
+        assert body["generated_for"]["origin_in_allocation"] is False
+        entry = body["advisory"]["evacuation_plan"][0]
+        assert entry["locality_name"] == "Anantapur"
+        assert entry["priority_level"] == "HIGH"
+        assert "flood-free route" in entry["reasoning"]
+
+    def test_an_origin_the_model_did_mention_is_not_duplicated(self, client):
+        """Code-built must mean 'if absent', not 'always prepend'. Kakdwip is
+        in the allocation, so the stub's plan already names it."""
+        body = client.post("/advisory?category=6&origin=kakdwip").json()
+        names = [e["locality_name"] for e in body["advisory"]["evacuation_plan"]]
+        assert names.count("Kakdwip") == 1, names
+
+    def test_the_guarantee_survives_the_retry_path(self, client, monkeypatch):
+        """A retry replaces the whole object, so the code-built entry has to be
+        re-applied. Missing this is invisible until a retry actually fires."""
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+
+        def bad_first_pass(surge, exposure, allocation, context="", corrections=""):
+            result = a_valid_advisory([r["node"] for r in allocation["allocation"]])
+            if not corrections:
+                result.sms_dispatch_draft = "z" * 400  # forces a retry
+            return result
+
+        monkeypatch.setattr(main, "generate_advisory", bad_first_pass)
+        body = client.post("/advisory?category=6&origin=sagar").json()
+        assert body["validation"]["attempts"] == 2
+        assert body["advisory"]["evacuation_plan"][0]["locality_name"] == "Sagar"
+
+    def test_origin_does_not_trip_the_invented_locality_check(self, client):
+        """The two rules must not cancel: the origin is legitimately outside the
+        allocation, and validate_advisory has to accept it."""
+        body = client.post("/advisory?category=6&origin=sagar").json()
+        result = DistrictAdvisory(**body["advisory"])
+        assert validate_advisory(result, main.allocation(6), "Sagar") == []
+
+
+class TestNoInventedEmergencyNumbers:
+    """The first live run's SMS said "Dial 1077". West Bengal's cyclone
+    helpline is 1070; 1077 appears in no official listing. A wrong emergency
+    number in a copyable SMS is the most damaging thing this system could
+    emit, and no schema can catch it — only a test can.
+    """
+
+    # A standalone 4-digit token: not part of a longer number, decimal or
+    # thousands-separated figure. "1820.83" and "46,300" must not match.
+    HELPLINE_SHAPED = re.compile(r"(?<![\d.,])\d{4}(?![\d.,])")
+
+    def _numbers_in(self, text: str) -> set[str]:
+        return set(self.HELPLINE_SHAPED.findall(text))
+
+    def test_pool_contains_only_112(self):
+        """3-digit, so the 4-digit scanner cannot see it — check it directly."""
+        pool = advisory.VERIFIED_EMERGENCY_CONTACTS
+        assert "112" in pool
+        # Nothing resembling a short code beyond the one permitted entry.
+        assert not re.search(r"(?<![\d.,])\d{3,}(?![\d.,])", pool.replace("112", ""))
+
+    def test_system_prompt_forbids_inventing_a_number(self):
+        # The prompt is hard-wrapped, so normalise whitespace before matching.
+        flattened = " ".join(advisory.SYSTEM_PROMPT.lower().split())
+        assert "never invent or recall a number" in flattened
+        assert "verified contacts pool" in flattened
+
+    def test_the_first_live_sms_violation_is_caught_by_this_check(self):
+        """Guard the guard: the exact string that came back on 2026-09-28."""
+        sms = (
+            "EMERGENCY: Super Cyclone (185km/h, 3.86m surge). Evacuate to nearest "
+            "reinforced concrete shelter now. Dial 1077 for WB disaster assistance."
+        )
+        found = self._numbers_in(sms)
+        assert "1077" in found, "the regression this test exists for must be caught"
+        assert found - {"112"}, "and it must not be excused"
+
+    def test_legitimate_numbers_are_not_flagged(self):
+        """A check that flags everything gets switched off, so it has to be
+        shown to pass on real output."""
+        clean = (
+            "Amphan (2020) made landfall with 1820.83 km2 affected and 46,300 "
+            "people at 185.0 kmph. Surge 3.86 m. Call 112."
+        )
+        assert self._numbers_in(clean) <= {"112", "2020"}
+
+    def test_no_unverified_number_reaches_a_live_advisory(self, client):
+        """Live-only: the real check. Skipped without a key, and the stubbed
+        tests above are what keep the pattern honest in its absence."""
+        response = client.post("/advisory?category=6&origin=sagar")
+        assert response.status_code == 200, response.text
+        result = DistrictAdvisory(**response.json()["advisory"])
+        blob = " ".join(
+            [
+                result.executive_summary,
+                result.sms_dispatch_draft,
+                result.post_landfall_risks,
+                result.historical_context,
+                *[e["reasoning"] for e in result.evacuation_plan],
+            ]
+        )
+        unverified = self._numbers_in(blob) - {"112"} - {
+            str(y) for y in range(1900, 2100)  # years in historical_context
+        }
+        assert not unverified, f"unverified emergency/helpline numbers: {unverified}"
 
 
 class TestRetry:

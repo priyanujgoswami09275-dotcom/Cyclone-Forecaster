@@ -56,7 +56,13 @@ from shapely.geometry import shape
 # secret-free template. Rules.md: the key must never reach a tracked file.
 load_dotenv()
 
-from .ai.advisory import ADVISORY_MODEL, generate_advisory, validate_advisory
+from .ai.advisory import (
+    ADVISORY_MODEL,
+    DistrictAdvisory,
+    EvacuationPriority,
+    generate_advisory,
+    validate_advisory,
+)
 from .locations import (
     Locality,
     all_localities,
@@ -546,7 +552,8 @@ def advisory(
     exposure_payload = exposure(category)
     allocation_payload = allocation(category)
 
-    context = _origin_context(category, locality)
+    facts = _origin_facts(category, locality)
+    context = _origin_context(facts)
 
     try:
         result = generate_advisory(
@@ -558,7 +565,12 @@ def advisory(
             detail=f"Gemini advisory generation failed: {type(exc).__name__}: {exc}",
         ) from exc
 
-    violations = validate_advisory(result, allocation_payload)
+    # Before validating, not after: the origin entry is code-built, so
+    # `validate_advisory` must not see the model's output as-is and reject the
+    # requesting locality for not being in the allocation data.
+    result = _ensure_origin_in_plan(result, facts, allocation_payload)
+
+    violations = validate_advisory(result, allocation_payload, locality.name)
     attempts = 1
     if violations:
         # One retry, feeding the violations back as corrections. A schema-shaped
@@ -583,7 +595,11 @@ def advisory(
                     f"First attempt's violations: {'; '.join(violations)}"
                 ),
             ) from exc
-        violations = validate_advisory(result, allocation_payload)
+        # The retry replaced the whole object, so the code-built origin entry has
+        # to go back in. Missed this once and the guarantee silently lapsed only
+        # on the retry path, which is exactly when it is hardest to notice.
+        result = _ensure_origin_in_plan(result, facts, allocation_payload)
+        violations = validate_advisory(result, allocation_payload, locality.name)
 
     if violations:
         # Still wrong after the retry. Returning it would mean shipping prose
@@ -608,13 +624,23 @@ def advisory(
             "wind_kmph": surge_payload["wind_kmph"],
             "origin": locality.to_dict(),
             "origin_context": context,
+            # The computed facts behind the origin's plan entry, so a client can
+            # show "unreachable" without re-deriving it from prose.
+            "origin_reachable": facts["reachable"],
+            "origin_reason": facts["reason"],
+            "origin_in_allocation": facts["in_allocation"],
+            "origin_entry_added_in_code": not any(
+                item.locality_name == locality.name
+                for item in result.evacuation_plan[1:]
+            ),
         },
         "model": ADVISORY_MODEL,
         "validated": True,
         "validation": {
             "checks": [
                 "sms_dispatch_draft under 160 characters",
-                "every evacuation_plan locality appears in the allocation data",
+                "every evacuation_plan locality appears in the allocation data, "
+                "or is the requesting origin",
                 "demo shelter data is disclosed as provisional/placeholder",
             ],
             "attempts": attempts,
@@ -728,42 +754,124 @@ def allocation_for_category(category: int) -> dict:
     return allocate_shelters(populations_for_category(category), list(shelters_for_category(category)))
 
 
-def _origin_context(category: int, locality: Locality) -> str:
-    """The `origin` parameter, rendered for the prompt.
+def _origin_facts(category: int, locality: Locality) -> dict:
+    """Code-derived facts about the requesting origin, used by `/advisory`.
 
     `/advisory` takes an origin so the advisory is written for where the person
-    asking is standing, not for an anonymous district. This is the same
-    routing result `/routes` would return, pulled from the cached helpers — no
-    second graph search, and no second opinion about reachability.
+    asking is standing, not for an anonymous district. This is the same routing
+    result `/routes` would return, pulled from the cached helpers — no second
+    graph search, and no second opinion about reachability.
+
+    Structured rather than a pre-rendered string because the caller needs the
+    same facts twice: as prompt text, and to build the origin's own
+    `EvacuationPriority` entry when the model leaves it out (see
+    `_ensure_origin_in_plan`).
     """
     flood = flood_for_category(category)
     allocation_result = allocation_for_category(category)
-    shelter, _ = _shelter_for(locality, allocation_result, shelters_for_category(category))
+    shelter, basis = _shelter_for(
+        locality, allocation_result, shelters_for_category(category)
+    )
     route = safe_route(
         build_road_graph(),
         flood.frames[-1].geometry,
         (locality.lon, locality.lat),
         (shelter.lon, shelter.lat),
     )
-    if route.reachable:
+    reason = route.reason
+    if not route.reachable and reason and "no route:" not in reason:
+        # Reuse _diagnose_unreachable's road-data-vs-flood distinction so the
+        # advisory never tells someone to travel a road the extract simply
+        # does not contain.
+        reason = _diagnose_unreachable(route, locality, shelter, flood).reason
+    return {
+        "locality": locality,
+        "shelter": shelter,
+        "shelter_basis": basis,
+        "reachable": route.reachable,
+        "reason": reason,
+        "length_km": route.to_dict().get("length_km"),
+        "in_allocation": any(
+            row["node"] == locality.name for row in allocation_result.get("assignment", [])
+        ),
+    }
+
+
+def _origin_context(facts: dict) -> str:
+    """`_origin_facts` rendered for the prompt."""
+    locality = facts["locality"]
+    if facts["reachable"]:
         reachability = (
             f"has a flood-free route to its assigned shelter "
-            f"({shelter.name}), {route.to_dict()['length_km']} km"
+            f"({facts['shelter'].name}), {facts['length_km']} km"
         )
     else:
-        reason = route.reason
-        if route.reason and "no route:" not in reason:
-            # Reuse _diagnose_unreachable's road-data-vs-flood distinction so
-            # the advisory never tells someone to travel a road the extract
-            # simply does not contain.
-            reason = _diagnose_unreachable(route, locality, shelter, flood).reason
-        reachability = f"is UNREACHABLE at this intensity — {reason}"
+        reachability = f"is UNREACHABLE at this intensity — {facts['reason']}"
+    in_plan = (
+        "It appears in the allocation locality list below."
+        if facts["in_allocation"]
+        else "It does NOT appear in the allocation locality list below, because "
+        "no at-risk population estimate could be made for it. Say so plainly "
+        "rather than inventing figures for it."
+    )
     return (
         f"REQUESTING LOCALITY: {locality.name} ({locality.lon}, {locality.lat})\n"
         f"IT {reachability}.\n"
+        f"{in_plan}\n"
         f"Write the advisory for this locality's residents, but keep every "
         f"figure district-wide and labelled as such."
     )
+
+
+def _ensure_origin_in_plan(
+    result: "DistrictAdvisory", facts: dict, allocation_payload: dict
+) -> "DistrictAdvisory":
+    """Guarantee the requesting origin appears in `evacuation_plan`.
+
+    In the first live run, `origin=sagar` produced an advisory that never
+    mentioned Sagar — not in the plan, not in the summary — even though the
+    prompt context said "IT is UNREACHABLE at this intensity". Sagar has no
+    population estimate, so it is not in the allocation locality list, and
+    rule 3 of the system prompt told the model to use only those localities.
+    The two rules collided and the locality lost.
+
+    So the entry is built here, in code, from the same routing result the
+    prompt was given. It leads the list: the person who pressed the button is
+    the one reading it. Every word in `reasoning` traces to a computed fact —
+    reachability, the shelter assignment, the population gap — and none of it
+    is model-generated, so there is nothing here for the model to get wrong.
+    """
+    locality = facts["locality"]
+    if any(item.locality_name == locality.name for item in result.evacuation_plan):
+        return result
+
+    if facts["reachable"]:
+        priority = "HIGH"
+        reasoning = (
+            f"The requesting locality. A flood-free route of {facts['length_km']} km "
+            f"to its assigned shelter ({facts['shelter'].name}) exists at this "
+            f"intensity, so evacuation is feasible on the road network as mapped."
+        )
+    else:
+        priority = "CRITICAL"
+        reasoning = (
+            f"The requesting locality. It is UNREACHABLE at this intensity: "
+            f"{facts['reason']} Evacuation cannot proceed along the mapped road "
+            f"network from here, so movement must be planned off-network — this "
+            f"is the highest-priority locality in the district at this intensity."
+        )
+
+    if not facts["in_allocation"]:
+        reasoning += (
+            " Note: no at-risk population estimate was available for this "
+            "locality, so no population figure is quoted for it."
+        )
+
+    entry = EvacuationPriority(
+        locality_name=locality.name, priority_level=priority, reasoning=reasoning
+    )
+    result.evacuation_plan.insert(0, entry)
+    return result
 
 
 def _haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:

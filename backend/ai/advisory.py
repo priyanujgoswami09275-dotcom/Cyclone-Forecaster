@@ -25,14 +25,24 @@ prompt imply otherwise.
 """
 
 import os
+from typing import Literal
+
 from google import genai
 from google.genai import types
 from pydantic import BaseModel, Field
 
+# The four levels, as a closed set rather than a comment. In the first live run
+# the model returned "Immediate" three times, which a bare `str` accepted
+# silently — the documented vocabulary was only ever a comment, so nothing
+# checked it. `Literal` makes it part of the schema sent to Gemini, so the
+# model is constrained at generation time and a violation fails loudly here
+# instead of reaching a client.
+PRIORITY_LEVELS = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
+
 
 class EvacuationPriority(BaseModel):
     locality_name: str  # was block_name — real unit is "locality", not "block"
-    priority_level: str  # CRITICAL, HIGH, MEDIUM, LOW
+    priority_level: Literal["CRITICAL", "HIGH", "MEDIUM", "LOW"]
     reasoning: str
 
 
@@ -76,6 +86,15 @@ speed and surge, using ONLY these. Never name a storm outside this list.
 """.strip()
 
 
+VERIFIED_EMERGENCY_CONTACTS = """
+Verified emergency contact numbers — the ONLY numbers permitted in any field
+of the advisory. Use ONLY these. Never invent, recall, or guess a helpline
+number. If no number below is suitable, write no number at all.
+
+- 112 — India's national emergency number (all-in-one: police, fire, ambulance).
+""".strip()
+
+
 SYSTEM_PROMPT = """You are the Emergency Response Officer for West Bengal
 Disaster Management Authority. Write a district evacuation advisory from
 the structured data given. Rules, non-negotiable:
@@ -92,8 +111,16 @@ the structured data given. Rules, non-negotiable:
 5. historical_context must name one storm from the verified pool below,
    never any other storm.
 6. sms_dispatch_draft must be under 160 characters. Count before finalizing.
+7. priority_level must be exactly one of CRITICAL, HIGH, MEDIUM, LOW — these
+   four strings only, in capitals. Never use a word like "Immediate",
+   "Urgent", or "Moderate".
+8. Any emergency contact or helpline number anywhere in the output must come
+   from the verified contacts pool below, and from nowhere else. Never
+   invent or recall a number. If the pool does not contain a suitable number,
+   omit the number entirely rather than supplying your own.
 
-""" + VERIFIED_HISTORICAL_POOL
+""" + VERIFIED_HISTORICAL_POOL + \
+"\n\n" + VERIFIED_EMERGENCY_CONTACTS
 
 
 def build_prompt(
@@ -155,17 +182,37 @@ def generate_advisory(
             response_schema=DistrictAdvisory,
         ),
     )
+    if response.parsed is None:
+        # The response did not satisfy the schema (a bad `priority_level` is the
+        # likely cause now that it is a Literal). Raise a named error so the
+        # handler reports something readable instead of failing later on
+        # `validate_advisory(None, ...)`.
+        raise ValueError(
+            "Gemini returned no schema-valid DistrictAdvisory. Raw text was: "
+            f"{(response.text or '')[:300]!r}"
+        )
     return response.parsed
 
 
-def validate_advisory(advisory: DistrictAdvisory, allocation: dict) -> list[str]:
-    """Post-hoc honesty checks, not just schema shape."""
+def validate_advisory(
+    advisory: DistrictAdvisory, allocation: dict, origin: str | None = None
+) -> list[str]:
+    """Post-hoc honesty checks, not just schema shape.
+
+    `origin` is the locality the caller asked about, when there is one. It is
+    permitted to appear in `evacuation_plan` even when it has no allocation
+    row, because the caller builds that entry in code from real routing data
+    (see `main._ensure_origin_in_plan`). Without this exemption the origin
+    guarantee and the invented-locality check would cancel each other out.
+    """
     violations = []
     if len(advisory.sms_dispatch_draft) >= 160:
         violations.append(
             f"sms_dispatch_draft is {len(advisory.sms_dispatch_draft)} chars, must be <160"
         )
     known = {row["node"] for row in allocation["allocation"]}
+    if origin is not None:
+        known.add(origin)
     for item in advisory.evacuation_plan:
         if item.locality_name not in known:
             violations.append(f"locality '{item.locality_name}' not in allocation data")
