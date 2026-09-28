@@ -38,6 +38,26 @@ export const compromisedRoadStyle = {
 export const compromisedRoadDashPattern = [6, 4];
 
 /**
+ * The historical track's line and pin colour.
+ *
+ * **Design.md has no token assigned to the track layer** — it specifies the
+ * flood polygon, compromised roads, priority chips, shelters and the primary
+ * action, and never a cyclone's own path. Rather than invent a hex, this uses
+ * `text` (Onyx, `#181d26`): a neutral dark that reads as a record of what
+ * happened, and is already spoken for as the app's primary text, so it stays
+ * distinct from the three colours that *mean* something here — `water` is
+ * flood, `danger` is damage, `caution`/`safe` are severity levels.
+ *
+ * Flagged in MEMORY.md "Flagged for review": a design decision is owed on
+ * whether a historical track should be neutral at all.
+ */
+export const trackLineStyle = {
+  strokeColor: theme.colors.text,
+} as const;
+
+export const trackPinColour = theme.colors.text;
+
+/**
  * Pin colours for the two point-asset classes.
  *
  * Design.md assigns `danger` to "compromised roads, CRITICAL priority chip"

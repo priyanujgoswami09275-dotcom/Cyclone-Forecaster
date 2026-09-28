@@ -634,6 +634,78 @@ export function overlayImageUrl(entry: OverlayEntry): string | null {
   return `${API_BASE_URL}${entry.image_url}`;
 }
 
+// ---------------------------------------------------------------------------
+// Historical track (GET /track)
+// ---------------------------------------------------------------------------
+
+/**
+ * One best-track fix. Mirrored off a live `GET /track` response.
+ *
+ * `wind_kt` / `wind_kmph` are **null when IBTrACS reported no wind**, which is
+ * not the same as zero: `backend/data_pipeline/fetch_ibtracs.py` coerces a
+ * blank `USA_WIND` to `0.0` when it writes the GeoJSON, so 5 of the 19
+ * committed fixes carry a 0.0 that means "not reported". The endpoint
+ * separates them and `wind_reported` says which is which. Render the absence
+ * as absence — a "0 kmph" label on one of these is a fabricated measurement on
+ * a map of a real cyclone.
+ *
+ * Both units ship because the source column is knots and the rest of this app
+ * reasons in km/h. `timestamp` is RFC 3339 UTC (`...Z`), the endpoint's
+ * `timezone` field says so, and the labels below never re-interpret it.
+ */
+export interface TrackWaypoint {
+  sequence: number;
+  timestamp: string;
+  latitude: number;
+  longitude: number;
+  wind_kt: number | null;
+  wind_kmph: number | null;
+  wind_reported: boolean;
+}
+
+/** `GET /track`. Not keyed by category: the track is a record, not a prediction. */
+export interface TrackResponse {
+  name: string | null;
+  season: string | null;
+  /** e.g. "IBTrACS v04r00" — the provenance every rendered number inherits. */
+  source: string | null;
+  wind_units: string | null;
+  timezone: string;
+  path: LatLng[];
+  waypoints: TrackWaypoint[];
+  waypoint_count: number;
+  first_timestamp: string;
+  last_timestamp: string;
+  unreported_wind_count: number;
+  disclosure: string;
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/**
+ * Waypoint label: `25 May 2024 · 12:00 UTC`.
+ *
+ * Sliced out of the RFC 3339 string rather than formatted from a `Date`,
+ * because `new Date(...)` + `toLocaleString()` renders in the *device's*
+ * timezone — the same fix would then be labelled 17:30 on a phone in Kolkata,
+ * and the app would be reporting a different time for the same real fix
+ * depending on who was looking. No `Intl` either: Hermes' locale support is
+ * patchy (`group()` in `ReadoutPanel` avoids it for the same reason).
+ */
+export function waypointTitle(waypoint: TrackWaypoint): string {
+  const t = waypoint.timestamp;
+  const month = MONTHS[Number(t.slice(5, 7)) - 1] ?? t.slice(5, 7);
+  return `${Number(t.slice(8, 10))} ${month} ${t.slice(0, 4)} · ${t.slice(11, 16)} UTC`;
+}
+
+/** `100 kmph (54 kt)`, or an explicit "not reported" — never `0 kmph`. */
+export function waypointSubtitle(waypoint: TrackWaypoint): string {
+  if (!waypoint.wind_reported || waypoint.wind_kmph === null || waypoint.wind_kt === null) {
+    return 'Wind not reported for this fix';
+  }
+  return `${waypoint.wind_kmph.toFixed(0)} kmph (${waypoint.wind_kt.toFixed(0)} kt)`;
+}
+
 /**
  * The IMD band whose representative wind is closest to `wind_kmph`.
  *
@@ -801,6 +873,16 @@ export function getCategories(): Promise<CategoriesResponse> {
 
 export function getLocalities(): Promise<LocalitiesResponse> {
   return request<LocalitiesResponse>('/localities', { method: 'GET' }, READ_TIMEOUT_MS);
+}
+
+/**
+ * Cyclone Remal's observed best track, from the committed IBTrACS extract.
+ *
+ * Not a slider endpoint: the track is a historical fact, so it is fetched once
+ * at boot and never refetched when the intensity changes.
+ */
+export function getTrack(): Promise<TrackResponse> {
+  return request<TrackResponse>('/track', { method: 'GET' }, READ_TIMEOUT_MS);
 }
 
 export function getSurgeZone(category: number): Promise<SurgeZoneResponse> {

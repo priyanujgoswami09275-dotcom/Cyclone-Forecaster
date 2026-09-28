@@ -16,11 +16,14 @@ import {
   getExposure,
   getLocalities,
   getOverlays,
+  getTrack,
   markerCoordinate,
   nearestCategory,
   overlayImageUrl,
   roadPaths,
   toLatLng,
+  waypointSubtitle,
+  waypointTitle,
   API_BASE_URL,
   type CategoriesResponse,
   type ExposureResponse,
@@ -28,6 +31,7 @@ import {
   type Locality,
   type OverlayEntry,
   type SurgePreset,
+  type TrackResponse,
 } from '../api';
 import { theme } from '../theme';
 import { IntensityControl } from './IntensityControl';
@@ -40,6 +44,8 @@ import {
   assetPinColours,
   compromisedRoadDashPattern,
   compromisedRoadStyle,
+  trackLineStyle,
+  trackPinColour,
 } from './mapStyles';
 
 /**
@@ -73,6 +79,7 @@ type Boot =
       categories: CategoriesResponse;
       overlayIndex: OverlayEntry[];
       localities: Locality[];
+      track: TrackResponse;
     };
 
 export function MapScreen() {
@@ -103,20 +110,34 @@ export function MapScreen() {
   const [exposureLoading, setExposureLoading] = useState(false);
   const [exposureError, setExposureError] = useState<ApiError | null>(null);
 
-  // --- boot: the three endpoints the screen cannot start without ----------
+  // --- boot: the four endpoints the screen cannot start without -----------
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        // Parallel, not sequential: three cold requests in series is three
+        // Parallel, not sequential: four cold requests in series is four
         // round trips before anything paints, and none depends on another.
-        const [categories, overlays, localities] = await Promise.all([
+        //
+        // `/track` is in the same `all` rather than caught separately on
+        // purpose. It is a historical record, not a live layer, and if the
+        // committed file is missing the endpoint says exactly that ("re-fetch
+        // it with fetch_ibtracs") — a boot error naming the file is a better
+        // failure than a map that silently draws a real cyclone's track with
+        // a hole in it.
+        const [categories, overlays, localities, track] = await Promise.all([
           getCategories(),
           getOverlays(),
           getLocalities(),
+          getTrack(),
         ]);
         if (cancelled) return;
-        setBoot({ status: 'ready', categories, overlayIndex: overlays.overlays, localities: localities.localities });
+        setBoot({
+          status: 'ready',
+          categories,
+          overlayIndex: overlays.overlays,
+          localities: localities.localities,
+          track,
+        });
       } catch (err) {
         if (cancelled) return;
         setBoot({ status: 'error', error: err as ApiError });
@@ -130,6 +151,7 @@ export function MapScreen() {
   const categories = boot.status === 'ready' ? boot.categories.categories : [];
   const overlayIndex = boot.status === 'ready' ? boot.overlayIndex : [];
   const localities = boot.status === 'ready' ? boot.localities : [];
+  const track = boot.status === 'ready' ? boot.track : null;
 
   const preset: SurgePreset | null = useMemo(() => {
     if (boot.status !== 'ready') return null;
@@ -244,6 +266,31 @@ export function MapScreen() {
             tappable={false}
           />
 
+          {/* The cyclone's own path, under everything the model computed.
+              Real observed history, fetched once at boot and never refetched
+              when the slider moves — it does not vary with the intensity. */}
+          {track ? (
+            <Polyline
+              coordinates={track.path}
+              strokeWidth={3}
+              {...trackLineStyle}
+            />
+          ) : null}
+
+          {/* One pin per best-track fix; tapping it opens the native callout
+              with the UTC time and the wind. `tracksViewChanges` is left at
+              its default here (unlike AssetMarker) because these are 19 pins
+              that carry a callout, and the callout is the point of them. */}
+          {track?.waypoints.map((waypoint) => (
+            <Marker
+              key={`wp-${waypoint.sequence}`}
+              coordinate={{ latitude: waypoint.latitude, longitude: waypoint.longitude }}
+              pinColor={trackPinColour}
+              title={waypointTitle(waypoint)}
+              description={waypointSubtitle(waypoint)}
+            />
+          ))}
+
           {/* Roads first, so markers draw on top of them. 251 polylines at
               category 6 is the heaviest thing on this map; the count beside
               them always matches what is drawn, because capping the layer
@@ -291,6 +338,21 @@ export function MapScreen() {
         contentContainerStyle={styles.panelContent}
         showsVerticalScrollIndicator={false}
       >
+        {/*
+          Provenance, on screen. The track's numbers are real observed data, so
+          the two things a reader could be misled about are which dataset they
+          came from and whether they are a prediction — the caption answers
+          both in one line, in the same muted caption voice the model's own
+          limitation uses.
+        */}
+        {track ? (
+          <Text style={styles.trackCaption}>
+            {track.name} {track.season} · {track.waypoint_count} best-track fixes · {track.source}.
+            A record of what happened — not a forecast, and not a prediction for any other
+            storm.
+          </Text>
+        ) : null}
+
         <IntensityControl
           count={categories.length}
           value={categoryIndex}
@@ -500,6 +562,12 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.caption,
     color: theme.colors.danger,
     marginTop: theme.spacing.xs,
+  },
+  trackCaption: {
+    fontFamily: theme.fonts.body,
+    fontSize: theme.typography.caption,
+    color: theme.colors.textMuted,
+    marginBottom: theme.spacing.xs,
   },
   disabledHint: {
     fontFamily: theme.fonts.body,
