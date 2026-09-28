@@ -46,6 +46,7 @@ import networkx as nx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from google.genai.errors import ServerError
 from shapely.geometry import shape
 
@@ -126,6 +127,20 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+# Gzip, because the flood polygon is the largest thing this service sends and
+# it is almost entirely floating-point coordinates — text that compresses
+# well. Measured before adding: GET /surge-zone?category=6 is 4,608,374 bytes
+# uncompressed, which no phone should be asked to download on every slider
+# step. `minimum_size=1000` keeps the many small JSON responses uncompressed,
+# where the gzip header and CPU cost more than they save.
+#
+# Added AFTER CORSMiddleware deliberately: Starlette builds the middleware
+# stack in reverse registration order, so the last one added is the outermost
+# and therefore sees the response first. Gzipping outside CORS means the
+# compressed body — not the raw one — is what the CORS headers are attached
+# to, which is the ordering that actually works in practice.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 # --------------------------------------------------------------------------

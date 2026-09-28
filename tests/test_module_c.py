@@ -367,3 +367,66 @@ class TestServiceContract:
         client = TestClient(main.app)
         assert client.get("/surge-zone?category=0").status_code == 200
         assert client.get("/exposure?category=0").status_code == 200
+
+
+class TestGzip:
+    """GZipMiddleware — added because the flood polygon is 4.4 MB of text.
+
+    The polygon is the largest thing this service sends and it is almost
+    entirely coordinates, which gzip handles extremely well. The behaviour
+    worth locking down is the *pair*: big responses compress, small ones are
+    left alone, because below `minimum_size` the gzip framing costs more
+    than it saves.
+    """
+
+    def test_a_large_response_is_gzipped(self, client):
+        response = client.get(
+            "/surge-zone?category=6", headers={"Accept-Encoding": "gzip"}
+        )
+        assert response.status_code == 200
+        assert response.headers.get("content-encoding") == "gzip"
+        # `Vary` is what tells a shared cache (Render's, a proxy's) that the
+        # response differs by request header. Without it a cache can serve the
+        # gzipped body to a client that did not ask for it.
+        assert "accept-encoding" in response.headers.get("vary", "").lower()
+
+    def test_gzip_actually_shrinks_the_flood_polygon(self, client):
+        """Not just "gzip is on" — that it is worth having for this payload.
+
+        Asserted on `Content-Length`, not `len(response.content)`: httpx
+        transparently decodes a gzipped body, so `content` is the same
+        4.4 MB either way and comparing it would prove nothing. The header is
+        the wire size, which is the number that decides whether this is
+        usable on a phone.
+        """
+        url = "/surge-zone?category=6"
+        plain = client.get(url, headers={"Accept-Encoding": "identity"})
+        zipped = client.get(url, headers={"Accept-Encoding": "gzip"})
+
+        assert plain.headers.get("content-encoding") is None
+        plain_len = int(plain.headers["content-length"])
+        zipped_len = int(zipped.headers["content-length"])
+
+        assert zipped_len < plain_len / 2, (
+            f"gzip only got {plain_len} -> {zipped_len}; expected a large win"
+        )
+
+    def test_the_gzipped_body_decompresses_to_the_same_json(self, client):
+        """Gzip must not change the bytes the client ultimately parses.
+
+        Both bodies arrive already decoded by httpx, so this compares the
+        decompressed payloads — which is exactly the equality that matters to
+        a caller. The wire-level check is the Content-Length assertion above.
+        """
+        url = "/surge-zone?category=6"
+        plain = client.get(url, headers={"Accept-Encoding": "identity"})
+        zipped = client.get(url, headers={"Accept-Encoding": "gzip"})
+
+        assert zipped.content == plain.content
+        assert zipped.json() == plain.json()
+
+    def test_a_small_response_is_left_uncompressed(self, client):
+        """/health is a few hundred bytes; gzipping it is pure overhead."""
+        response = client.get("/health", headers={"Accept-Encoding": "gzip"})
+        assert response.status_code == 200
+        assert response.headers.get("content-encoding") is None
