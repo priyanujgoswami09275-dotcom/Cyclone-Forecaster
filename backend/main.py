@@ -36,19 +36,27 @@ Run locally:
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import time
 from dataclasses import replace
 from functools import lru_cache
+from pathlib import Path
 
 import networkx as nx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.staticfiles import StaticFiles
 from google.genai.errors import ServerError
 from shapely.geometry import shape
+
+#: Repo root, for the committed data files. `data/` holds the pre-fetched DEM,
+#: OSM extracts and now the rendered overlays; all of it is committed by design
+#: (Rules.md: no live fetches at request time).
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Load `.env` before anything reads the environment. `load_dotenv` does NOT
 # overwrite a variable that is already set, so an exported GEMINI_API_KEY still
@@ -171,6 +179,26 @@ app.add_middleware(
 # compressed body — not the raw one — is what the CORS headers are attached
 # to, which is the ordering that actually works in practice.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# Display overlays, rendered offline by `backend/tools/render_overlays.py`.
+#
+# Served as static files rather than computed per request because they are
+# prebuilt images: the flood engine produces a ~1000 px PNG in one pass and
+# re-running the BFS to serve a static asset would be absurd. Served at all
+# because a mobile client cannot read a local file path on the developer's
+# machine — it needs an HTTP URL to hand to `<Overlay>`.
+#
+# The mount is display-only. `/exposure`, `/routes` and `/allocation` do not
+# read anything from here; they consume the flood engine's full-resolution
+# results, unchanged. `overlays.json` says so too, in `disclosure`.
+OVERLAY_DIR = REPO_ROOT / "data" / "overlays"
+OVERLAY_URL_PREFIX = "/overlays"
+if OVERLAY_DIR.is_dir():
+    app.mount(
+        "/overlays",
+        StaticFiles(directory=str(OVERLAY_DIR)),
+        name="overlays",
+    )
 
 
 # --------------------------------------------------------------------------
@@ -352,6 +380,56 @@ def categories() -> dict:
             for index in range(7)
         ],
         "presets": [REMAL_PRESET],
+    }
+
+
+@app.get("/overlays")
+def list_overlays() -> dict:
+    """Prebuilt flood overlays: image URLs and the bounds to place them.
+
+    A display index, not a computation. Each entry is a transparent PNG
+    rendered offline by `backend/tools/render_overlays.py` from the flood
+    engine's final mask, downsampled to ~1000 px and quantised into four
+    depth classes. `image_url` is absolute because a mobile client cannot
+    resolve a server-relative path into something `<Overlay>` will load.
+
+    **Read the disclosure before using these for anything but drawing.** The
+    raster is a picture of the modelled extent, not a queryable geometry
+    layer: it cannot represent the sub-pixel fragments the polygon path drops,
+    and two cells of different depth may share a colour. `/exposure`,
+    `/routes` and `/allocation` are unaffected and still use the
+    full-resolution results — this is a display layer, deliberately kept off
+    the computation path.
+    """
+    index_path = OVERLAY_DIR / "overlays.json"
+    if not index_path.exists():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Overlays have not been rendered. Run "
+                "`venv/bin/python -m backend.tools.render_overlays` to build "
+                "them from the committed DEM."
+            ),
+        )
+    index = json.loads(index_path.read_text())
+    overlays = []
+    for entry in index["overlays"]:
+        overlays.append(
+            {
+                **entry,
+                "image_url": f"{OVERLAY_URL_PREFIX}/{entry['image']}",
+            }
+        )
+    return {
+        "generated_by": index.get("generated_by"),
+        "target_width_px": index.get("target_width_px"),
+        "surge_method": index.get("surge_method"),
+        "anchor": index.get("anchor"),
+        "limitation": index.get("limitation"),
+        "is_display_raster": True,
+        "disclosure": index.get("disclosure"),
+        "count": len(overlays),
+        "overlays": overlays,
     }
 
 

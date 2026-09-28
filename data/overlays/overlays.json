@@ -1,0 +1,348 @@
+{
+  "generated_by": "backend/tools/render_overlays.py",
+  "target_width_px": 1000,
+  "dem_bbox": {
+    "west": 87.799988,
+    "south": 21.299954,
+    "east": 89.200013,
+    "north": 22.601613
+  },
+  "surge_method": "anchored_quadratic_scaling",
+  "anchor": {
+    "wind_kmph": 115.0,
+    "surge_m": 1.2
+  },
+  "limitation": "Screening estimate scaled from one observed event; omits tide, pressure, bathymetry and storm size.",
+  "is_display_raster": true,
+  "disclosure": "Every image here is a display raster. The flood engine's own full-resolution results are unchanged and are what /exposure, /routes and /allocation consume.",
+  "overlays": [
+    {
+      "id": "cat0",
+      "label": "Depression",
+      "wind_kmph": 40.0,
+      "surge_m": 0.1452,
+      "imd_category": "Depression",
+      "image": "flood_cat0.png",
+      "bounds": {
+        "west": 87.799988,
+        "south": 21.299954,
+        "east": 89.200013,
+        "north": 22.601613
+      },
+      "width_px": 1000,
+      "height_px": 930,
+      "png_bytes": 4983,
+      "flooded_pixels": 0,
+      "flooded_fraction_of_raster": 0.0,
+      "final_land_area_km2": 0.0,
+      "drawn_area_km2": 0.0,
+      "depth_classes_m": [
+        {
+          "upper": 0.5,
+          "alpha": 70
+        },
+        {
+          "upper": 1.5,
+          "alpha": 110
+        },
+        {
+          "upper": 3.0,
+          "alpha": 160
+        },
+        {
+          "upper": null,
+          "alpha": 210
+        }
+      ],
+      "is_display_raster": true,
+      "disclosure": "Display raster, not a queryable geometry layer. Downsampled to 1000 px wide and quantised into 4 depth classes, so it cannot represent the sub-pixel fragments the polygon path drops and two cells of different depth may share a colour. /exposure, /routes and /allocation use the full-resolution mask and are unaffected by this image. final_land_area_km2 is the model's figure; do not measure area from the picture."
+    },
+    {
+      "id": "cat1",
+      "label": "Deep Depression",
+      "wind_kmph": 55.5,
+      "surge_m": 0.2795,
+      "imd_category": "Deep Depression",
+      "image": "flood_cat1.png",
+      "bounds": {
+        "west": 87.799988,
+        "south": 21.299954,
+        "east": 89.200013,
+        "north": 22.601613
+      },
+      "width_px": 1000,
+      "height_px": 930,
+      "png_bytes": 4983,
+      "flooded_pixels": 0,
+      "flooded_fraction_of_raster": 0.0,
+      "final_land_area_km2": 0.0,
+      "drawn_area_km2": 0.0,
+      "depth_classes_m": [
+        {
+          "upper": 0.5,
+          "alpha": 70
+        },
+        {
+          "upper": 1.5,
+          "alpha": 110
+        },
+        {
+          "upper": 3.0,
+          "alpha": 160
+        },
+        {
+          "upper": null,
+          "alpha": 210
+        }
+      ],
+      "is_display_raster": true,
+      "disclosure": "Display raster, not a queryable geometry layer. Downsampled to 1000 px wide and quantised into 4 depth classes, so it cannot represent the sub-pixel fragments the polygon path drops and two cells of different depth may share a colour. /exposure, /routes and /allocation use the full-resolution mask and are unaffected by this image. final_land_area_km2 is the model's figure; do not measure area from the picture."
+    },
+    {
+      "id": "cat2",
+      "label": "Cyclonic Storm",
+      "wind_kmph": 75.0,
+      "surge_m": 0.5104,
+      "imd_category": "Cyclonic Storm",
+      "image": "flood_cat2.png",
+      "bounds": {
+        "west": 87.799988,
+        "south": 21.299954,
+        "east": 89.200013,
+        "north": 22.601613
+      },
+      "width_px": 1000,
+      "height_px": 930,
+      "png_bytes": 4983,
+      "flooded_pixels": 0,
+      "flooded_fraction_of_raster": 0.0,
+      "final_land_area_km2": 0.0,
+      "drawn_area_km2": 0.0,
+      "depth_classes_m": [
+        {
+          "upper": 0.5,
+          "alpha": 70
+        },
+        {
+          "upper": 1.5,
+          "alpha": 110
+        },
+        {
+          "upper": 3.0,
+          "alpha": 160
+        },
+        {
+          "upper": null,
+          "alpha": 210
+        }
+      ],
+      "is_display_raster": true,
+      "disclosure": "Display raster, not a queryable geometry layer. Downsampled to 1000 px wide and quantised into 4 depth classes, so it cannot represent the sub-pixel fragments the polygon path drops and two cells of different depth may share a colour. /exposure, /routes and /allocation use the full-resolution mask and are unaffected by this image. final_land_area_km2 is the model's figure; do not measure area from the picture."
+    },
+    {
+      "id": "cat3",
+      "label": "Severe Cyclonic Storm",
+      "wind_kmph": 103.0,
+      "surge_m": 0.9626,
+      "imd_category": "Severe Cyclonic Storm",
+      "image": "flood_cat3.png",
+      "bounds": {
+        "west": 87.799988,
+        "south": 21.299954,
+        "east": 89.200013,
+        "north": 22.601613
+      },
+      "width_px": 1000,
+      "height_px": 930,
+      "png_bytes": 4983,
+      "flooded_pixels": 0,
+      "flooded_fraction_of_raster": 0.0,
+      "final_land_area_km2": 0.0,
+      "drawn_area_km2": 0.0,
+      "depth_classes_m": [
+        {
+          "upper": 0.5,
+          "alpha": 70
+        },
+        {
+          "upper": 1.5,
+          "alpha": 110
+        },
+        {
+          "upper": 3.0,
+          "alpha": 160
+        },
+        {
+          "upper": null,
+          "alpha": 210
+        }
+      ],
+      "is_display_raster": true,
+      "disclosure": "Display raster, not a queryable geometry layer. Downsampled to 1000 px wide and quantised into 4 depth classes, so it cannot represent the sub-pixel fragments the polygon path drops and two cells of different depth may share a colour. /exposure, /routes and /allocation use the full-resolution mask and are unaffected by this image. final_land_area_km2 is the model's figure; do not measure area from the picture."
+    },
+    {
+      "id": "cat4",
+      "label": "Very Severe Cyclonic Storm",
+      "wind_kmph": 142.0,
+      "surge_m": 1.8296,
+      "imd_category": "Very Severe Cyclonic Storm",
+      "image": "flood_cat4.png",
+      "bounds": {
+        "west": 87.799988,
+        "south": 21.299954,
+        "east": 89.200013,
+        "north": 22.601613
+      },
+      "width_px": 1000,
+      "height_px": 930,
+      "png_bytes": 26588,
+      "flooded_pixels": 16052,
+      "flooded_fraction_of_raster": 0.01726,
+      "final_land_area_km2": 359.23,
+      "drawn_area_km2": 0.0,
+      "depth_classes_m": [
+        {
+          "upper": 0.5,
+          "alpha": 70
+        },
+        {
+          "upper": 1.5,
+          "alpha": 110
+        },
+        {
+          "upper": 3.0,
+          "alpha": 160
+        },
+        {
+          "upper": null,
+          "alpha": 210
+        }
+      ],
+      "is_display_raster": true,
+      "disclosure": "Display raster, not a queryable geometry layer. Downsampled to 1000 px wide and quantised into 4 depth classes, so it cannot represent the sub-pixel fragments the polygon path drops and two cells of different depth may share a colour. /exposure, /routes and /allocation use the full-resolution mask and are unaffected by this image. final_land_area_km2 is the model's figure; do not measure area from the picture."
+    },
+    {
+      "id": "cat5",
+      "label": "Extremely Severe Cyclonic Storm",
+      "wind_kmph": 194.0,
+      "surge_m": 3.415,
+      "imd_category": "Extremely Severe Cyclonic Storm",
+      "image": "flood_cat5.png",
+      "bounds": {
+        "west": 87.799988,
+        "south": 21.299954,
+        "east": 89.200013,
+        "north": 22.601613
+      },
+      "width_px": 1000,
+      "height_px": 930,
+      "png_bytes": 89721,
+      "flooded_pixels": 76327,
+      "flooded_fraction_of_raster": 0.082072,
+      "final_land_area_km2": 1709.57,
+      "drawn_area_km2": 749.28,
+      "depth_classes_m": [
+        {
+          "upper": 0.5,
+          "alpha": 70
+        },
+        {
+          "upper": 1.5,
+          "alpha": 110
+        },
+        {
+          "upper": 3.0,
+          "alpha": 160
+        },
+        {
+          "upper": null,
+          "alpha": 210
+        }
+      ],
+      "is_display_raster": true,
+      "disclosure": "Display raster, not a queryable geometry layer. Downsampled to 1000 px wide and quantised into 4 depth classes, so it cannot represent the sub-pixel fragments the polygon path drops and two cells of different depth may share a colour. /exposure, /routes and /allocation use the full-resolution mask and are unaffected by this image. final_land_area_km2 is the model's figure; do not measure area from the picture."
+    },
+    {
+      "id": "cat6",
+      "label": "Super Cyclonic Storm",
+      "wind_kmph": 222,
+      "surge_m": 4.4719,
+      "imd_category": "Super Cyclonic Storm",
+      "image": "flood_cat6.png",
+      "bounds": {
+        "west": 87.799988,
+        "south": 21.299954,
+        "east": 89.200013,
+        "north": 22.601613
+      },
+      "width_px": 1000,
+      "height_px": 930,
+      "png_bytes": 126552,
+      "flooded_pixels": 119406,
+      "flooded_fraction_of_raster": 0.128394,
+      "final_land_area_km2": 2680.22,
+      "drawn_area_km2": 1678.54,
+      "depth_classes_m": [
+        {
+          "upper": 0.5,
+          "alpha": 70
+        },
+        {
+          "upper": 1.5,
+          "alpha": 110
+        },
+        {
+          "upper": 3.0,
+          "alpha": 160
+        },
+        {
+          "upper": null,
+          "alpha": 210
+        }
+      ],
+      "is_display_raster": true,
+      "disclosure": "Display raster, not a queryable geometry layer. Downsampled to 1000 px wide and quantised into 4 depth classes, so it cannot represent the sub-pixel fragments the polygon path drops and two cells of different depth may share a colour. /exposure, /routes and /allocation use the full-resolution mask and are unaffected by this image. final_land_area_km2 is the model's figure; do not measure area from the picture."
+    },
+    {
+      "id": "remal_observed",
+      "label": "Remal as observed (May 2024)",
+      "wind_kmph": 115.0,
+      "surge_m": 1.2,
+      "imd_category": "Severe Cyclonic Storm",
+      "image": "flood_remal_observed.png",
+      "bounds": {
+        "west": 87.799988,
+        "south": 21.299954,
+        "east": 89.200013,
+        "north": 22.601613
+      },
+      "width_px": 1000,
+      "height_px": 930,
+      "png_bytes": 25146,
+      "flooded_pixels": 14657,
+      "flooded_fraction_of_raster": 0.01576,
+      "final_land_area_km2": 327.64,
+      "drawn_area_km2": 0.0,
+      "depth_classes_m": [
+        {
+          "upper": 0.5,
+          "alpha": 70
+        },
+        {
+          "upper": 1.5,
+          "alpha": 110
+        },
+        {
+          "upper": 3.0,
+          "alpha": 160
+        },
+        {
+          "upper": null,
+          "alpha": 210
+        }
+      ],
+      "is_display_raster": true,
+      "disclosure": "Display raster, not a queryable geometry layer. Downsampled to 1000 px wide and quantised into 4 depth classes, so it cannot represent the sub-pixel fragments the polygon path drops and two cells of different depth may share a colour. /exposure, /routes and /allocation use the full-resolution mask and are unaffected by this image. final_land_area_km2 is the model's figure; do not measure area from the picture."
+    }
+  ]
+}
