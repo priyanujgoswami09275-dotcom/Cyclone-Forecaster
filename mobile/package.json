@@ -10,8 +10,11 @@
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",
     "@expo-google-fonts/roboto-slab": "^0.4.2",
+    "@react-native-community/slider": "5.2.0",
     "expo": "^57.0.25",
-    "expo-font": "~57.0.4"
+    "expo-clipboard": "~57.0.2",
+    "expo-font": "~57.0.4",
+    "react-native-maps": "1.27.2"
   },
   "devDependencies": {
     "@types/react": "^19.3.0",
