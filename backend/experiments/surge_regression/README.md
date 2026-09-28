@@ -87,15 +87,32 @@ straight past 1.2 m and the app could never display its own case-study
 anchor. Under the scaling law 115 kmph gives exactly 1.2 m, exposed as the
 `remal_observed` preset in `/categories`.
 
-**The correction that came with it, and the cost.** Category 6's wind was
-185 kmph — the midpoint of an invented 250 kmph ceiling, since IMD documents
-Super Cyclonic Storm as >=120 kmph with no upper bound. It is now 120 kmph,
-the documented threshold. That is more honest and it broke the demo: 1.31 m
-of surge only reaches DEM cells at exactly 1 m elevation, so the top of the
-slider floods a thin coastal fringe that contains no mapped hospital and
-draws no polygon at all. See MEMORY.md "Flagged for review" §31, which is
-still open. **This README should not be read as "the swap is done and
-working"** — the model is sound, the band mapping above it is not.
+**What came with it, in order.** Two corrections landed on the category
+mapping after the swap, and the second is the one that mattered:
+
+1. Category 6's wind was 185 kmph — the midpoint of an invented 250 kmph
+   ceiling. IMD documents Super Cyclonic Storm as open-ended at the top, so
+   there was no midpoint to take.
+2. **The whole table was in the wrong unit.** Those thresholds — 17, 28, 34,
+   48, 64, 90, 120 — are IMD's **knots** column. The code named, labelled and
+   compared them as kmph, so every wind in the app was about 1.85x too small.
+   Category 6 "started at 120" when IMD's km/h column starts it at **222**.
+
+Between those two, the top of the slider sat at 1.31 m of surge, which only
+reaches DEM cells at exactly 1 m elevation: a thin coastal fringe holding no
+mapped hospital and shattering into sub-`MIN_PART_KM2` fragments. The flood
+drew nothing and `/exposure` returned zero at every category. That was not a
+surge-model problem and not a DEM problem — it was a unit bug, one row above
+the model. With the correct km/h column, category 6 is 222 kmph / 4.47 m and
+the exposure, routing and allocation chains all work again.
+
+**The lesson worth keeping:** the model was replaced because it could not be
+validated, and the replacement looked wrong for a whole round. Both the
+"185 kmph is invented" finding and the "1.31 m exposes nothing" finding were
+real and worth chasing — but the second had a cause one level up that nobody
+checked, because the table it came from had always been internally consistent.
+A number that has never been wrong can still be wrong. See MEMORY.md
+"Flagged for review" §31.
 
 The replacement carries its own limitation, stated in every response: it is a
 screening estimate scaled from one observed event, and it omits tide,

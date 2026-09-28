@@ -128,15 +128,17 @@ def _synthetic_allocation() -> dict:
     Why this exists: these tests are about the ADVISORY layer — that the plan
     covers every allocated locality, that out-of-district names are excluded,
     that the prompt names exactly what was allocated. None of that depends on
-    the flood model, but all of it depends on the allocation being non-empty,
-    and the allocation is empty at every category since the top IMD band was
-    re-anchored to its documented 120 kmph threshold (see MEMORY.md "Flagged
-    for review" and TestExposure in test_module_c.py).
+    the flood model, but all of it depends on the allocation being non-empty.
 
-    Driving these through the real endpoint meant they were silently testing
-    the DEM's 1 m vertical quantum rather than the advisory logic — and when
-    the physics changed they failed for reasons that had nothing to do with
-    what they were written to protect. A synthetic allocation makes the
+    It was empty at every category while the IMD thresholds were read as
+    knots, because every wind was ~1.85x too low and the flood never cleared
+    the DEM's 1 m vertical quantum (see MEMORY.md "Flagged for review" §31).
+    The knots bug is fixed and the real allocation is populated again, but
+    these tests keep the synthetic allocation: driving them through the real
+    endpoint meant they were testing the DEM rather than the advisory logic,
+    and any future change to the surge model or the DEM would move them for
+    reasons that had nothing to do with what they were written to protect. A
+    synthetic allocation makes the
     dependency explicit and keeps the coverage the tests were providing.
 
     Shape copied from `allocate_shelters`, not invented: node / population /
@@ -220,8 +222,20 @@ def payloads_with_allocation(payloads):
     return {**payloads, "allocation": _synthetic_allocation()}
 
 
-def a_valid_advisory(localities: list[str]) -> DistrictAdvisory:
-    """A hand-built advisory that satisfies every rule validate_advisory checks."""
+def a_valid_advisory(localities: list[str], omit: str | None = None) -> DistrictAdvisory:
+    """A hand-built advisory that satisfies every rule validate_advisory checks.
+
+    `omit` drops one locality from the plan. The origin guarantee under test is
+    "if the model did not mention the origin, code adds it" — so a test of that
+    guarantee has to *arrange* for the model to omit it. Building the plan from
+    the allocation's own node list used to arrange that implicitly, back when
+    the requesting locality had no allocation row. It no longer does: at
+    category 6 the allocation carries 21 rows including Sagar, so a plan built
+    from those names mentions the origin and the code path is never reached.
+    Pass `omit` explicitly instead of relying on which rows happen to exist.
+    """
+    if omit is not None:
+        localities = [name for name in localities if name != omit]
     return DistrictAdvisory(
         executive_summary=(
             "Super Cyclonic Storm conditions over the delta. Shelter capacity "
@@ -512,33 +526,57 @@ class TestOriginAlwaysPresent:
 
     The first live run asked for `sagar` and got an advisory that never
     mentioned Sagar — not in the plan, not in the summary — while the prompt
-    context we sent it said "IT is UNREACHABLE at this intensity". Sagar has no
-    population estimate, so it is not in the allocation locality list, and
-    system-prompt rule 3 told the model to use only those. The entry is now
-    built in code, from the same routing facts the prompt was given.
+    context we sent it said "IT is UNREACHABLE at this intensity". Sagar had no
+    population estimate back then, so it was not in the allocation locality
+    list, and system-prompt rule 3 told the model to use only those. The entry
+    is now built in code, from the same routing facts the prompt was given.
+
+    **These tests arrange their own premise.** The guarantee is "if the model
+    omitted the origin, code adds it", so the stub has to omit it — the `_stub`
+    fixture below does that for whichever origin the test requests. They used
+    to get that for free, because a plan built from the allocation's node names
+    could not name a locality that had no allocation row. That stopped being
+    true when the category unit fix landed: at category 6 the allocation has 21
+    rows and Sagar is one of them, so the free version of the arrangement
+    quietly stopped exercising the code path, and five of these tests went red
+    without the product changing at all. Every one of them asserts on
+    `evacuation_plan[0]` being the code-built entry, and `a_valid_advisory`'s
+    generic per-locality text ("Estimated exposed population...") had taken
+    that slot instead. Arranging the omission explicitly is what the test
+    means, so it is now stated rather than inherited.
     """
 
     @pytest.fixture(autouse=True)
     def _stub(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
-        # Deliberately returns an advisory that mentions the origin nowhere, the
-        # exact failure being guarded against.
-        monkeypatch.setattr(
-            main,
-            "generate_advisory",
-            lambda surge, exposure, allocation, context="", corrections="": (
-                a_valid_advisory([r["node"] for r in allocation["allocation"]])
-            ),
-        )
+        # Deliberately returns an advisory that mentions the origin nowhere —
+        # the exact failure being guarded against. `self._omit` is set by the
+        # test that needs the arrangement, so it is stated at the call site
+        # rather than inherited from whichever rows the allocation happens to
+        # hold. A test that does not set it gets the full plan, which is the
+        # "the model did mention it" case.
+        def generate(surge, exposure, allocation, context="", corrections=""):
+            return a_valid_advisory(
+                [r["node"] for r in allocation["allocation"]], omit=self._omit
+            )
+
+        monkeypatch.setattr(main, "generate_advisory", generate)
+
+    def _omit_origin(self, name: str) -> None:
+        """Arrange for the stubbed model to leave `name` out of its plan."""
+        self._omit = name
+
+    _omit = None
 
     def test_origin_missing_from_allocation_is_still_added(self, client):
-        assert "Sagar" not in [r["node"] for r in main.allocation(6)["allocation"]]
+        self._omit_origin("Sagar")
         body = client.post("/advisory?category=6&origin=sagar").json()
         plan = body["advisory"]["evacuation_plan"]
         assert plan[0]["locality_name"] == "Sagar", "must lead the plan"
-        assert body["generated_for"]["origin_in_allocation"] is False
+        assert body["generated_for"]["origin_entry_added_in_code"] is True
 
     def test_origin_status_is_sourced_from_routing_not_invented(self, client):
+        self._omit_origin("Sagar")
         body = client.post("/advisory?category=6&origin=sagar").json()
         entry = body["advisory"]["evacuation_plan"][0]
         assert entry["priority_level"] == "CRITICAL", "unreachable is the top priority"
@@ -549,28 +587,58 @@ class TestOriginAlwaysPresent:
         assert "not flooding" in entry["reasoning"] or "road-data" in entry["reasoning"]
 
     def test_no_population_figure_is_invented_for_the_origin(self, client):
-        body = client.post("/advisory?category=6&origin=sagar").json()
-        reasoning = body["advisory"]["evacuation_plan"][0]["reasoning"]
-        assert "no at-risk population estimate" in reasoning
+        """A locality with no population estimate must not be given one.
+
+        Anantapur, not Sagar. This used to assert against Sagar, back when
+        Sagar had no allocation row; the category unit fix gave it one (344
+        people at category 6, assigned to a shelter 25 km away), so Sagar now
+        has a real figure and the note it was checking for is correctly absent.
+        The guarantee is about a *missing* estimate, so it needs a locality
+        that still has one missing at every intensity.
+        """
+        self._omit_origin("Anantapur")
+        body = client.post("/advisory?category=3&origin=anantapur").json()
+        assert body["generated_for"]["origin_in_allocation"] is False
+        entry = body["advisory"]["evacuation_plan"][0]
+        assert entry["locality_name"] == "Anantapur"
+        assert "no at-risk population estimate" in entry["reasoning"]
+        # The route distance is legitimately quoted; a *people* count is not.
+        # Look for one specifically rather than for any digit, or the check
+        # trips over "155.1 km" and stops testing anything.
+        assert not re.search(
+            r"\d[\d.,]*\s*(?:people|persons|residents|inhabitants|"
+            r"to be evacuated|evacuees)",
+            entry["reasoning"],
+            re.IGNORECASE,
+        ), entry["reasoning"]
 
     def test_a_reachable_origin_is_added_as_high_not_critical(self, client):
-        """Anantapur is reachable at category 6 but has no allocation row, so
-        the code-built entry is what puts it in the plan. Unreachable is the
-        only condition that earns CRITICAL."""
-        body = client.post("/advisory?category=6&origin=anantapur").json()
+        """Anantapur has no allocation row at any intensity, so the code-built
+        entry is what puts it in the plan. Unreachable is the only condition
+        that earns CRITICAL — checked against a *reachable* origin, at a
+        category where it is still routable."""
+        # Category 3 is the anchor band and floods nothing on this grid, so
+        # Anantapur is reachable there and the HIGH/CRITICAL distinction is the
+        # only thing under test. At category 6 the whole delta is cut off and
+        # the router correctly reports it unreachable — which would make this
+        # test assert nothing.
+        body = client.post("/advisory?category=3&origin=anantapur").json()
         assert body["generated_for"]["origin_reachable"] is True
         assert body["generated_for"]["origin_in_allocation"] is False
+        assert body["generated_for"]["origin_entry_added_in_code"] is True
         entry = body["advisory"]["evacuation_plan"][0]
         assert entry["locality_name"] == "Anantapur"
         assert entry["priority_level"] == "HIGH"
         assert "flood-free route" in entry["reasoning"]
 
     def test_an_origin_the_model_did_mention_is_not_duplicated(self, client):
-        """Code-built must mean 'if absent', not 'always prepend'. Kakdwip is
-        in the allocation, so the stub's plan already names it."""
+        """Code-built must mean 'if absent', not 'always prepend'. The stub's
+        plan names every allocation locality, and Kakdwip is one of them, so
+        this is the inverse arrangement of the rest of the class."""
         body = client.post("/advisory?category=6&origin=kakdwip").json()
         names = [e["locality_name"] for e in body["advisory"]["evacuation_plan"]]
         assert names.count("Kakdwip") == 1, names
+        assert body["generated_for"]["origin_entry_added_in_code"] is False
 
     def test_the_guarantee_survives_the_retry_path(self, client, monkeypatch):
         """A retry replaces the whole object, so the code-built entry has to be
@@ -578,7 +646,9 @@ class TestOriginAlwaysPresent:
         monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
 
         def bad_first_pass(surge, exposure, allocation, context="", corrections=""):
-            result = a_valid_advisory([r["node"] for r in allocation["allocation"]])
+            result = a_valid_advisory(
+                [r["node"] for r in allocation["allocation"]], omit="Sagar"
+            )
             if not corrections:
                 result.sms_dispatch_draft = "z" * 400  # forces a retry
             return result
@@ -638,7 +708,7 @@ class TestNoInventedEmergencyNumbers:
         shown to pass on real output."""
         clean = (
             "Amphan (2020) made landfall with 1820.83 km2 affected and 46,300 "
-            "people at 185.0 kmph. Surge 3.86 m. Call 112."
+            "people at 142.0 kmph. Surge 3.86 m. Call 112."
         )
         assert self._numbers_in(clean) <= {"112", "2020"}
 
@@ -981,16 +1051,22 @@ class TestReasoningPunctuation:
 
     def test_the_built_reasoning_reads_as_two_sentences(self, client, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+        # Sagar is in the allocation at category 6, so the plan built from the
+        # allocation's own names mentions it and the code-built entry — the one
+        # that splices the /routes reason in — is never reached. Omit it.
         monkeypatch.setattr(
             main,
             "generate_advisory",
             lambda surge, exposure, allocation, context="", corrections="": (
-                a_valid_advisory([r["node"] for r in allocation["allocation"]])
+                a_valid_advisory(
+                    [r["node"] for r in allocation["allocation"]], omit="Sagar"
+                )
             ),
         )
         body = client.post("/advisory?category=6&origin=sagar").json()
         entry = body["advisory"]["evacuation_plan"][0]
         reason = body["generated_for"]["origin_reason"]
+        assert entry["locality_name"] == "Sagar", "must be the code-built entry"
         assert f"intensity: {reason}." in entry["reasoning"]
         # The specific run-on from the third live run.
         assert "not flooding Evacuation" not in entry["reasoning"]

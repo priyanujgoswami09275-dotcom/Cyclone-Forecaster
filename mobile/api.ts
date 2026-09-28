@@ -158,11 +158,19 @@ export interface CategoryHeader {
   category: number;
   imd_category: string;
   /**
-   * `upper` is null for category 6: IMD documents Super Cyclonic Storm as
-   * >=120 kmph with no ceiling, so the band is open-ended and has no
-   * midpoint. Anything that assumed a number here would be inventing one.
+   * IMD's **km/h** column. `upper` is null for category 6: IMD documents
+   * Super Cyclonic Storm as >=222 kmph with no ceiling, so the band is
+   * open-ended and has no midpoint. Anything that assumed a number here would
+   * be inventing one.
+   *
+   * This field briefly held the **knots** column (top band starting at 120)
+   * while being named and displayed as km/h, which made every wind about
+   * 1.85x too small. `band_knots` ships beside it so the two are checkable
+   * against each other rather than against a source file.
    */
   band_kmph: { lower: number; upper: number | null };
+  /** IMD's **knots** column for the same band. Transparency, not input. */
+  band_knots: { lower: number; upper: number | null };
   wind_kmph: number;
   wind_is_band_midpoint: boolean;
   surge_m: number;
@@ -207,10 +215,10 @@ export interface Scoping {
  * A named scenario the app can select directly, by `id` — not by stepping to
  * a category. The seven IMD bands are a classification scheme, not a set of
  * events, and none of their representative winds is the storm this project is
- * about: Remal made landfall at 110-120 kmph, which straddles the 90-120
- * band and sits above the 120 threshold that opens the top band. A UI that can
- * only step through categories 0-6 therefore cannot show the actual case
- * study, which is why this exists.
+ * about: Remal made landfall at 110-120 kmph, which is Severe Cyclonic Storm
+ * (89-117 kmph) and equal to no band's midpoint — the nearest is category 3's
+ * 103 kmph. A UI that can only step through categories 0-6 therefore cannot
+ * show the actual case study, which is why this exists.
  */
 export interface SurgePreset {
   id: string;
@@ -224,7 +232,8 @@ export interface CategoriesResponse {
   source: string;
   representative_wind: string;
   method: string;
-  anchor: { wind_kmph: number; surge_m: number };
+  /** `imd_band` is where the anchor falls on IMD's km/h column. */
+  anchor: { wind_kmph: number; surge_m: number; imd_band: string };
   limitation: string;
   categories: (CategoryHeader & {
     /**

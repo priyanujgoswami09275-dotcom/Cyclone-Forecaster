@@ -18,8 +18,10 @@ import pytest
 
 from backend.simulation.dem import load_dem
 from backend.simulation.surge import (
+    ANCHOR_IMD_BAND,
     ANCHOR_SURGE_M,
     ANCHOR_WIND_KMPH,
+    IMD_BANDS,
     SURGE_LIMITATION,
     SURGE_METHOD,
     imd_category,
@@ -98,26 +100,80 @@ class TestDemGeometry:
 
 
 class TestImdCategories:
+    """IMD's km/h column. These used to be the KNOTS column (17/28/34/48/64/
+    90/120) fed to a function whose parameter was named `wind_kmph`, so every
+    case below passed while the whole scale sat 1.852x too low. The knots
+    boundaries are kept as `test_boundaries_in_knots_match_the_kmph_column` so
+    the two columns cannot drift apart again.
+    """
+
     @pytest.mark.parametrize(
         "wind,expected",
         [
-            (17, "Depression"),
-            (27, "Depression"),
-            (28, "Deep Depression"),
-            (34, "Cyclonic Storm"),
-            (47, "Cyclonic Storm"),
-            (48, "Severe Cyclonic Storm"),
-            (63, "Severe Cyclonic Storm"),
-            (64, "Very Severe Cyclonic Storm"),
-            (89, "Very Severe Cyclonic Storm"),
-            (90, "Extremely Severe Cyclonic Storm"),
-            (119, "Extremely Severe Cyclonic Storm"),
-            (120, "Super Cyclonic Storm"),
-            (250, "Super Cyclonic Storm"),
+            (30, "Depression"),
+            (31, "Depression"),
+            (49, "Depression"),
+            (50, "Deep Depression"),
+            (61, "Deep Depression"),
+            (62, "Cyclonic Storm"),
+            (88, "Cyclonic Storm"),
+            (89, "Severe Cyclonic Storm"),
+            (117, "Severe Cyclonic Storm"),
+            (118, "Very Severe Cyclonic Storm"),
+            (166, "Very Severe Cyclonic Storm"),
+            (167, "Extremely Severe Cyclonic Storm"),
+            (221, "Extremely Severe Cyclonic Storm"),
+            (222, "Super Cyclonic Storm"),
+            (300, "Super Cyclonic Storm"),
         ],
     )
     def test_boundaries(self, wind, expected):
         assert imd_category(wind) == expected
+
+    def test_the_anchor_lands_in_the_band_imd_gave_remal(self):
+        """115 kmph is Severe Cyclonic Storm on IMD's km/h column.
+
+        This is the check that caught the unit bug. On the knots column 115
+        would be Extremely Severe Cyclonic Storm — a stronger classification
+        than Remal actually earned, and the reason the two columns must both
+        be shipped in the response.
+        """
+        assert imd_category(ANCHOR_WIND_KMPH) == ANCHOR_IMD_BAND
+        assert ANCHOR_IMD_BAND == "Severe Cyclonic Storm"
+
+    def test_bands_are_ordered_and_tile_the_integers(self):
+        """No whole-number wind falls between two bands, in either unit.
+
+        IMD's published ranges are inclusive at both ends and step by one
+        between bands (km/h: 31-49, 50-61, 62-88, ...; knots: 17-27, 28-33,
+        34-47, ...). So consecutive bands are not equal-edged — `upper` is one
+        below the next `lower`. What matters is that nothing is left uncovered,
+        because a gap would be a wind that belongs to no category at all.
+        """
+        for weaker, stronger in zip(IMD_BANDS, IMD_BANDS[1:]):
+            assert stronger.lower_kmph == weaker.upper_kmph + 1, (weaker, stronger)
+            assert stronger.lower_knots == weaker.upper_knots + 1, (weaker, stronger)
+        # And every integer from the bottom of the table to the top threshold
+        # is claimed by exactly one band.
+        first = IMD_BANDS[0]
+        top = IMD_BANDS[-1]
+        for wind in range(int(first.lower_kmph), int(top.lower_kmph) + 1):
+            matching = [b for b in IMD_BANDS if b.lower_kmph <= wind <= (b.upper_kmph or 10**9)]
+            assert len(matching) == 1, (wind, matching)
+
+    def test_only_the_top_band_is_open_ended(self):
+        assert [b.label for b in IMD_BANDS if b.is_open_ended] == [
+            "Super Cyclonic Storm"
+        ]
+
+    def test_bands_ship_both_units(self):
+        for band in IMD_BANDS:
+            d = band.to_dict()
+            assert d["kmph"]["lower"] > 0
+            assert d["knots"]["lower"] > 0
+            # ~1.852 km/h per knot, to within IMD's own rounding of the table.
+            ratio = d["kmph"]["lower"] / d["knots"]["lower"]
+            assert 1.7 < ratio < 1.95, band.label
 
 
 class TestSurgePrediction:

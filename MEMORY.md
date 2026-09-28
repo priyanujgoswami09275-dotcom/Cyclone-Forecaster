@@ -251,31 +251,37 @@ not visually verified**.
 
   | point | current RSS | **peak RSS** |
   |---|---|---|
-  | interpreter only | 17 MB | 17 MB |
-  | after `import backend.main` | 138 MB | 138 MB |
-  | after `GET /health` (startup path) | 335 MB | **372 MB** |
-  | after `GET /surge-zone?category=6` | 741 MB | 778 MB |
-  | after `GET /routes?category=6` | 791 MB | 826 MB |
-  | after `POST /advisory` (**Gemini stubbed**) | 793 MB | **827 MB** |
+  | interpreter only | 14 MB | 14 MB |
+  | after `import backend.main` | 136 MB | 136 MB |
+  | after `GET /health` (startup path) | 370 MB | **370 MB** |
+  | after `GET /surge-zone?category=6` | 802 MB | 802 MB |
+  | after `GET /routes?category=6` | 865 MB | **865 MB** |
 
-  **827 MB peak is 1.6× the 512 MB limit.** Attribution: imports 138 MB,
-  `load_dem()` +79 MB (the elevation array itself is only 36 MB — the rest is
-  GDAL overhead), and **`surge_zone()` alone is +420 MB**, the flood
-  propagation over the 2898×3117 grid. Caching all seven categories adds only
-  +9 MB more, so this is **transient working memory during the computation,
-  not a leak** — but transient is exactly what an OOM kill needs.
+  **Re-measured 2026-09-28 after the IMD unit fix (§31); the previous peak
+  was 827 MB.** The unit fix made category 6's flood extent roughly 1.5x
+  larger in area, so `surge_zone()` allocates more and the peak rose ~39 MB.
+  The number below is the current one: **865 MB is 1.7× the 512 MB limit**,
+  up from 1.6×. The old measurement was taken while the bands were in knots,
+  so it described a smaller flood and understated the requirement.
+
+  Attribution: imports 136 MB, `load_dem()` +79 MB (the elevation array
+  itself is only 36 MB — the rest is GDAL overhead), and **`surge_zone()`
+  alone is +432 MB**, the flood propagation over the 2898×3117 grid. Caching
+  all seven categories adds little more, so this is **transient working
+  memory during the computation, not a leak** — but transient is exactly what
+  an OOM kill needs.
   **Not fixed.** Cheapest levers first: the BFS keeps `visited`/`frontier`
   copies per step over a 9M-cell grid (they only need to be bool/uint8); the 10
   timeline frames are materialised for every category when the API only ever
   returns the final one; and the DEM could be cropped to the bbox before the
   CA runs.
 - **NEW 2026-09-28 — the plan question, answered with numbers but NOT acted
-  on.** The three paid tiers, by the one number that matters here (827 MB
+  on.** The three paid tiers, by the one number that matters here (865 MB
   measured peak vs. the tier's ceiling):
 
-  | plan | RAM | vs. 827 MB peak | cost |
+  | plan | RAM | vs. 865 MB peak | cost |
   |---|---|---|---|
-  | free | 512 MB | **does not fit** (1.6× over) | $0 |
+  | free | 512 MB | **does not fit** (1.7× over) | $0 |
   | starter | 512 MB | **does not fit** — same ceiling as free | ~$7/mo |
   | **standard** | **2 GB** | **fits**, ~2.4× headroom | **~$25/mo** |
 
@@ -485,30 +491,47 @@ not visually verified**.
   scaling (`surge_m = 1.2 * (wind_kmph / 115) ** 2`). There is no fit and no
   error bar any more; the archived measurements are in
   `backend/experiments/surge_regression/README.md` and the reasoning in
-  "Flagged for review" §30. The real accuracy problem is now §31: one anchor
-  and an open-ended top band, which leaves the top of the slider exposing
-  nothing. Adding real RSMC New Delhi bulletin points is still the fix, and it
-  is now a prerequisite rather than a stretch item.
-- **NEW 2026-09-28 — the flood polygon is 112,655 vertices / 4.6 MB at
-  category 6. This will not render smoothly on a phone, and the map screen
-  is Stage 2.** Measured, not estimated, off a live `/surge-zone?category=6`:
+  "Flagged for review" §30. §31, which looked like an accuracy problem on top
+  of it, is now **resolved** — its root cause was the IMD band table holding
+  knots while being compared as km/h, one level above the model, and cats 5
+  and 6 expose real infrastructure again. The remaining accuracy limit is
+  the one that was always true: **one anchor**. Adding real RSMC New Delhi
+  bulletin points is still the fix, and it is a prerequisite rather than a
+  stretch item.
+- **RE-MEASURED 2026-09-28 — the flood polygon at category 6 is 180,038
+  vertices / 7.0 MB raw, 936 KB gzipped. Worse than first recorded. This will
+  not render smoothly on a phone, and the map screen is Stage 2.** The earlier
+  figures (308 polygons, 112,655 vertices, 4.6 MB) were measured while the IMD
+  bands were still in knots, so they described a much smaller flood extent and
+  understated the problem. Re-measured off a live `/surge-zone?category=6`
+  after the unit fix:
 
   | quantity | category 6 |
   |---|---|
-  | polygons | 308 |
-  | rings | 24,911 |
-  | total vertices | **112,655** |
-  | JSON payload | **4,608,374 bytes (4.6 MB)** |
-  | `final_land_area_km2` | 1,820.83 |
-  | `drawn_area_km2` | 833.5 |
+  | polygons | 532 |
+  | rings | 40,698 |
+  | total vertices | **180,038** |
+  | geometry JSON | **7,004,772 bytes (7.0 MB)** |
+  | full response, gzipped | **936,062 bytes** |
+  | `final_land_area_km2` | 2,680.22 |
+  | `drawn_area_km2` | 1,678.54 |
+
+  Gzip is doing real work here — 7.0 MB down to 936 KB is a 7.5x ratio, and
+  the wire cost is survivable. The **render** cost is untouched:
+  `react-native-maps` `<Polygon>` with 532 polygons and 180k vertices will
+  stutter on a phone, and that is a separate problem from the payload.
+
+  One structural note found while measuring: `/surge-zone` returns a
+  FeatureCollection whose features 0-8 are **empty GeometryCollections** and
+  whose feature 9 holds the whole MultiPolygon. A client that iterates
+  features and draws each will draw nothing for nine of ten. Worth knowing
+  before Stage 2 writes the map layer — it is a shape the mobile client has
+  to handle, not a bug to guess at from the JSON.
 
   The backend already simplifies to `SIMPLIFY_TOL_DEG = 0.0015` (~170 m) and
-  drops fragments under 0.5 km², and it *reports* the loss honestly
-  (`dropped_detail_km2` = 987.3). The remaining 4.6 MB is simply what this
-  delta looks like at a resolution a phone can draw. `react-native-maps`
-  `<Polygon>` with 308 polygons / 112k vertices will stutter, and re-fetching
-  4.6 MB on every slider step is a connection problem before it is a
-  rendering one.
+  drops fragments under 0.5 km², and it *reports* the loss honestly. The
+  remaining 7.0 MB is what this delta looks like at a resolution a phone can
+  draw.
 
   **The right fix is server-side, not client-side**: raise
   `SIMPLIFY_TOL_DEG` (and/or `MIN_PART_KM2`) until the peak payload lands
@@ -521,41 +544,34 @@ not visually verified**.
   Interim: `mobile/api.ts` ships `decimateRing`/`decimatePolygon`, a
   dependency-free distance filter applied client-side, so the map has a
   bounded vertex count today. It reduces what is *drawn*; it does **not**
-  reduce the 4.6 MB that crosses the wire, which is the part that will
+  reduce the 7.0 MB that crosses the wire (936 KB gzipped), which is the part
+  that will matter on a phone connection. **Neither this nor
+  `SIMPLIFY_TOL_DEG` was changed as part of the unit fix** — the correction
+  was to the band table only, and the payload decision is still owed.
 
-- **NEW 2026-09-28 — the same survey re-measured under anchored scaling.**
-  The table above is now historical: it describes the retired model's category
-  6. Re-measured off a live server running the anchored scaling law, with
-  gzip enabled:
+- **SUPERSEDED 2026-09-28 — the anchored-scaling survey below was itself
+  measured with the wrong bands.** It listed `17–28 / 28–34 / 34–48 / 48–64 /
+  64–90 / 90–120 / 120–∞` as "kmph". Those are IMD's **knots** column; the unit
+  bug in "Flagged for review" §31 had not been found yet, so every wind,
+  surge and area in that table was ~1.85x too small. It is kept only to show
+  how a plausible-looking table can be uniformly wrong. **The current
+  measurement is in §31**, which also carries the corrected band table, the
+  hospital/substation/road/allocation counts per category, and the gzipped
+  payload sizes. The short version: **cats 5 and 6 now expose 5/10/122 and
+  12/22/251 assets respectively and allocate 9 and 21 localities**, and the
+  earlier "no category exposes infrastructure" finding no longer holds.
 
-  | cat | band (kmph) | wind | midpoint? | surge_m | land km2 | drawn km2 | polys | gz bytes |
-  |---|---|---|---|---|---|---|---|---|
-  | 0 Depression | 17–28 | 22.5 | yes | 0.0459 | 0.0 | 0.0 | 0 | 927 |
-  | 1 Deep Depression | 28–34 | 31.0 | yes | 0.0872 | 0.0 | 0.0 | 0 | 932 |
-  | 2 Cyclonic Storm | 34–48 | 41.0 | yes | 0.1525 | 0.0 | 0.0 | 0 | 926 |
-  | 3 Severe Cyclonic Storm | 48–64 | 56.0 | yes | 0.2846 | 0.0 | 0.0 | 0 | 935 |
-  | 4 Very Severe Cyclonic Storm | 64–90 | 77.0 | yes | 0.5380 | 0.0 | 0.0 | 0 | 941 |
-  | 5 Extremely Severe | 90–120 | 105.0 | yes | 1.0004 | 264.26 | **0.0** | 0 | 965 |
-  | 6 Super Cyclonic Storm | 120–∞ | 120.0 | **no** | 1.3066 | 347.67 | **0.0** | 0 | 1,008 |
-
-  Three things to read off this, none of them good:
-  1. **The payload problem is solved by accident, for the wrong reason.**
-     Every response is now under 1 KB (vs 4.6 MB) because the flood extent
-     draws *nothing*, not because the geometry got cheaper. The `SIMPLIFY_TOL_DEG`
-     decision is still open and the 112,655-vertex problem is still real for
-     any surge high enough to consolidate the flood.
-  2. **Cats 5 and 6 draw nothing at all.** `dropped_detail_km2` equals the full
-     land area in both, so every fragment is sub-0.5 km². The map is empty at
-     the top of the slider.
-  3. **No category exposes infrastructure** — see "Flagged for review" §31.
-     This is the blocking finding, not the payload.
-  actually be felt on a phone.
-
-  Also measured, and it is the same story by another route: **categories 0–5
-  return an empty geometry collection.** The surge model cannot resolve below
-  ~115 kmph, so every band under Severe Cyclonic Storm floods nothing and
-  `geometries` is `[]`. The map must read that as "nothing floods at this
-  intensity", not as a failed request.
+  Two of the three concerns from that round survive the fix and are still
+  open, so they are not being quietly dropped:
+  1. **The `SIMPLIFY_TOL_DEG` decision is still open.** The 112,655-vertex
+     problem is real again the moment the flood extent is large enough to
+     consolidate, which is exactly what cats 5 and 6 now do — cat 6's
+     polygon is 936 KB gzipped. Cats 0-4 are small only because they flood
+     nothing.
+  2. **Cats 0-4 return an empty geometry collection** and so does the
+     Remal anchor at 115 kmph / 1.2 m. That is now the expected answer
+     against an integer-valued DEM, not a failed request, and the map must
+     read it as "nothing floods at this intensity".
 
 ## Flagged for review
 
@@ -901,58 +917,129 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     Someone with authority over those docs should decide whether to rewrite
     them or to scope the regression back in.
 
-    **A real regression came with this and needs its own decision — see §31.
-    The two are linked; the second is the cost of the first.**
-31. **NEW 2026-09-28 — the top IMD band now exposes nothing, so the entire
-    Module B exposure chain is dead at every category.** This is the
-    consequence of §30 and it is the most serious finding in the project so
-    far.
+    **A real regression came with this and it is now resolved — see §31.
+    Its root cause was a unit bug one level above the model, not the model
+    itself.**
+31. **RESOLVED 2026-09-28 — the root cause was a unit bug, not the surge
+    model. The exposure chain is alive at every category again.**
 
-    Category 6's representative wind was 185 kmph — the midpoint of an
-    *invented* 250 kmph ceiling, not a documented value, and 65-75 kmph above
-    the real Cyclone Remal. It has been corrected to the documented 120 kmph
-    threshold, because IMD publishes Super Cyclonic Storm as >=120 kmph with
-    **no upper bound**, so there is no midpoint to take. That is more honest
-    and it is what the instruction asked for, and it is also catastrophic for
-    the demo:
+    **The real cause: the IMD band table stored knots and was compared as
+    km/h.** The thresholds 17 / 28 / 34 / 48 / 64 / 90 / 120 are IMD's
+    **knots** column; the km/h column is 31 / 50 / 62 / 89 / 118 / 167 /
+    222. One knot is 1.852 km/h, so every wind the app computed was ~1.85x
+    too small and the whole category scale sat one to three bands too low.
+    What the code called "Super Cyclonic Storm" began at 120 kmph, which on
+    IMD's own km/h column is only *Very Severe*.
 
-    | | retired model | anchored scaling |
-    |---|---|---|
-    | cat 6 wind | 185 kmph (invented) | 120 kmph (documented threshold) |
-    | cat 6 surge | 3.863 m | 1.3066 m |
-    | land flooded | 1,820 km2 | 347.67 km2 |
-    | hospitals exposed | >0 | **0** |
-    | polygon drawn | 833.5 km2 | **0** |
+    This is why §31 looked like a surge-model problem. The diagnosis recorded
+    above was correct as far as it went — 1.31 m of surge really did only
+    reach DEM cells at exactly 1 m, really did shatter below
+    `MIN_PART_KM2`, and really did expose nothing — but it attributed the
+    cause to the DEM's 1 m vertical quantum when the 1.31 m itself was
+    already wrong. **The lesson is in the README for
+    `backend/experiments/surge_regression/`: the table had never been wrong
+    in a way that showed, because knots and km/h are internally consistent
+    with each other. A number that has never been wrong can still be
+    wrong.** The 185 kmph finding that triggered the whole round was also
+    real (an invented midpoint of an invented 250 kmph ceiling) and fixing
+    it alone made things *worse*, which is what kept the real bug alive for
+    a full round.
 
-    The mechanism is the DEM's 1 m vertical quantum, not the surge model.
-    SRTM is integer-valued, so 1.31 m of surge reaches only cells at exactly
-    1 m elevation — a thin, scattered coastal fringe. It contains no mapped
-    hospital or substation, and it shatters into fragments all below
-    `MIN_PART_KM2`, so `dropped_detail_km2` equals the entire land area and
-    the map draws nothing. Cats 0-4 flood nothing at all (their surge is below
-    1 m). **Net effect: `/exposure` reports zero assets and `/allocation`
-    returns an empty assignment at all seven positions.** The app's core
-    loop — "which hospitals go underwater, and who evacuates where" — has no
-    data behind it.
+    `IMD_BANDS` in `backend/simulation/surge.py` is now the single source of
+    truth, carrying both units per band (`ImdBand(label, lower_kmph,
+    upper_kmph, lower_knots, upper_knots)`), sourced in a comment to the IMD
+    cyclone wind classification table. `main.py`'s duplicated `_CATEGORY_BANDS`
+    / `_BAND_LOWER_KMPH` tables — which held the knots values and are how the
+    two files drifted — are **deleted**; `category_band()` now derives from
+    `IMD_BANDS`. Shipping both units in the response as `band_kmph` and
+    `band_knots` makes the class of bug checkable from a test or a client
+    without reading a source file: the ~1.852 ratio is verifiable on the wire.
 
-    Options, all a human's call: (a) keep 120 and accept a dead demo until
-    more surge anchors exist; (b) make the slider a kmph control with the
-    Remal preset at 115, so the open-ended band is honestly open rather than
-    pinned to its floor; (c) lower `MIN_PART_KM2` so the 1 m fringe draws
-    (presentation-only, and it would put speckle on the map); (d) re-scope to
-    the regression until real surge data exists. **Nothing was changed here —
-    `MIN_PART_KM2`, `SIMPLIFY_TOL_DEG` and the band mapping are all
-    untouched pending this decision.**
+    Corrected mapping, all seven bands (representative wind = midpoint of the
+    km/h band; the open-ended top band uses its 222 threshold and reports
+    `wind_is_band_midpoint: false`):
 
-    Test handling: the two product tests that genuinely assert this behaviour
-    (`test_finds_real_exposed_assets_at_peak`, `test_lp_solves_and_assigns_everyone`)
-    are marked `xfail(strict=True)`, so they stay visible and will **fail
-    loudly** the moment the gap closes — that is the signal to remove the
-    marker. The seven advisory tests that were cascading were not xfailed;
-    they were re-pointed at a synthetic non-empty allocation
-    (`payloads_with_allocation` / `synthetic_allocation_result`), because
-    they test the *advisory* layer, not the flood physics, and had been
-    silently passing vacuously against an empty allocation.
+    | cat | label | km/h band | knots band | wind | midpoint? | surge_m |
+    |---|---|---|---|---|---|---|
+    | 0 | Depression | 31-49 | 17-27 | 40.0 | yes | 0.1452 |
+    | 1 | Deep Depression | 50-61 | 28-33 | 55.5 | yes | 0.2795 |
+    | 2 | Cyclonic Storm | 62-88 | 34-47 | 75.0 | yes | 0.5104 |
+    | 3 | Severe Cyclonic Storm | 89-117 | 48-63 | 103.0 | yes | 0.9626 |
+    | 4 | Very Severe Cyclonic Storm | 118-166 | 64-89 | 142.0 | yes | 1.8296 |
+    | 5 | Extremely Severe Cyclonic Storm | 167-221 | 90-119 | 194.0 | yes | 3.4150 |
+    | 6 | Super Cyclonic Storm | >=222 | >=120 | 222.0 | **no** | 4.4719 |
+
+    The bands tile the integers by +1 (49->50, 61->62, 88->89, 117->118,
+    166->167, 221->222), which `test_bands_are_ordered_and_tile_the_integers`
+    asserts: every integer 31-300 is claimed by exactly one band. On IMD's
+    km/h column **115 kmph is Severe Cyclonic Storm (89-117)**, which is the
+    check that caught this — the knots column put 115 in "Extremely Severe",
+    a stronger classification than Remal ever earned. IMD classified Remal as
+    a Severe Cyclonic Storm, and `ANCHOR_IMD_BAND` now records that.
+
+    The `remal_observed` preset is unchanged at 115 kmph / 1.2 m, and is now
+    *reachable and meaningful*: it sits between cat 3 (103) and cat 4 (142),
+    equal to no band's midpoint, which is exactly why it exists as a named
+    preset rather than a slider position.
+
+    **What the fix restored, measured per category** (`land` =
+    `final_land_area_km2` modelled, `drawn` = what the polygon renders, `gz` =
+    gzipped `/surge-zone` bytes):
+
+    | cat | wind | surge_m | land km2 | drawn km2 | hosp | subs | roads | alloc | gz |
+    |---|---|---|---|---|---|---|---|---|---|
+    | 0 | 40.0 | 0.145 | 0.00 | 0.00 | 0 | 0 | 0 | 0 | 941 |
+    | 1 | 55.5 | 0.279 | 0.00 | 0.00 | 0 | 0 | 0 | 0 | 941 |
+    | 2 | 75.0 | 0.510 | 0.00 | 0.00 | 0 | 0 | 0 | 0 | 940 |
+    | 3 | 103.0 | 0.963 | 0.00 | 0.00 | 0 | 0 | 0 | 0 | 950 |
+    | 4 | 142.0 | 1.830 | 359.23 | **0.00** | 0 | 0 | 0 | 0 | 1,058 |
+    | 5 | 194.0 | 3.415 | 1,709.57 | 749.28 | 5 | 10 | 122 | 9 | 513,015 |
+    | 6 | 222.0 | 4.472 | 2,680.22 | 1,678.54 | 12 | 22 | 251 | 21 | 936,062 |
+    | *remal* | *115.0* | *1.200* | *327.64* | *0.00* | *0* | *0* | *0* | *0* | *758* |
+
+    Categories 5 and 6 now expose hospitals, substations and cut-off roads,
+    and produce real 21-locality allocations. **Cats 0-4 and the Remal anchor
+    still expose nothing, and that is now the honest, expected answer, not a
+    bug**: their surge is 0.15-1.83 m against a delta whose SRTM cells are
+    integer-valued, so below ~2 m the water reaches only scattered 0-1 m
+    fringe cells that hold no mapped assets and fall under
+    `MIN_PART_KM2`. Cat 4 has 359 km2 modelled and 0 drawn, which is the
+    quantum showing through, not a unit error. **The case-study anchor
+    therefore sits on the boundary of what this DEM can show** — worth
+    knowing before a demo claims the 115 kmph event floods something. The
+    response's `area_disclosure` string already says as much.
+
+    **Test handling.** Both `xfail(strict=True)` markers were **removed** —
+    the two product tests (`test_finds_real_exposed_assets_at_peak`,
+    `test_lp_solves_and_assigns_everyone`) now pass, and
+    `test_peak_band_reaches_only_the_one_metre_coastal_fringe` was inverted
+    to `test_peak_band_floods_past_the_dem_quantum` so it guards the
+    *corrected* behaviour rather than the bug. Four band tests added:
+    `test_the_anchor_lands_in_the_band_imd_gave_remal`,
+    `test_bands_are_ordered_and_tile_the_integers`,
+    `test_only_the_top_band_is_open_ended`, `test_bands_ship_both_units`.
+
+    **Six advisory tests then failed, and they were stale fixtures rather
+    than product bugs.** They arranged their premise implicitly: the stub
+    built its plan from the allocation's own node names, so the code-built
+    origin entry was only exercised because the requesting locality used to
+    have *no* allocation row. At category 6 the allocation has 21 rows and
+    **Sagar is one of them** (344 people, shelter assignment 25 km away), so
+    the plan mentioned the origin and five tests stopped reaching the code
+    path they exist to test. Each now arranges the omission explicitly
+    (`a_valid_advisory(..., omit=...)` / `_omit_origin`), which is what the
+    test means stated rather than inherited. Two tests were re-pointed from
+    Sagar to **Anantapur**, which has no population estimate at any
+    intensity: Sagar now legitimately has one, so "no population figure is
+    invented" could not be asserted against it. The reachable-origin test
+    moved to category 3, because at category 6 every reachable locality is
+    also in the allocation and the HIGH-vs-CRITICAL distinction would assert
+    nothing. No product code, prompt logic, `MIN_PART_KM2` or
+    `SIMPLIFY_TOL_DEG` was touched to achieve this.
+
+    **Full suite: 210 passed, 3 skipped, 0 failed, 0 xfailed** (the 3 skips
+    are the opt-in `@requires_key` live-Gemini tests; no quota was spent).
+    `tsc --noEmit` exits 0.
 
 ## Environment / credentials status
 
@@ -1006,31 +1093,32 @@ Recommend the empty state name the cause and cite `surge.method` +
 field this used to suggest; it is gone, and there is no error bar to quote,
 because there is no fit.)
 
-**Four decisions are owed, none of which is code I should decide:**
+**Three decisions are owed, none of which is code I should decide:**
 
-1. **The `SIMPLIFY_TOL_DEG` call — now moot until §31 is resolved.** Gzip got
-   the wire cost to 578 KB; the render cost was untouched. Under anchored
-   scaling every payload is under 1 KB, but only because the flood draws
-   nothing. Do not read that as the problem being solved. Raising the
-   server-side tolerance to ~0.005–0.01° is still the real fix, and it trades
-   drawn detail against payload.
-2. **RESOLVED — the 1.2 m anchor is now reachable, and reaching it exposed a
-   worse problem.** The old cat 6 wind (185 kmph) was an invented value, and
-   the slider jumped 0.062 → 3.863 m straight past 1.2 m. Anchoring the model
-   on 115 kmph fixed that and added an explicit `remal_observed` preset at
-   exactly 1.2 m. But correcting cat 6 to the documented 120 kmph threshold
-   left the top of the slider exposing nothing — see "Flagged for review" §31,
-   which is now the blocking item. Options are listed there.
-3. **The 827 MB deploy decision.** `starter` is 512 MB like free and would not
+1. **The `SIMPLIFY_TOL_DEG` call — live again, because §31 is resolved.**
+   It was briefly moot: under the broken bands every payload was under 1 KB,
+   but only because the flood drew nothing. With cats 5 and 6 exposing real
+   geometry again, **cat 6 is 936 KB gzipped and cat 5 is 513 KB**, so the
+   vertex/render problem is back. Gzip cut the wire cost; the *render* cost
+   is untouched, and 112,655 vertices will not draw smoothly on a phone.
+   Raising the server-side tolerance to ~0.005–0.01° is still the real fix,
+   and it trades drawn detail against payload. Note this decision is now
+   entangled with the 827 MB deploy decision below: the categories that are
+   expensive to render are the same ones that are expensive to hold in memory.
+2. **The 827 MB deploy decision.** `starter` is 512 MB like free and would not
    help; **standard (2 GB, ~$25/mo)** is the first tier that fits, and the
    *preferred* fix is precomputing all seven categories offline, which would
    drop peak memory to the ~138 MB import baseline. `render.yaml` still says
-   `plan: free`; no precompute started. Note that precompute would bake in
-   whichever surge model is current, so it should not start before §31.
-4. **Whether CLAUDE.md and PRD.md get rewritten or the regression gets
+   `plan: free`; no precompute started. Precompute would bake in whichever
+   surge model and band table are current, so it should wait until §30 and
+   §31's doc decision is settled.
+3. **Whether CLAUDE.md and PRD.md get rewritten or the regression gets
    re-scoped** — "Flagged for review" §30. Both documents currently describe a
    trained model that no longer exists, and CLAUDE.md's "Reference code" block
-   contains the failed regression as the reference snippet.
+   contains the failed regression as the reference snippet. **The unit fix
+   adds a fifth drift to that list**: neither document carries an IMD band
+   table today, so nothing in them is wrong about the bands, but if a band
+   table is added it must be the km/h column, not the knots one.
 
 **The live `POST /advisory` capture is still outstanding.** The single allowed
 attempt returned **HTTP 503** (3 attempts, 2 s + 4 s backoff, 42 s wall clock).
@@ -1121,6 +1209,87 @@ any demo, record a backup capture.
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-28 — Claude Code: the category unit bug (knots read as km/h) — §31 resolved
+
+- **The bug.** `IMD_CATEGORIES` held IMD's **knots** column (17/28/34/48/64/
+  90/120) while being named, labelled and compared as km/h. One knot is 1.852
+  km/h, so every wind the app computed was ~1.85x too small and the category
+  scale sat one to three bands too low. Replaced with `IMD_BANDS`, a tuple of
+  frozen `ImdBand(label, lower_kmph, upper_kmph, lower_knots, upper_knots)`
+  carrying **both** of IMD's published units, sourced in a comment to the IMD
+  cyclone wind classification table. Representative wind is the km/h band
+  midpoint; the open-ended top band uses its 222 threshold with
+  `wind_is_band_midpoint: false`.
+
+- **The duplicated tables that let it happen are deleted.** `main.py` had its
+  own `_CATEGORY_BANDS` / `_BAND_LOWER_KMPH` holding the knots values, which
+  is precisely how the two files drifted. `category_band()` now derives from
+  `IMD_BANDS`, so there is one source of truth. `band_knots` now ships beside
+  `band_kmph` in `/categories` and `/surge-zone`, which makes the unit class of
+  bug checkable from the wire: the ~1.852 ratio is verifiable by a client or a
+  test without reading a source file.
+
+- **Both `xfail(strict=True)` markers removed** — the two product tests pass
+  again. `test_peak_band_reaches_only_the_one_metre_coastal_fringe` was
+  inverted to `test_peak_band_floods_past_the_dem_quantum`. Four band tests
+  added, including `test_bands_are_ordered_and_tile_the_integers` (the bands
+  tile the integers by +1 — 49->50, 61->62, 88->89, 117->118, 166->167,
+  221->222 — which is what a `lower == upper` contiguity check gets wrong)
+  and `test_the_anchor_lands_in_the_band_imd_gave_remal` (115 kmph is
+  **Severe Cyclonic Storm**, 89-117, on the km/h column; the knots column put
+  it in "Extremely Severe", a stronger class than Remal ever earned).
+
+- **Repo-wide sweep for the old values (item 2).** No runtime code, test,
+  mobile file or prompt string assumed the old wind values — every surviving
+  `120` in the codebase is legitimate (knots bounds, the 110–120 kmph landfall
+  anchor, a 120 s HTTP timeout), and every `185` in code is either a
+  historical note about the bug or a deliberately-caught bad SMS string in a
+  test. The advisory prompt interpolates `wind_kmph` from the payload rather
+  than hardcoding bands, so it is correct by construction. `mobile/api.ts` was
+  updated for `band_knots` and `tsc --noEmit` exits 0. **CLAUDE.md and PRD.md
+  were not edited**; the doc drift is logged in §30 and in "Next step".
+
+- **Six advisory tests then failed — stale fixtures, not product bugs.** They
+  arranged their premise *implicitly*: the stub built its plan from the
+  allocation's own node names, so the code-built origin entry was only reached
+  because the requesting locality had no allocation row. At category 6 the
+  allocation has **21 rows and Sagar is one of them** (344 people, shelter 25
+  km away), so the plan mentioned the origin and five tests stopped exercising
+  the code path they exist to test. Fixed by arranging the omission explicitly
+  (`a_valid_advisory(..., omit=...)` / `_omit_origin`) rather than inheriting
+  it, and by moving two tests from Sagar to **Anantapur** (no population
+  estimate at any intensity) and the reachable-origin test to category 3 (at
+  cat 6 every reachable locality is also in the allocation, so HIGH-vs-CRITICAL
+  would assert nothing). One assertion I added was itself wrong and was
+  corrected: a bare "no digits" check tripped on the legitimate 155.1 km route
+  distance, so it now looks for a *people* count specifically.
+
+- **Two recorded measurements were stale because they were taken under the
+  bug, and both are now corrected in place** — this is the part worth
+  remembering, because both understated real problems:
+  - cat 6 polygon: 112,655 vertices / 4.6 MB -> **180,038 vertices / 7.0 MB
+    raw, 936 KB gzipped**. Gzip was doing real work (7.5x) and was never the
+    problem; the 180k-vertex render cost is.
+  - peak RSS: 827 MB -> **865 MB**. Still 1.7x the free-tier 512 MB ceiling.
+  Also found: `/surge-zone` returns a FeatureCollection whose features 0-8 are
+  **empty GeometryCollections** with the whole MultiPolygon in feature 9. A
+  client that iterates features will draw nothing for nine of ten.
+
+- **Honest limit, recorded rather than smoothed over.** Cats 0-4 and the
+  Remal anchor at 115 kmph / 1.2 m still expose **no** infrastructure. That
+  is now the correct answer, not a bug: their surge is 0.15-1.83 m against an
+  integer-valued SRTM grid, so the water reaches only scattered 0-1 m fringe
+  cells holding no mapped assets. Cat 4 has 359 km2 modelled and 0 drawn.
+  **The case-study anchor sits on the boundary of what this DEM can show**,
+  which matters before a demo claims the 115 kmph event floods something.
+
+- **Full suite: 210 passed, 3 skipped, 0 failed, 0 xfailed.** The 3 skips are
+  the opt-in `@requires_key` live-Gemini tests; no quota was spent.
+
+- **Not done, deliberately:** Stage 2 not started, `MIN_PART_KM2` and
+  `SIMPLIFY_TOL_DEG` untouched, advisory prompt logic untouched, no edit to
+  CLAUDE.md or PRD.md, `.env` not staged.
 
 ### 2026-09-28 — Claude Code: surge regression replaced with anchored scaling
 

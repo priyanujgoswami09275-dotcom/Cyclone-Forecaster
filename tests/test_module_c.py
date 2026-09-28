@@ -51,7 +51,7 @@ class TestCategoryMapping:
         """A band is only useful if the wind it stands for is inside it.
 
         Category 6 is the exception the IMD table forces: Super Cyclonic Storm
-        is documented as >=120 kmph with no upper bound, so there is no
+        is documented as >=222 kmph with no upper bound, so there is no
         midpoint to take and `upper` is null. The representative wind is then
         the documented threshold, and `wind_is_band_midpoint` says so rather
         than letting a client assume a midpoint it was not given.
@@ -65,6 +65,36 @@ class TestCategoryMapping:
             else:
                 assert wind <= band["upper"], category
                 assert category["wind_is_band_midpoint"] is True, category
+
+    def test_band_knots_ships_beside_band_kmph(self, client):
+        """IMD publishes both columns, so both travel.
+
+        This is the guard on the unit bug: `band_kmph` briefly held the knots
+        column (17/28/34/48/64/90/120) while being named and presented as
+        km/h, which put every wind about 1.85x too low and shifted the whole
+        category scale. Shipping the two columns side by side makes that
+        checkable without reading the source: the ratio between them must be
+        about 1.852 km/h per knot at every band.
+        """
+        for category in client.get("/categories").json()["categories"]:
+            kmph, knots = category["band_kmph"], category["band_knots"]
+            assert kmph["upper"] is None or kmph["upper"] > kmph["lower"]
+            assert knots["upper"] is None or knots["upper"] > knots["lower"]
+            if kmph["upper"] is None:
+                assert knots["upper"] is None, category["category"]
+            ratio = kmph["lower"] / knots["lower"]
+            assert 1.7 < ratio < 1.95, (category["category"], ratio)
+
+    def test_the_top_band_threshold_is_222_not_120(self, client):
+        """Pins the specific number the bug got wrong.
+
+        120 is IMD's *knot* threshold for Super Cyclonic Storm. The km/h
+        threshold is 222. A regression to the knots column would put this back
+        to 120 and shrink the slider's maximum surge by a factor of about 3.5.
+        """
+        top = client.get("/categories").json()["categories"][-1]
+        assert top["band_kmph"]["lower"] == 222.0
+        assert top["band_knots"]["lower"] == 120.0
 
     def test_out_of_range_category_is_422(self, client):
         for bad in (-1, 7, 99):
@@ -177,57 +207,35 @@ class TestExposure:
         for key in ("hospitals", "substations", "roads_cut_off"):
             assert high[key]["count"] == len(high[key]["features"])
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "The anchored-scaling swap anchored the top IMD band to its "
-            "documented 120 kmph threshold (IMD publishes no upper bound for "
-            "Super Cyclonic Storm, so there is no midpoint to take). That puts "
-            "the slider's maximum at 1.31 m instead of the retired model's "
-            "3.86 m, and 1.31 m only reaches DEM cells at exactly 1 m elevation "
-            "-- a thin coastal fringe that contains no OSM hospital or "
-            "substation. So the exposure chain is empty at every category. "
-            "This is a real modelling gap, not a test to be relaxed: un-xfail "
-            "once the top-band representative wind is decided (MEMORY.md "
-            "'Flagged for review'). See "
-            "test_peak_band_reaches_only_the_one_metre_coastal_fringe for the "
-            "measurement that explains it."
-        ),
-    )
     def test_finds_real_exposed_assets_at_peak(self, high):
         assert high["hospitals"]["count"] > 0
         assert high["substations"]["count"] > 0
         assert high["roads_cut_off"]["count"] > 0
 
-    def test_peak_band_reaches_only_the_one_metre_coastal_fringe(
-        self, high, client
-    ):
-        """Why the exposure chain is empty, measured rather than asserted.
+    def test_peak_band_floods_past_the_dem_quantum(self, high, client):
+        """The peak band must clear more than the DEM's 1 m vertical quantum.
 
-        Two independent facts combine:
+        This is the regression test for the knots-as-km/h bug. With the IMD
+        thresholds read as knots, category 6's surge was 1.31 m: that reaches
+        only cells at exactly 1 m elevation, a thin coastal fringe holding no
+        mapped asset and shattering into sub-`MIN_PART_KM2` fragments. The
+        flood drew nothing and `/exposure` returned zero. On the correct km/h
+        column category 6 is 222 kmph / 4.47 m, which consolidates into real
+        water bodies.
 
-        1. Category 6's surge (1.31 m) clears the DEM's 1 m quantum, so land
-           does flood -- `final_land_area_km2` is in the hundreds. This is new:
-           the retired model clamped the weak bands to a literal 0.0, and the
-           scaling law cannot emit 0 for a non-zero wind.
-        2. But it clears only the 1 m band, and SRTM is integer-valued, so the
-           extent is whatever 1 m plateau happens to be ocean-connected. That
-           fringe holds no mapped assets, and it shatters into fragments all
-           below MIN_PART_KM2, so `drawn_area_km2` is 0 -- the map draws
-           nothing at the top of the slider either.
-
-        Both numbers are pinned so that when the top band is re-anchored, this
-        test tells you exactly what moved.
+        The assertion is "> 0", not a pinned figure, because the exact area
+        moves with the DEM. What must never come back is a drawable extent of
+        zero at the top of the slider.
         """
         zone = client.get("/surge-zone?category=6").json()
         assert zone["final_land_area_km2"] > 0, "the peak band should still flood land"
-        assert zone["drawn_area_km2"] == 0, (
-            "if this is no longer true the flood extent now consolidates into "
-            "drawable water bodies -- the gap is partly closed"
+        assert zone["drawn_area_km2"] > 0, (
+            "the peak band must draw a polygon; a zero here means the surge "
+            "has fallen back to the DEM's 1 m quantum again, which is what the "
+            "knots-as-km/h bug did"
         )
-        # And the whole exposure chain reports zero, consistently.
-        assert high["hospitals"]["count"] == 0
-        assert high["substations"]["count"] == 0
+        assert high["hospitals"]["count"] > 0
+        assert high["substations"]["count"] > 0
 
     def test_nothing_is_exposed_without_a_flood(self, client):
         empty = client.get("/exposure?category=0").json()
@@ -278,16 +286,6 @@ class TestAllocation:
     def high(self, client):
         return client.get("/allocation?category=6").json()
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Downstream of the empty exposure chain -- allocation is driven by "
-            "exposed buildings, and no building is exposed at any category now "
-            "that the top band is anchored to the documented 120 kmph "
-            "threshold. Un-xfail with the exposure tests it depends on (MEMORY.md "
-            "'Flagged for review')."
-        ),
-    )
     def test_lp_solves_and_assigns_everyone(self, high):
         """The whole point of the shelter-allocation delighter."""
         assert high["unmet_demand"] == 0

@@ -89,25 +89,27 @@ from .simulation.shelters import (
     shelter_dataset_status,
 )
 from .simulation.surge import (
+    ANCHOR_IMD_BAND,
     ANCHOR_SURGE_M,
     ANCHOR_WIND_KMPH,
-    IMD_CATEGORIES,
+    IMD_BANDS,
     SURGE_LIMITATION,
     SURGE_METHOD,
     predict_surge,
 )
 
-# `IMD_CATEGORIES` is ordered strong-to-worst for threshold lookups, but the
-# slider runs weak-to-strong (PRD: "Depression -> Super Cyclonic Storm"), so
-# category index i is the i-th entry counting from the END of that tuple.
-# Bounds are the IMD 3-min mean wind classification table (see surge.py).
-_CATEGORY_BANDS = tuple(reversed(IMD_CATEGORIES))  # Depression .. Super
-_BAND_LOWER_KMPH = (17.0, 28.0, 34.0, 48.0, 64.0, 90.0, 120.0)
-# IMD's classification table is open-ended at the top: Super Cyclonic Storm is
-# ">= 120 kmph" with no upper bound, so there is no midpoint for the top band
-# and no ceiling to record here. It used to be 250.0 kmph — an invented number
-# whose midpoint (185) was presented to clients as an IMD figure.
-BAND_UPPER_KMPH = None  # the top band has no documented upper bound
+# `IMD_BANDS` is weak-to-strong, which is the direction the slider runs
+# (PRD: "Depression -> Super Cyclonic Storm"), so category index i is
+# `IMD_BANDS[i]`. Every number below is derived from that one table in
+# `surge.py` — nothing is restated here, so the API and the model cannot
+# disagree about where a band starts.
+#
+# This module used to carry its own copy of the thresholds, and that copy held
+# the **knots** column (17/28/34/48/64/90/120) while naming them `_KMPH` and
+# presenting them to clients as km/h. See `surge.py` for the full account.
+# The module-level `BAND_UPPER_KMPH = None` that used to sit here is gone too:
+# the open-ended top band is now `IMD_BANDS[-1].upper_kmph is None`, so the
+# fact that IMD documents no ceiling lives with the band it describes.
 
 # The case study, exposed as a selectable preset so the app can show the real
 # event rather than only band midpoints. Cyclone Remal, May 2024, landfall
@@ -176,39 +178,31 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # --------------------------------------------------------------------------
 
 
-def category_band(index: int) -> tuple[str, float, float, float]:
+def category_band(index: int) -> tuple[str, float, float | None, float]:
     """(label, lower_kmph, upper_kmph, representative_kmph) for a category.
 
-    For categories 0-5 the representative is the **midpoint** of the band:
-    IMD documents a lower threshold for each, and the next threshold up is
-    that band's documented upper edge, so the midpoint is well defined.
-    (Categories 0-5 come out at 22.5, 31, 41, 56, 77 and 105 kmph.)
+    Categories 0-5 take the **midpoint** of their km/h band, which IMD
+    documents on both sides: 40, 55.5, 75, 103, 142 and 194 kmph.
 
-    **Category 6 is different, and used to be wrong.** IMD defines Super
-    Cyclonic Storm as **>= 120 kmph with no upper bound** — the table is
-    open-ended at the top. A band with one edge has **no midpoint**. This
-    code previously invented a 250 kmph ceiling (`BAND_UPPER_KMPH`) and used
-    the midpoint of that fiction, **185 kmph**, which is not a documented IMD
-    value and sits 65-75 kmph above the real Cyclone Remal the project is
-    anchored on. The ceiling is gone; category 6 now uses the documented
-    **120 kmph** threshold, and `BAND_UPPER_KMPH` is reported as `None` so a
-    client can see the band really is open-ended rather than silently
-    assuming a cap.
+    **Category 6 is open-ended.** IMD documents Super Cyclonic Storm as
+    **>= 222 kmph with no upper bound**, so a band with one edge has no
+    midpoint. It uses its documented lower threshold, `upper` is reported as
+    `None`, and `wind_is_band_midpoint` is `False` so a client cannot mistake
+    the threshold for a midpoint. (This module previously invented a 250 kmph
+    ceiling and used its midpoint, 185 kmph, as though IMD published it.)
 
-    Consequence, stated because it surprises: 120 kmph is the *lowest* wind
-    in the top band, so the slider's maximum is no longer a worst case. The
-    open-ended top of the scale is real — a much stronger Super Cyclonic
-    Storm produces far more surge than 120 kmph — and the API deliberately
-    does not pretend otherwise. Clients wanting a worst case should pass an
-    explicit wind rather than rely on category 6.
+    Consequence, stated because it surprises: 222 kmph is the *weakest* wind
+    in the top band, so the slider's maximum is not a worst case. The
+    open-ended top of the scale is real and the API does not pretend
+    otherwise.
     """
-    threshold, label = _CATEGORY_BANDS[index]  # tuple order is (kmph, label)
-    lower = _BAND_LOWER_KMPH[index]
-    if index < 6:
-        upper = _BAND_LOWER_KMPH[index + 1]
-        return label, lower, upper, (threshold + upper) / 2
-    # Open-ended band: no documented upper bound, so no midpoint exists.
-    return label, lower, None, float(threshold)
+    band = IMD_BANDS[index]
+    return (
+        band.label,
+        band.lower_kmph,
+        band.upper_kmph,
+        band.representative_kmph(),
+    )
 
 
 @lru_cache(maxsize=7)
@@ -236,10 +230,15 @@ def _category_header(index: int) -> dict:
     """
     label, lower, upper, wind = category_band(index)
     surge = surge_for_category(index)
+    band = IMD_BANDS[index]
     return {
         "category": index,
         "imd_category": label,
         "band_kmph": {"lower": lower, "upper": upper},
+        # IMD publishes both columns and bulletins quote knots far more often
+        # than km/h. Shipping both makes it checkable that `band_kmph` is the
+        # km/h column and not, as it briefly was, the knots one.
+        "band_knots": {"lower": band.lower_knots, "upper": band.upper_knots},
         "wind_kmph": wind,
         # False only for the open-ended top band, where the representative is
         # the documented threshold rather than a midpoint of a documented band.
@@ -313,21 +312,31 @@ def categories() -> dict:
 
     `presets` is the important addition. The seven bands are a classification
     scheme, not a set of events, and none of their midpoints is the storm this
-    project is about — Remal made landfall at 110-120 kmph, which falls
-    *inside* the 90-120 band rather than at its 105 kmph midpoint, and above
-    the 120 threshold that opens the top band. So a client that can only step
-    through categories 0-6 has no way to show the actual case study. The
-    preset gives it one, by name and by id.
+    project is about — Remal made landfall at 110-120 kmph, which is Severe
+    Cyclonic Storm (89-117 kmph) rather than any band's 103 kmph midpoint. So
+    a client that can only step through categories 0-6 has no way to show the
+    actual case study. The preset gives it one, by name and by id.
     """
     return {
-        "source": "India Meteorological Department cyclone wind classification (3-min mean)",
+        "source": (
+            "India Meteorological Department cyclone wind classification "
+            "(3-min mean sustained wind). IMD publishes each band in both "
+            "knots and km/h; band_kmph is the km/h column and band_knots is "
+            "the knots column, shipped so the two are checkable against each "
+            "other."
+        ),
         "representative_wind": (
-            "band midpoint for categories 0-5; for category 6 (Super Cyclonic "
-            "Storm) IMD documents no upper bound, so the representative is the "
-            "documented 120 kmph threshold and band_kmph.upper is null"
+            "band midpoint of the km/h band for categories 0-5; for category 6 "
+            "(Super Cyclonic Storm) IMD documents no upper bound, so the "
+            "representative is the documented 222 kmph threshold, "
+            "band_kmph.upper is null and wind_is_band_midpoint is false"
         ),
         "method": SURGE_METHOD,
-        "anchor": {"wind_kmph": ANCHOR_WIND_KMPH, "surge_m": ANCHOR_SURGE_M},
+        "anchor": {
+            "wind_kmph": ANCHOR_WIND_KMPH,
+            "surge_m": ANCHOR_SURGE_M,
+            "imd_band": ANCHOR_IMD_BAND,
+        },
         "limitation": SURGE_LIMITATION,
         "categories": [
             {

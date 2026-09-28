@@ -14,9 +14,11 @@ Why scaling is the honest model here, not a downgrade
 -----------------------------------------------------
 With one observed event there is nothing to fit. A regression over four rows
 spends its capacity memorising those four rows and then extrapolates
-nonsense between and beyond them: it produced 0.062 m at 105 kmph and
-3.863 m at 185 kmph, so the app's slider jumped straight past its own
-case-study anchor and could never display it.
+nonsense between and beyond them. It also fed the app a category scale whose
+top band sat at 185 kmph, against a case-study anchor of 115 — so the slider
+jumped straight past its own anchor and could never display it. (That 185
+figure was itself a symptom of a separate bug: the IMD thresholds were being
+read as kmph when they are knots. See `IMD_BANDS` below.)
 
 The scaling law has **no parameters to overfit**. It is monotone in wind by
 construction, non-negative everywhere, needs no clamp (there is no lower or
@@ -69,6 +71,49 @@ from functools import lru_cache
 ANCHOR_WIND_KMPH = 115.0  # midpoint of the documented 110-120 kmph landfall wind
 ANCHOR_SURGE_M = 1.2  # midpoint of the documented ~1.0-1.5 m surge
 
+#: On IMD's km/h column (see `IMD_BANDS`), 115 kmph falls in **Severe
+#: Cyclonic Storm** (89-117 kmph). Worth stating because it is the check that
+#: caught the knots-as-km/h bug: the previous knots column put 115 in
+#: "Extremely Severe Cyclonic Storm", a stronger classification than Remal
+#: actually earned. IMD classified Remal as a Severe Cyclonic Storm.
+ANCHOR_IMD_BAND = "Severe Cyclonic Storm"
+
+
+@dataclass(frozen=True)
+class ImdBand:
+    """One IMD classification band, in both units IMD publishes it in."""
+
+    label: str
+    lower_kmph: float
+    #: ``None`` for the open-ended top band. Never an invented ceiling.
+    upper_kmph: float | None
+    lower_knots: float
+    upper_knots: float | None
+
+    @property
+    def is_open_ended(self) -> bool:
+        return self.upper_kmph is None
+
+    def representative_kmph(self) -> float:
+        """The wind this band stands for in the app.
+
+        Midpoint of the band for the six bounded ones. The open-ended top band
+        has no midpoint, so it uses its documented lower threshold — the
+        weakest wind that still qualifies. `main.py` reports
+        ``wind_is_band_midpoint: false`` there so no client assumes otherwise.
+        """
+        if self.upper_kmph is None:
+            return self.lower_kmph
+        return (self.lower_kmph + self.upper_kmph) / 2.0
+
+    def to_dict(self) -> dict:
+        return {
+            "label": self.label,
+            "kmph": {"lower": self.lower_kmph, "upper": self.upper_kmph},
+            "knots": {"lower": self.lower_knots, "upper": self.upper_knots},
+            "is_open_ended": self.is_open_ended,
+        }
+
 #: Identifies the method in every response. A client should be able to tell
 #: what produced a number without reading this file.
 SURGE_METHOD = "anchored_quadratic_scaling"
@@ -81,17 +126,34 @@ SURGE_LIMITATION = (
     "bathymetry and storm size."
 )
 
-# IMD wind classification, 3-min mean sustained wind in km/h.
-# Source: India Meteorological Department, cyclone wind classification table.
-# Ordered high-to-low at evaluation time.
-IMD_CATEGORIES: tuple[tuple[float, str], ...] = (
-    (120, "Super Cyclonic Storm"),
-    (90, "Extremely Severe Cyclonic Storm"),
-    (64, "Very Severe Cyclonic Storm"),
-    (48, "Severe Cyclonic Storm"),
-    (34, "Cyclonic Storm"),
-    (28, "Deep Depression"),
-    (17, "Depression"),
+# IMD wind classification, 3-min mean sustained wind.
+#
+# Source: India Meteorological Department, cyclone wind classification table
+# (as published in the IMD Cyclone Manual and used by RSMC New Delhi). IMD
+# publishes every band in BOTH knots and km/h.
+#
+# **This table previously held the KNOTS column while being labelled, named
+# and compared as km/h.** The knots column is 17 / 28 / 34 / 48 / 64 / 90 /
+# 120; the km/h column is 31 / 50 / 62 / 89 / 118 / 167 / 222. One knot is
+# 1.852 km/h, so every wind this app computed was about 1.85x too small, and
+# the whole category scale was shifted down the table — what the code called
+# "Super Cyclonic Storm" began at 120, which is only Very Severe by IMD's own
+# km/h column. The knots figures are kept below as `band_knots` for
+# transparency, since bulletins quote them far more often than the km/h ones.
+#
+# This is the single source of truth for the bands. `backend/main.py` derives
+# its category mapping from `IMD_BANDS` rather than restating the numbers, so
+# the two cannot drift apart again.
+IMD_BANDS: tuple[ImdBand, ...] = (
+    ImdBand("Depression", 31, 49, 17, 27),
+    ImdBand("Deep Depression", 50, 61, 28, 33),
+    ImdBand("Cyclonic Storm", 62, 88, 34, 47),
+    ImdBand("Severe Cyclonic Storm", 89, 117, 48, 63),
+    ImdBand("Very Severe Cyclonic Storm", 118, 166, 64, 89),
+    ImdBand("Extremely Severe Cyclonic Storm", 167, 221, 90, 119),
+    # IMD documents no upper bound for the top band, so there is no ceiling
+    # to record and no midpoint to take. `None`, never an invented number.
+    ImdBand("Super Cyclonic Storm", 222, None, 120, None),
 )
 
 
@@ -119,11 +181,16 @@ class SurgeResult:
 
 
 def imd_category(wind_kmph: float) -> str:
-    """IMD classification label for a 3-min mean wind in km/h."""
-    for threshold, label in IMD_CATEGORIES:
-        if wind_kmph >= threshold:
-            return label
-    return "Depression"
+    """IMD classification label for a 3-min mean sustained wind in km/h.
+
+    Compares against `IMD_BANDS`' km/h column. `IMD_BANDS` is weak-to-strong,
+    so this walks it in reverse and takes the strongest band the wind reaches.
+    """
+    label = IMD_BANDS[0].label
+    for band in IMD_BANDS:
+        if wind_kmph >= band.lower_kmph:
+            label = band.label
+    return label
 
 
 def surge_for_wind(wind_kmph: float) -> float:
