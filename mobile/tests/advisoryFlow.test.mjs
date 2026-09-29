@@ -19,6 +19,8 @@ import assert from 'node:assert/strict';
 import { ApiError } from '../api.ts';
 import {
   advisoryKey,
+  cachedBannerText,
+  cachedSampleOffer,
   describeAdvisoryError,
   isAdvisoryStale,
   sheltersAreDemoData,
@@ -221,4 +223,51 @@ test('a missing or malformed shelter_status discloses rather than hides', () => 
   for (const status of [null, undefined, {}, { is_demo_data: 'false' }, { is_demo_data: 0 }]) {
     assert.equal(sheltersAreDemoData(status), true, `${JSON.stringify(status)} should disclose`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// The cached-example fallback.
+//
+// Both branches of the offer are covered, because the negative one is the
+// normal state: `mobile/sampleAdvisory.ts` exports `null` on a fresh checkout
+// and stays null until the capture tool has made a successful live call.
+// A button that renders unconditionally would leave a demo operator pressing
+// something that does nothing.
+// ---------------------------------------------------------------------------
+
+test('with a capture bundled, the fallback is offered', () => {
+  const offer = cachedSampleOffer({ captured_at: 'T', cached: true, response: {} });
+  assert.equal(offer.available, true);
+  assert.equal(offer.label, 'Load cached example');
+});
+
+test('with no capture, the fallback is not offered', () => {
+  // The button must not exist, not exist-and-fail. `null` is what
+  // `sampleAdvisory.ts` exports until the tool has run.
+  assert.equal(cachedSampleOffer(null).available, false);
+  assert.equal(cachedSampleOffer(undefined).available, false);
+});
+
+test('the offer never varies its copy, only its availability', () => {
+  // A reader who sees the button twice should not see two different
+  // explanations of what it does.
+  const withSample = cachedSampleOffer({ captured_at: 'T' });
+  const without = cachedSampleOffer(null);
+  assert.equal(withSample.label, without.label);
+  assert.equal(withSample.note, without.note);
+  assert.ok(withSample.note.length > 0);
+});
+
+test('the banner names when it was captured and that it is not live', () => {
+  // Both halves, always. "Cached" alone invites the reading that it is just
+  // a fast path to the same fresh answer.
+  const text = cachedBannerText('2026-09-29T10:00:00+00:00');
+  assert.match(text, /2026-09-29T10:00:00\+00:00/);
+  assert.match(text, /not live/i);
+});
+
+test('the banner is not dismissable phrasing — no "hide" or "dismiss"', () => {
+  // Weakly enforced (it is a string), but it catches the specific regression
+  // of adding a close affordance to the banner's copy.
+  assert.doesNotMatch(cachedBannerText('T'), /dismiss|hide|close/i);
 });

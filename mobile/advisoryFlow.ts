@@ -210,6 +210,55 @@ export function isAdvisoryStale(
   );
 }
 
+/**
+ * The banner shown above a cached advisory, and the only place that string
+ * lives.
+ *
+ * Not dismissable and not closable, and that is the point: the reader has to
+ * be unable to mistake a stored capture for a live answer. The wording names
+ * both halves — when it was taken, and that it is not live — because "cached"
+ * alone invites the reading that it is merely a fast path to the same fresh
+ * result.
+ */
+export function cachedBannerText(capturedAt: string): string {
+  return `Cached example from ${capturedAt}, not live.`;
+}
+
+export interface CachedSampleOffer {
+  /** Whether the fallback button should render at all. */
+  readonly available: boolean;
+  readonly label: string;
+  readonly note: string;
+}
+
+const CACHED_OFFER_NOTE =
+  'A real advisory captured earlier, stored in the app. It is not an ' +
+  'answer for the settings now on screen.';
+
+/**
+ * Whether to offer the bundled capture as a fallback, and with what copy.
+ *
+ * The `available: false` case is the important one. `mobile/sampleAdvisory.ts`
+ * exports `null` until `backend/tools/capture_advisory.py` has run
+ * successfully, and **no sample is the normal state of a fresh checkout** —
+ * the capture needs a live call and a daily quota. So the button must simply
+ * not exist rather than render and fail, because a demo operator should not
+ * discover mid-pitch that nobody ever ran the capture tool.
+ *
+ * Extracted as a pure function so both branches are testable without a React
+ * renderer. What this does *not* cover is the JSX that consumes it — that
+ * `available === false` really omits the element is a rendering guarantee,
+ * and the honest statement is that it is verified by reading the component,
+ * not by a test.
+ */
+export function cachedSampleOffer(sample: unknown): CachedSampleOffer {
+  return {
+    available: sample !== null && sample !== undefined,
+    label: 'Load cached example',
+    note: CACHED_OFFER_NOTE,
+  };
+}
+
 /** The SMS draft's limit. Mirrors the Gemini schema's field description. */
 export const SMS_LIMIT = 160;
 

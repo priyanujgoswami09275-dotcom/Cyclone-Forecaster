@@ -36,6 +36,7 @@ import {
   type TrackResponse,
 } from '../api';
 import { describeAdvisoryError, isAdvisoryStale } from '../advisoryFlow';
+import { SAMPLE_ADVISORY } from '../sampleAdvisory';
 import { theme } from '../theme';
 import { AdvisoryContent, type AdvisoryOutcome } from './AdvisoryContent';
 import { IntensityControl } from './IntensityControl';
@@ -324,7 +325,7 @@ export function MapScreen() {
 
     postAdvisory(categoryIndex, originId)
       .then((response) => {
-        setAdvisory({ status: 'ready', response });
+        setAdvisory({ status: 'ready', response, capturedAt: null });
       })
       .catch((err: unknown) => {
         const error = err as ApiError;
@@ -340,6 +341,25 @@ export function MapScreen() {
         setAdvisoryBusy(false);
       });
   }, [advisoryBusy, categoryIndex, originId]);
+
+  /**
+   * Swap a failed live advisory for the bundled capture.
+   *
+   * The capture is real output from a real call, stored — but it is an answer
+   * to whatever settings were on screen *when it was taken*, not to the ones
+   * on screen now. The stale guard still runs over it, so a capture loaded at
+   * a different intensity or origin is flagged rather than passed off as
+   * current, and the modal's banner says when it was captured.
+   */
+  const onLoadCachedAdvisory = useCallback(() => {
+    if (!SAMPLE_ADVISORY) return;
+    setAdvisoryBusy(false);
+    setAdvisory({
+      status: 'ready',
+      response: SAMPLE_ADVISORY.response,
+      capturedAt: SAMPLE_ADVISORY.captured_at,
+    });
+  }, []);
 
   // --- render -------------------------------------------------------------
   if (boot.status === 'loading') {
@@ -579,7 +599,9 @@ export function MapScreen() {
       <AdvisoryContent
         outcome={advisory}
         shelterStatus={shelterStatus}
+        cachedSample={SAMPLE_ADVISORY}
         onRetry={onGenerateAdvisory}
+        onLoadCached={onLoadCachedAdvisory}
         onClose={() => setAdvisory(null)}
       />
     </View>

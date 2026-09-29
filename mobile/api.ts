@@ -532,6 +532,22 @@ export interface AdvisoryResponse {
   };
 }
 
+/**
+ * A captured `/advisory` response, as bundled by
+ * `backend/tools/capture_advisory.py`.
+ *
+ * This is real model output from a real call, stored — not a hand-written
+ * example. `cached` is in the envelope rather than inferred by the client, so
+ * a reader of the file can tell a capture from a live response without
+ * knowing anything about the capture tool.
+ */
+export interface CachedAdvisory {
+  /** ISO 8601 UTC. The one thing the app shows about provenance. */
+  captured_at: string;
+  cached: true;
+  response: AdvisoryResponse;
+}
+
 // ---------------------------------------------------------------------------
 // Display overlays
 // ---------------------------------------------------------------------------

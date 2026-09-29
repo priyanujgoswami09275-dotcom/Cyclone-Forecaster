@@ -2,8 +2,10 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 
-import type { AdvisoryResponse } from '../api';
+import type { AdvisoryResponse, CachedAdvisory } from '../api';
 import {
+  cachedBannerText,
+  cachedSampleOffer,
   describeAdvisoryError,
   sheltersAreDemoData,
   smsLengthStatus,
@@ -29,22 +31,28 @@ import { PriorityChip, type PriorityLevel } from './PriorityChip';
 
 export type AdvisoryOutcome =
   | { status: 'loading' }
-  | { status: 'ready'; response: AdvisoryResponse }
+  | { status: 'ready'; response: AdvisoryResponse; capturedAt: string | null }
   | { status: 'failed'; failure: AdvisoryFailure; retryAfterSeconds: number | null };
 
 export interface AdvisoryContentProps {
   outcome: AdvisoryOutcome | null;
   /** `/allocation`'s `shelter_status`, or null while it is still loading. */
   shelterStatus: Record<string, unknown> | null;
+  /** The bundled capture, or null when none has been made. Decides the offer. */
+  cachedSample: CachedAdvisory | null;
   /** Re-send the request. Only ever wired to an explicit press. */
   onRetry: () => void;
+  /** Show the bundled capture instead. Only rendered when one exists. */
+  onLoadCached: () => void;
   onClose: () => void;
 }
 
 export function AdvisoryContent({
   outcome,
   shelterStatus,
+  cachedSample,
   onRetry,
+  onLoadCached,
   onClose,
 }: AdvisoryContentProps) {
   const open = outcome !== null;
@@ -62,9 +70,15 @@ export function AdvisoryContent({
           failure={outcome.failure}
           retryAfterSeconds={outcome.retryAfterSeconds}
           onRetry={onRetry}
+          cachedSample={cachedSample}
+          onLoadCached={onLoadCached}
         />
       ) : (
-        <AdvisoryBody response={outcome.response} shelterStatus={shelterStatus} />
+        <AdvisoryBody
+          response={outcome.response}
+          shelterStatus={shelterStatus}
+          capturedAt={outcome.capturedAt}
+        />
       )}
     </AdvisoryModal>
   );
@@ -90,12 +104,17 @@ function FailureBody({
   failure,
   retryAfterSeconds,
   onRetry,
+  cachedSample,
+  onLoadCached,
 }: {
   failure: AdvisoryFailure;
   retryAfterSeconds: number | null;
   onRetry: () => void;
+  cachedSample: CachedAdvisory | null;
+  onLoadCached: () => void;
 }) {
   const remaining = useCountdown(retryAfterSeconds);
+  const offer = cachedSampleOffer(cachedSample);
 
   return (
     <View style={styles.block}>
@@ -133,6 +152,23 @@ function FailureBody({
       ) : (
         <Text style={styles.actionNote}>{failure.action.label}</Text>
       )}
+
+      {/*
+        The cached fallback, and the only thing on this screen that shows the
+        user anything when a failure offers no action of its own — a quota
+        block is exactly that case, and without this the app is simply blank
+        for the rest of the day.
+
+        `cachedSampleOffer` decides; this only renders. `available` is false
+        when no capture is bundled, and then the element does not exist at
+        all rather than existing and failing.
+      */}
+      {offer.available ? (
+        <View style={styles.cachedOffer}>
+          <GhostButton label={offer.label} onPress={onLoadCached} />
+          <Text style={styles.cachedOfferNote}>{offer.note}</Text>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -140,15 +176,30 @@ function FailureBody({
 function AdvisoryBody({
   response,
   shelterStatus,
+  capturedAt,
 }: {
   response: AdvisoryResponse;
   shelterStatus: Record<string, unknown> | null;
+  /** Non-null when this is a stored capture rather than a live answer. */
+  capturedAt: string | null;
 }) {
   const { advisory, generated_for: forWhom } = response;
   const isDemo = sheltersAreDemoData(shelterStatus);
 
   return (
     <View style={styles.block}>
+      {/*
+        Above the provenance line, so it is the first thing read and cannot be
+        scrolled past before the numbers. `capturedAt` is null for a live
+        advisory and non-null for a capture, so the banner's presence is the
+        signal — there is no way to render this body as a capture without it.
+      */}
+      {capturedAt === null ? null : (
+        <View style={styles.cachedBanner}>
+          <Text style={styles.cachedBannerText}>{cachedBannerText(capturedAt)}</Text>
+        </View>
+      )}
+
       <Text style={styles.provenance}>
         {forWhom.imd_category} · {forWhom.wind_kmph} kmph · written for{' '}
         {forWhom.origin.name}
@@ -432,5 +483,25 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.caption,
     color: theme.colors.textMuted,
     marginTop: theme.spacing.sm,
+  },
+  cachedOffer: {
+    marginTop: theme.spacing.sm,
+  },
+  cachedOfferNote: {
+    fontFamily: theme.fonts.body,
+    fontSize: theme.typography.caption,
+    color: theme.colors.textMuted,
+    marginTop: theme.spacing.xs / 2,
+  },
+  cachedBanner: {
+    backgroundColor: theme.colors.caution,
+    borderRadius: theme.radius.button,
+    padding: theme.spacing.sm,
+    marginBottom: theme.spacing.xs,
+  },
+  cachedBannerText: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: theme.typography.caption,
+    color: theme.colors.text,
   },
 });
