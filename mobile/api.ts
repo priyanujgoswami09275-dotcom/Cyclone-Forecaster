@@ -81,6 +81,7 @@ export type ApiErrorKind =
   | 'timeout' // we gave up waiting; the backend may still be working
   | 'network' // never reached the server: airplane mode, wrong host, CORS
   | 'capacity' // 503 + Retry-After — Gemini is at capacity, retrying later can work
+  | 'quota' // 429, no Retry-After — the daily request limit is spent; resets at midnight Pacific
   | 'validation' // 502 carrying `violations` — the advisory was withheld on purpose
   | 'upstream' // 502/501 with no violations — something failed upstream
   | 'http'; // any other non-2xx
@@ -799,8 +800,17 @@ async function request<T>(
   return (await response.json()) as T;
 }
 
-/** Turn a non-2xx response into a typed ApiError, preserving what matters. */
-async function toApiError(response: Response): Promise<ApiError> {
+/**
+ * Turn a non-2xx response into a typed ApiError, preserving what matters.
+ *
+ * Exported so the status -> kind mapping can be tested directly. It is the
+ * one function in this file whose whole job is a lookup table, and a lookup
+ * table that has never been exercised is exactly the kind that quietly
+ * regresses — a 429 that fell through to `kind: 'http'` would still have
+ * typechecked, still have rendered, and still told the user to retry a limit
+ * that does not move.
+ */
+export async function toApiError(response: Response): Promise<ApiError> {
   const status = response.status;
 
   // `Retry-After` may be seconds or an HTTP date; we only ever emit seconds.
@@ -829,6 +839,24 @@ async function toApiError(response: Response): Promise<ApiError> {
     }
   } catch {
     detail = response.statusText || '(no body)';
+  }
+
+  // Checked before 503, and kept as its own branch, because a spent daily
+  // quota is the exact opposite of a busy model: it does not clear in a
+  // minute, and every attempt spends a little more of what is already gone.
+  // The backend sends no `Retry-After` with a 429 precisely so a client
+  // cannot mistake this for a transient failure and start polling.
+  if (status === 429) {
+    return new ApiError({
+      kind: 'quota',
+      status,
+      message:
+        "Today's Gemini free-tier request limit has been used up. Advisories " +
+        'are blocked until the quota resets at midnight Pacific — retrying now ' +
+        'will not help. Every other part of the app is unaffected.',
+      detail,
+      retryAfterSeconds: null,
+    });
   }
 
   if (status === 503) {

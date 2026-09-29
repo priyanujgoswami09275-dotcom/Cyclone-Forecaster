@@ -959,6 +959,10 @@ class GeminiCapacityError(RuntimeError):
     """Every attempt returned 503 UNAVAILABLE. The model is at capacity."""
 
 
+class GeminiQuotaError(RuntimeError):
+    """The daily free-tier request limit is spent. Retry-After would be a lie."""
+
+
 def _is_capacity_error(exc: ServerError) -> bool:
     """Is this a capacity block rather than a real server-side failure?
 
@@ -971,6 +975,42 @@ def _is_capacity_error(exc: ServerError) -> bool:
         return True
     text = str(exc).upper()
     return "503" in text or "UNAVAILABLE" in text
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    """Is this a spent daily quota rather than a busy model?
+
+    Deliberately disjoint from `_is_capacity_error`. The two are opposites in
+    every way a client cares about: a capacity block clears in about a minute
+    and the identical request is worth repeating, while a spent daily quota
+    does not clear until midnight Pacific. Sending the same advice for both
+    either wastes a minute of a user's time or sends them to bed for eight
+    hours, so they get separate outcomes and separate tests.
+
+    Matched on the 429 code and the `RESOURCE_EXHAUSTED` status word, because
+    the SDK surfaces both depending on how the response came back. A 400 or a
+    malformed-response error is ours to fix and must not be filed as a limit.
+    """
+    if getattr(exc, "code", None) == 429:
+        return True
+    status = (getattr(exc, "status", None) or "").upper()
+    if status == "RESOURCE_EXHAUSTED":
+        return True
+    return "RESOURCE_EXHAUSTED" in str(exc).upper()
+
+
+#: What a client is told when the daily limit is spent. Named once, because
+#: the endpoint, the tests and the mobile copy all have to say the same thing
+#: and a quota message that drifts into "please try again later" defeats the
+#: entire point of having a distinct outcome.
+GEMINI_DAILY_LIMIT_MESSAGE = (
+    "The Gemini free-tier daily request limit has been reached. Advisories are "
+    "blocked until the quota resets at midnight Pacific, so retrying now will "
+    "not help and each attempt risks the rest of the day's quota. This is a "
+    "usage limit, not a fault in the simulation or the app: every other "
+    "endpoint here is unaffected and still serving. Generated advisories "
+    "captured earlier are unaffected and can still be shown."
+)
 
 
 def _generate_with_capacity_retry(*args, **kwargs) -> tuple[DistrictAdvisory, int]:
@@ -991,7 +1031,18 @@ def _generate_with_capacity_retry(*args, **kwargs) -> tuple[DistrictAdvisory, in
     for attempt in range(1, CAPACITY_MAX_ATTEMPTS + 1):
         try:
             return generate_advisory(*args, **kwargs), attempt
-        except ServerError as exc:
+        except Exception as exc:
+            # A spent daily quota is checked first and re-raised immediately,
+            # ahead of the capacity branch. It arrives as a `ClientError` 429,
+            # which is not a `ServerError` at all — so before this clause it
+            # never entered this handler and fell through to the endpoint's
+            # blanket `except Exception`, becoming a 502. Retrying it would
+            # also be actively harmful: each attempt spends a little more of a
+            # limit that has already run out.
+            if _is_quota_error(exc):
+                raise GeminiQuotaError(GEMINI_DAILY_LIMIT_MESSAGE) from exc
+            if not isinstance(exc, ServerError):
+                raise
             if not _is_capacity_error(exc):
                 raise
             last = exc
@@ -1065,6 +1116,14 @@ def advisory(
         result, gemini_calls = _generate_with_capacity_retry(
             surge_payload, exposure_payload, allocation_payload, context=context
         )
+    except GeminiQuotaError as exc:
+        # Before the capacity handler and the blanket `except Exception`. A
+        # spent quota is not a busy model and not a broken service, and the
+        # advice is the opposite: do not retry, it resets at midnight Pacific.
+        # 429 is the truthful code, and 429 without a Retry-After is a
+        # deliberate omission — a header claiming a minute would be a lie, and
+        # a client honouring it would poll until the reset.
+        raise HTTPException(status_code=429, detail=GEMINI_DAILY_LIMIT_MESSAGE) from exc
     except GeminiCapacityError as exc:
         # Caught before the blanket `except Exception` below, which would
         # otherwise report a busy model as a broken one.
@@ -1102,6 +1161,12 @@ def advisory(
                 corrections="\n".join(f"- {v}" for v in violations),
             )
             gemini_calls += correction_calls
+        except GeminiQuotaError as exc:
+            # The correction pass spends the same daily quota, so it can hit
+            # the same limit. Same 429, same message, and — deliberately — no
+            # mention of the violations: the limit is the reason the user sees,
+            # and mixing in a drafting detail invites them to retry.
+            raise HTTPException(status_code=429, detail=GEMINI_DAILY_LIMIT_MESSAGE) from exc
         except GeminiCapacityError as exc:
             raise HTTPException(
                 status_code=503,
