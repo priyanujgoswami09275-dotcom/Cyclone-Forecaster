@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -41,6 +41,8 @@ import { ReadoutPanel } from './ReadoutPanel';
 import {
   SAGAR_REGION,
   OVERLAY_BEARING,
+  TRACK_FIT_DURATION_MS,
+  TRACK_FIT_PADDING,
   assetPinColours,
   compromisedRoadDashPattern,
   compromisedRoadStyle,
@@ -84,6 +86,21 @@ type Boot =
 
 export function MapScreen() {
   const [boot, setBoot] = useState<Boot>({ status: 'loading' });
+
+  const mapRef = useRef<MapView | null>(null);
+  /**
+   * Whether the map is currently showing the whole track, and so whether the
+   * ghost control's label reads "Back to Sagar".
+   *
+   * This is the map's *own* state, tracked on purpose: a user who pans away
+   * from the fitted view by hand leaves the label describing the last button
+   * press rather than what is on screen. That is a small lie, and the fix —
+   * inferring position from the camera — is not available here, because
+   * `onRegionChangeComplete` fires for the programmatic fit too and would
+   * immediately reset the label it is meant to keep. The label describes the
+   * control's last action, which is what a toggle is.
+   */
+  const [fittingTrack, setFittingTrack] = useState(false);
 
   // Committed selection. `categoryIndex` is the value the map and the exposure
   // request agree on; `draftIndex` is only the thumb position, so a drag
@@ -217,6 +234,49 @@ export function MapScreen() {
     ? exposure.hospitals.count + exposure.substations.count + exposure.roads_cut_off.count
     : 0;
 
+  /**
+   * Decision 2: fit the map to the whole track, or come back to Sagar.
+   *
+   * Not the boot region. The flood overlay and every exposure number live on
+   * Sagar Island, and a boot that zoomed out to the full track would show the
+   * viewer a mostly-empty Bay of Bengal with a coastline-sized flood extent and
+   * no readable assets. Sagar is the subject; the full track is a second look.
+   *
+   * The button is only rendered once `track` has loaded, because fitting to
+   * nothing is a no-op the user cannot undo (it would look like a dead
+   * control). Boot already fails loudly if the track is missing, so there is no
+   * separate "no track" state to render here.
+   */
+  const onPressFit = useCallback(() => {
+    const map = mapRef.current;
+    if (!map || !track) return;
+    if (fittingTrack) {
+      map.animateToRegion(SAGAR_REGION, TRACK_FIT_DURATION_MS);
+      setFittingTrack(false);
+      return;
+    }
+    // `fitToCoordinates` rather than a computed `animateRegion`: it accounts
+    // for the device's own aspect ratio, so the same edge padding frames the
+    // track on a phone and on a tablet.
+    //
+    // Fitted over the finite coordinates only. `/track` coerces every position
+    // with `float()` and does not range-check it, and `json.loads` accepts a
+    // bare `NaN` — so a corrupt or hand-edited file can put a non-finite
+    // latitude into `path`, and handing one to `fitToCoordinates` asks the
+    // native map for a region it cannot compute. Filtering here costs a
+    // comparison and keeps a bad row from blanking the map. The same values
+    // are still drawn as a `<Polyline>` above; this only governs the camera.
+    const coordinates = track.path.filter(
+      (c) => Number.isFinite(c.latitude) && Number.isFinite(c.longitude),
+    );
+    if (coordinates.length === 0) return;
+    map.fitToCoordinates(coordinates, {
+      edgePadding: TRACK_FIT_PADDING,
+      animated: true,
+    });
+    setFittingTrack(true);
+  }, [fittingTrack, track]);
+
   // --- render -------------------------------------------------------------
   if (boot.status === 'loading') {
     return (
@@ -240,6 +300,7 @@ export function MapScreen() {
     <View style={styles.screen}>
       <View style={styles.mapWrap}>
         <MapView
+          ref={mapRef}
           style={styles.map}
           initialRegion={SAGAR_REGION}
           // The flood is a single north-up raster and `<Overlay>` takes a
@@ -330,6 +391,29 @@ export function MapScreen() {
               absolute URL to load.
             </Text>
           </View>
+        ) : null}
+
+        {/* Ghost control, per decision 2. Bottom-right of the map, not the
+            top: the banner above is full-width and its height varies with the
+            text, so anything anchored to the top would be covered by it
+            whenever both are on screen. The readout panel is a *sibling* of
+            this wrapper, not an overlay, so the map's own bottom edge is free. */}
+        {track ? (
+          <Pressable
+            onPress={onPressFit}
+            accessibilityRole="button"
+            accessibilityLabel={
+              fittingTrack ? 'Return the map to Sagar Island' : 'Fit the map to the full cyclone track'
+            }
+            style={({ pressed }) => [
+              styles.fitControl,
+              pressed ? styles.fitControlPressed : null,
+            ]}
+          >
+            <Text style={styles.fitControlLabel}>
+              {fittingTrack ? 'Back to Sagar' : 'Full track'}
+            </Text>
+          </Pressable>
         ) : null}
       </View>
 
@@ -526,6 +610,28 @@ const styles = StyleSheet.create({
     fontFamily: theme.fonts.body,
     fontSize: theme.typography.caption,
     color: theme.colors.card,
+  },
+  fitControl: {
+    position: 'absolute',
+    bottom: theme.spacing.xs,
+    right: theme.spacing.xs,
+    paddingVertical: theme.spacing.xs / 2,
+    paddingHorizontal: theme.spacing.sm,
+    borderRadius: theme.radius.chip,
+    backgroundColor: theme.colors.card,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    ...theme.shadow.card,
+  },
+  fitControlPressed: {
+    // Design.md defines no pressed variant for a ghost control; opacity only,
+    // as on PrimaryButton, rather than inventing a token.
+    opacity: 0.7,
+  },
+  fitControlLabel: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: theme.typography.caption,
+    color: theme.colors.text,
   },
   panel: {
     maxHeight: '52%',

@@ -106,3 +106,34 @@ export const SAGAR_REGION = {
   latitudeDelta: 0.36,
   longitudeDelta: 0.36,
 } as const;
+
+/**
+ * Animation duration for the "Back to Sagar" move, in ms.
+ *
+ * Long enough to read as a move rather than a cut, short enough not to hold up
+ * a demo. The "Full track" fit passes `animated: true` to
+ * `fitToCoordinates` and so uses the map's own default duration instead —
+ * this one is explicit because `animateToRegion` takes a duration argument
+ * that has to be a number.
+ */
+export const TRACK_FIT_DURATION_MS = 600;
+
+/**
+ * `edgePadding` for `fitToCoordinates`, in dp.
+ *
+ * Nearly symmetric, with a slightly larger bottom. The bottom is not padding
+ * for the readout panel: that panel is a *sibling* of the map wrapper, not an
+ * overlay on it, so the MapView's viewport already excludes it and a large
+ * bottom padding would waste roughly a third of the visible map.
+ *
+ * What the bottom padding is for is the "Full track" control, which floats at
+ * the map's bottom-right. 64dp lifts the southernmost fix — 18.75 N, well
+ * south of Odisha — clear of that control instead of letting a pin sit on
+ * top of it. The rest keeps the first and last fixes off the bezel.
+ */
+export const TRACK_FIT_PADDING = {
+  top: 24,
+  right: 32,
+  bottom: 64,
+  left: 32,
+} as const;
