@@ -2,22 +2,8 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "app.py": {
-      "excludeFiles": [
-        "mobile/**",
-        "tests/**",
-        "docs/**",
-        ".superpowers/**",
-        ".agents/**",
-        ".claude/**",
-        "*.md",
-        ".env",
-        "backend/experiments/**",
-        "backend/tools/**",
-        "backend/data_pipeline/**",
-        "venv/**",
-        "node_modules/**",
-        "project.zip"
-      ]
+      "maxDuration": 300,
+      "excludeFiles": "{mobile/**,tests/**,docs/**,.superpowers/**,.agents/**,.claude/**,*.md,.env,backend/experiments/**,backend/tools/**,backend/data_pipeline/**,venv/**,node_modules/**,project.zip}"
     }
   }
 }
