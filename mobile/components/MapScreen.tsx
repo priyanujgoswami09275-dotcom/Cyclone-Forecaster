@@ -12,6 +12,7 @@ import MapView, { Marker, Overlay, Polyline } from 'react-native-maps';
 
 import {
   ApiError,
+  getAllocation,
   getCategories,
   getExposure,
   getLocalities,
@@ -20,6 +21,7 @@ import {
   markerCoordinate,
   nearestCategory,
   overlayImageUrl,
+  postAdvisory,
   roadPaths,
   toLatLng,
   waypointSubtitle,
@@ -33,7 +35,9 @@ import {
   type SurgePreset,
   type TrackResponse,
 } from '../api';
+import { describeAdvisoryError, isAdvisoryStale } from '../advisoryFlow';
 import { theme } from '../theme';
+import { AdvisoryContent, type AdvisoryOutcome } from './AdvisoryContent';
 import { IntensityControl } from './IntensityControl';
 import { LocalityPicker } from './LocalityPicker';
 import { PrimaryButton } from './PrimaryButton';
@@ -126,6 +130,37 @@ export function MapScreen() {
   const [exposure, setExposure] = useState<ExposureResponse | null>(null);
   const [exposureLoading, setExposureLoading] = useState(false);
   const [exposureError, setExposureError] = useState<ApiError | null>(null);
+
+  // --- advisory ----------------------------------------------------------
+  // The only state in this app that spends Gemini quota, and the only one
+  // behind an explicit press.
+  const [advisory, setAdvisory] = useState<AdvisoryOutcome | null>(null);
+  const [advisoryBusy, setAdvisoryBusy] = useState(false);
+
+  /**
+   * `/allocation`'s `shelter_status`, for the disclosure notice.
+   *
+   * Fetched once, separately from boot, and **not** in boot's `Promise.all`:
+   * this block is a supplementary disclosure, and a failure to obtain it must
+   * not stop the map from opening. It fails toward disclosure — see
+   * `sheltersAreDemoData`, where a null status means "show the warning".
+   */
+  const [shelterStatus, setShelterStatus] = useState<Record<string, unknown> | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    // Category 0 is the cheapest valid input and the flag does not vary with
+    // it: `shelter_dataset_status()` reads a static file.
+    getAllocation(0, 'sagar')
+      .then((allocation) => {
+        if (!cancelled) setShelterStatus(allocation.shelter_status);
+      })
+      .catch(() => {
+        // Left null on purpose. Null discloses.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // --- boot: the four endpoints the screen cannot start without -----------
   useEffect(() => {
@@ -276,6 +311,35 @@ export function MapScreen() {
     });
     setFittingTrack(true);
   }, [fittingTrack, track]);
+
+  const onGenerateAdvisory = useCallback(() => {
+    // The in-flight lock. Not a spinner decoration: without it a second press
+    // sends a second POST, and the backend's capacity ladder will happily spend
+    // up to six more Gemini calls on it — three for a first draft and three
+    // for a correction pass. A double-tap would be the most expensive possible
+    // way to use this button.
+    if (advisoryBusy) return;
+    setAdvisoryBusy(true);
+    setAdvisory({ status: 'loading' });
+
+    postAdvisory(categoryIndex, originId)
+      .then((response) => {
+        setAdvisory({ status: 'ready', response });
+      })
+      .catch((err: unknown) => {
+        const error = err as ApiError;
+        setAdvisory({
+          status: 'failed',
+          failure: describeAdvisoryError(error),
+          // Non-null only for a 503. Quota arrives with it forced to null, so
+          // the countdown cannot appear on a spent daily limit.
+          retryAfterSeconds: error.retryAfterSeconds,
+        });
+      })
+      .finally(() => {
+        setAdvisoryBusy(false);
+      });
+  }, [advisoryBusy, categoryIndex, originId]);
 
   // --- render -------------------------------------------------------------
   if (boot.status === 'loading') {
@@ -482,12 +546,9 @@ export function MapScreen() {
         */}
         <PrimaryButton
           label="Generate Advisory"
-          onPress={() => {
-            // Stage 3 owns the POST. Wired to a press and nothing else —
-            // never to onValueChange (Rules.md: Gemini is behind an explicit
-            // user action).
-          }}
+          onPress={onGenerateAdvisory}
           disabled={exposedCount === 0 || exposureLoading}
+          busy={advisoryBusy}
         />
         {exposedCount === 0 ? (
           <Text style={styles.disabledHint}>
@@ -496,6 +557,31 @@ export function MapScreen() {
           </Text>
         ) : null}
       </ScrollView>
+
+      {/*
+        The stale guard. The advisory on screen is written for one
+        `${category}:${origin}` pair; if the reader has since moved the slider
+        or the picker, the prose is describing a scenario they are no longer
+        looking at. The advisory is still shown — it is real output about a
+        real modelled storm — but never presented as the answer to the current
+        settings.
+      */}
+      {advisory?.status === 'ready' && isAdvisoryStale(advisory.response, categoryIndex, originId) ? (
+        <View style={styles.staleNotice}>
+          <Text style={styles.staleText}>
+            Generated for {advisory.response.generated_for.imd_category} at{' '}
+            {advisory.response.generated_for.origin.name} — the settings have changed since.
+            Close and generate again for the current scenario.
+          </Text>
+        </View>
+      ) : null}
+
+      <AdvisoryContent
+        outcome={advisory}
+        shelterStatus={shelterStatus}
+        onRetry={onGenerateAdvisory}
+        onClose={() => setAdvisory(null)}
+      />
     </View>
   );
 }
@@ -684,5 +770,19 @@ const styles = StyleSheet.create({
   },
   retryHint: {
     marginTop: theme.spacing.sm,
+  },
+  staleNotice: {
+    position: 'absolute',
+    left: theme.spacing.xs,
+    right: theme.spacing.xs,
+    bottom: theme.spacing.xs,
+    backgroundColor: theme.colors.caution,
+    borderRadius: theme.radius.button,
+    padding: theme.spacing.xs,
+  },
+  staleText: {
+    fontFamily: theme.fonts.body,
+    fontSize: theme.typography.caption,
+    color: theme.colors.text,
   },
 });
