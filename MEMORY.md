@@ -1341,6 +1341,41 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     shape of check one layer down). Not done this round: it is a backend
     change and the four-commit brief was mobile-only for this stage.
 
+39. **NEW 2026-09-29 — there is no `validation.passed` on an advisory
+    response, and the spec that asked for it was wrong.** The capture tool's
+    brief said to save only on "HTTP 200 with `validation.passed` true". The
+    real shape is a top-level **`validated: true`**, hardcoded, with the real
+    detail in `validation.{checks, plan_coverage, attempts, gemini_calls}` —
+    and it is *always* true on a 200, because `POST /advisory` withholds a
+    draft that fails an honesty check with a **502 carrying `violations`**,
+    rather than returning one flagged false. So the gate as specified could
+    never have passed, and the tool would have silently captured nothing
+    forever. `is_capturable()` checks `validated is True` (identity, not
+    truthiness, so `"true"` or a missing key fail closed) and a test asserts
+    `passed` is absent from `validation`, specifically so nobody "fixes" the
+    gate back into a check that can never fire. **CLAUDE.md and PRD.md are
+    untouched** per the standing instruction; this is the log.
+
+40. **NEW 2026-09-29 — the cached-advisory fallback is built and deliberately
+    still empty.** `537e4cf` added `backend/tools/capture_advisory.py` and the
+    mobile half (`sampleAdvisory.ts` → `AdvisoryContent` → "Load cached
+    example"). **The committed `sampleAdvisory.ts` is the `null` form**, so
+    the button does not render and the app has no fallback yet — which is the
+    supported state, not a broken build. Populating it needs a live call the
+    tool is designed to refuse without an explicit opt-in, and the free tier
+    is 20 calls/day (§26), so it is an operator decision, not a build step:
+
+    ```
+    RUN_LIVE_CAPTURE=1 venv/bin/python -m backend.tools.capture_advisory
+    ```
+
+    It attempts **one** POST and writes nothing on any other outcome, on
+    purpose: a capture that retries automatically can spend six calls to
+    produce a file nobody asked for twice. A spent quota (§26) will make it
+    exit 1 having written nothing, and that is the correct result. The tool
+    also refuses without `RUN_LIVE_CAPTURE=1` even when `GEMINI_API_KEY` is
+    set, for the same reason the live tests do.
+
 ## Environment / credentials status
 
 - [x] Google Earth Engine authenticated — done 2026-09-27, DEM fetched and committed
@@ -1412,9 +1447,12 @@ decision; §30/§35 whether CLAUDE.md and PRD.md get rewritten or the surge
 regression re-scoped; and now §37, the five un-specced UI elements.
 
 **Still outstanding and blocked on the clock:** the live `POST /advisory`
-capture. Four sessions have hit the same 503 at capacity, and §26's resolution
-changed the failure mode rather than the blocker — the free tier still resets
-at midnight Pacific and allows 20 calls/day, so it must be triggered by hand:
+capture, now a tool rather than a curl line. `537e4cf` added
+`backend/tools/capture_advisory.py`; run it by hand (§40) to populate the
+cached fallback the app now knows how to show. Four sessions have hit the same
+503 at capacity, and §26's resolution changed the failure mode rather than the
+blocker — the free tier still resets at midnight Pacific and allows 20
+calls/day, so it must be triggered by a person:
 
 ```
 venv/bin/uvicorn backend.main:app --port 8000
@@ -1422,9 +1460,67 @@ curl -X POST "localhost:8000/advisory?category=6&origin=sagar"      # (a)
 curl -X POST "localhost:8000/advisory?category=2&origin=kakdwip"    # (b)
 ```
 
+or, for the artefact the app ships with:
+
+```
+RUN_LIVE_CAPTURE=1 venv/bin/python -m backend.tools.capture_advisory
+```
+
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-29 — Claude Code: the cached-advisory capture, built but not fired
+
+**Scope.** One commit, `537e4cf`. The tool, the mobile fallback, and tests for
+both branches. **No live call was made** — `sampleAdvisory.ts` is committed as
+`null`, so the app still ships with no cached example, which is the state §40
+describes and is supported rather than broken.
+
+The line I held: the brief said "do not write or edit advisory content by
+hand", and the only way to populate the sample this session would have been to
+assemble advisory JSON myself. That is precisely the failure the project is
+built to avoid, so the tool ships empty and the capture is an operator's call
+to make with one explicit command. An empty fallback is visible and harmless;
+a fabricated one is neither.
+
+**One spec error, corrected against the code rather than the brief.** The gate
+was specified as "HTTP 200 with `validation.passed` true". There is no such
+field — the response carries a hardcoded top-level `validated: true`, and the
+backend withholds a failing draft as a 502-with-violations rather than
+returning one flagged false. A gate on `validation.passed` would have never
+passed, and the tool would have captured nothing while appearing to work. See
+§39.
+
+**Why the mobile half is a generated module rather than an imported JSON
+file**, since this was the one design choice not forced by the brief: there is
+no `metro.config.js`, so Metro resolves from `mobile/` only and cannot reach
+`data/samples/` at all; and the filename embeds the category, which is unknown
+until the capture happens, so a static import has no fixed path either.
+Generating `mobile/sampleAdvisory.ts` solves both and turns "is there a
+sample?" into a null comparison the app can make synchronously.
+
+**Coverage, stated honestly.** The *decision* to offer the fallback is a pure
+function, `cachedSampleOffer`, and both branches are tested. What is **not**
+tested is the JSX that consumes it — that `available === false` actually omits
+the button is a rendering guarantee, and this project has no React renderer in
+its test setup. It is verified by reading the component. The same applies to
+the non-dismissable cached banner.
+
+**One thing I did not touch.** `mobile/tsconfig.json` was modified in the
+working tree by something outside this session — it dropped `.expo/types/**`
+and `expo-env.d.ts` from `include`, which are what type the router and
+`process.env`. I did not make that change, did not stage it, and did not
+revert it. It is worth checking before the next commit: an Expo dev server
+rewrites this file on startup, and committing the stripped version would drop
+typed routes and env typing.
+
+**Verified:** `tsc --noEmit` exit 0 · `node --test` 42 passed / 0 failed ·
+`pytest tests/` 320 passed / 3 skipped (the opt-in live guards, unchanged).
+**Not verified:** the tool's live path has never been executed, because
+executing it is the thing that spends the quota. The opt-in refusal *is*
+tested (7 cases, including that a populated `GEMINI_API_KEY` is not sufficient
+opt-in). The app has still never run on a device.
 
 ### 2026-09-29 — Claude Code: Stage B — the advisory flow, end to end
 
