@@ -1,0 +1,33 @@
+# DEV + SERVER dependencies. Split from requirements.txt on 2026-09-29.
+#
+#   pip install -r requirements-dev.txt
+#
+# pulls in requirements.txt as well, so this is the only file a contributor or
+# a local uvicorn needs to name. The runtime file stays the short one so a
+# Vercel function bundle only carries what it can actually import.
+#
+# Everything below is used by something the deployed service never runs: the
+# pre-fetch scripts in backend/data_pipeline/, the regression experiments in
+# backend/experiments/, the test suite, and the ASGI server itself.
+
+-r requirements.txt
+
+# Module A — data pipeline (pre-fetch only; the deployed service never imports
+# these, they run once on a laptop to produce data/*.geojson + data/dem.tif)
+requests>=2.31          # installed 2.32.x — Overpass / IBTrACS fetch scripts
+earthengine-api>=0.1.380  # installed 0.1.x — fetch_dem.py only
+
+# Module A — surge model + training (backend/experiments/surge_regression/).
+# The served /surge-zone path uses the hand-checked IMD band table in
+# backend/simulation/surge.py, not a fitted model, so nothing here is imported
+# at request time.
+scikit-learn>=1.3       # installed 1.9.1 — LinearRegression + leave-one-out CV
+joblib>=1.3             # installed 1.5.x — surge_model.pkl load
+
+# Serving. Vercel supplies its own server, but `uvicorn backend.main:app` is
+# still the local loop and Render's start command.
+uvicorn[standard]>=0.27 # installed 0.54.0
+
+# Tests
+httpx>=0.27             # installed 0.28.x — fastapi.testclient
+pytest>=7.4

@@ -1,3 +1,15 @@
+# RUNTIME dependencies — exactly what the deployed request path imports, and
+# nothing else. Split from the single requirements.txt on 2026-09-29 so a
+# Vercel function bundle carries only these. Dev-only packages live in
+# requirements-dev.txt.
+#
+# How this list is derived, not guessed: `backend/main.py`, `backend/locations.py`,
+# `backend/simulation/*.py` and `backend/ai/*.py` were walked with `ast` and
+# their non-stdlib, non-local imports collected. That yields the nine below
+# and nothing more. Re-run that walk before adding a line here — a package
+# that only a pre-fetch script needs belongs in requirements-dev.txt, and one
+# that nothing imports at all belongs in neither.
+#
 # Pinned 2026-09-28 (Stage 0). These were completely unpinned, which meant a
 # deploy resolved to whatever was newest on the day and could fail on a source
 # break in a file that was already working — the worst kind to debug on a free
@@ -6,17 +18,8 @@
 # project depends on cannot vanish under it. Verified locally against Python
 # 3.13.7; actual installed versions are noted per line.
 
-# Module A — data pipeline (pre-fetch only; the deployed service never imports
-# these, they run once on a laptop to produce data/*.geojson + data/dem.tif)
-requests>=2.31          # installed 2.32.x — Overpass / IBTrACS fetch scripts
-earthengine-api>=0.1.380  # installed 0.1.x — fetch_dem.py only
-
-# Module A — surge model + training
-numpy>=1.26             # installed 2.5.3
-scikit-learn>=1.3       # installed 1.9.1 — LinearRegression + leave-one-out CV
-joblib>=1.3             # installed 1.5.x — surge_model.pkl load
-
 # Module B — simulation engine
+numpy>=1.26             # installed 2.5.3 — DEM grid, flood frames, LP
 rasterio>=1.3,<2        # installed 1.5.1 — SRTM DEM. Upper bound: rasterio 2.x
                          # is a major version with its own GDAL ABI.
 shapely>=2.0            # installed 2.1.2 — polygon geometry
@@ -25,16 +28,16 @@ networkx>=3.0           # installed 3.7 — Dijkstra over the road graph
 
 # Module C — FastAPI backend
 fastapi>=0.110          # installed 0.141.1
-uvicorn[standard]>=0.27 # installed 0.54.0
-httpx>=0.27             # installed 0.28.x — fastapi.testclient, tests only
+pydantic>=2             # installed 2.13.5 — the DistrictAdvisory schema in
+                         # backend/ai/advisory.py. Imported directly, so it is
+                         # named here even though fastapi already requires it;
+                         # a v1 floor would let the v1 API satisfy it and break
+                         # every model in the file.
 
 # Module D — AI advisory layer
 google-genai>=2.0       # installed 2.25.0 — Gemini call in backend/ai/advisory.py
 python-dotenv>=1.0      # loads .env (gitignored); no-ops if the var is already
-                         # set, so Render's dashboard value wins
-
-# Tests
-pytest>=7.4
+                         # set, so the platform's dashboard value wins
 
 # REMOVED 2026-09-28: osmnx. It was never imported by a single line of this
 # project — backend/simulation/routing.py builds its graph from the committed

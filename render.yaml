@@ -16,7 +16,11 @@ services:
     name: cyclone-forecaster-api
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    # requirements-dev.txt, not requirements.txt: the start command below runs
+    # uvicorn, which is no longer a runtime dependency. The dev file includes
+    # the runtime one via `-r`, so this still installs both and Render keeps
+    # working. (2026-09-29, when the two files were split for Vercel.)
+    buildCommand: pip install -r requirements-dev.txt
     # $PORT is supplied by Render and must not be hardcoded to 8000. --host
     # 0.0.0.0 is required: uvicorn otherwise binds loopback only and Render's
     # proxy cannot reach it.
