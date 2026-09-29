@@ -389,6 +389,40 @@ means in practice is listed under "Flagged for review" below.
   `/surge-zone?category=5` cold start (6.5 s measured warm, 30–50 s cold) sits
   inside the same 300 s as everything else.
 
+- **NEW 2026-09-29 — BLOCKER, UNVERIFIED: `/surge-zone?category=6` may exceed
+  Vercel's 4.5 MB response payload cap, and the demo's highest category is the
+  one that breaks.** Measured 2026-09-29 against a locally served app:
+
+  | | bytes |
+  |---|---|
+  | `/surge-zone?category=6` **uncompressed** | **7,008,440** (6.68 MB) |
+  | `/surge-zone?category=6` **on the wire** (gzip) | **936,062** (0.89 MB) |
+  | Vercel cap on request **or response** body | 4,718,592 (4.50 MB) |
+
+  Vercel's [limits page](https://vercel.com/docs/functions/limitations#request-body-size)
+  says only "The maximum payload size for the request body **or the response
+  body** of a Vercel Function is 4.5 MB." It does **not say which side of
+  gzip it measures**, and the answer decides whether this is a non-issue
+  (0.89 MB on the wire, 3.61 MB of headroom) or a demo-day 413
+  `FUNCTION_PAYLOAD_TOO_LARGE` on the one category the whole pitch builds to.
+  React Native's `fetch` sends `Accept-Encoding: gzip` by default, so a phone
+  would receive the compressed body — but that is an argument, not a
+  measurement, and it says nothing about what Vercel counts.
+
+  **Not fixed, deliberately.** The brief for this round is config and
+  dependencies only, and shrinking the payload means changing what
+  `/surge-zone` returns — an API decision, not a deploy one. **First deploy
+  must check `GET /surge-zone?category=6` specifically, not just `/health`.**
+  If it 413s, the fix is not smaller numbers in `vercel.json` but a smaller
+  response: the flood polygon is a per-frame raster mask that could ship as
+  run-length rows or a GeoJSON of the outer ring, and category 6's body is
+  61 % larger than the 4,386,305 bytes recorded on 2026-09-28 for the same
+  request — **that earlier figure is superseded, not additive, and the
+  payload grew for reasons this round did not investigate.**
+
+  Categories 0–5 are all smaller than 6, so this is one category, and the one
+  the demo ends on.
+
 - **NEW 2026-09-28 — the payload finding above is now HALF solved: gzip cuts
   the wire cost 7.6×, and the true uncompressed figure is lower than logged.**
   `GZipMiddleware(minimum_size=1000)` is on the app (registered *after*
@@ -1442,6 +1476,15 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     procedure, because the next person to add a package needs to know that
     "is it imported at runtime?" has an answer you can recompute.
 
+    **(d) `excludeFiles` is a string, not an array.** The first `vercel.json`
+    used a JSON array, which reads naturally and is what most examples online
+    show. The schema documents it as "A **glob pattern**" — singular — and the
+    Python runtime page's own example is a single brace-expansion string:
+    `"{tests/**,**/*.test.py,...}"`. The array form was running on an
+    undocumented reading of the schema and was never tested against Vercel's
+    builder, so it was changed to the documented syntax. **Do not "tidy" it
+    back into an array.** If it grows, add another entry inside the braces.
+
 ## Environment / credentials status
 
 - [x] Google Earth Engine authenticated — done 2026-09-27, DEM fetched and committed
@@ -1525,6 +1568,22 @@ Nothing was deployed: the repo is Vercel-*ready*, not Vercel-*live*.
 
 ### Deploying the backend to Vercel Hobby
 
+**Vercel is the preferred host. 2 GB on Hobby (free) against Render's 512 MB
+on free** — [limits page](https://vercel.com/docs/functions/limitations#memory-size-limits),
+"Hobby: 2 GB, Pro and Ent: 4 GB". That is the whole reason the 865 MB blocker
+closed, and it is why the precompute work has not been started.
+
+Sources, all read 2026-09-29:
+
+| question | answer | source |
+|---|---|---|
+| entrypoint | `app.py`/`index.py`/`server.py`/`main.py`/`wsgi.py`/`asgi.py` at the root (or in `src/`/`app/`), exposing a top-level `app` | [python runtime](https://vercel.com/docs/functions/runtimes/python#python-entrypoints) |
+| Python versions | **3.12 (default), 3.13, 3.14** | [python runtime](https://vercel.com/docs/functions/runtimes/python#python-version) |
+| non-imported data files | "Python Vercel Functions include all files from your project that are reachable at build time. There is no automatic tree-shaking." Nothing extra needed for `data/`; only `excludeFiles` removes it | [python runtime](https://vercel.com/docs/functions/runtimes/python#controlling-what-gets-bundled) |
+| maxDuration | `functions` → entrypoint file → `maxDuration`. **Hobby: 300 s, which is both default and maximum** | [duration](https://vercel.com/docs/functions/configuring-functions/duration) |
+| bundle limit | 500 MB uncompressed for Python (250 MB for other runtimes) | [limitations](https://vercel.com/docs/functions/limitations#bundle-size-limits) |
+| response payload | 4.5 MB, request **or** response body — compression basis unspecified | [limitations](https://vercel.com/docs/functions/limitations#request-body-size) |
+
 Prepared and verified, not performed. When you want to do it:
 
 1. **Push the repo to GitHub** and connect it as a Vercel project. Connect the
@@ -1537,7 +1596,10 @@ Prepared and verified, not performed. When you want to do it:
    `app.py`), install command empty, root directory empty.
 4. **Deploy, then check `/health`.** `advisory_ready: true` means the key
    arrived. `advisory_implemented: true` is the app itself, not the key.
-5. **Point the app at it:** `EXPO_PUBLIC_API_URL` to the deployed origin, then
+5. **Check `GET /surge-zone?category=6` specifically.** This is the one that
+   can 413 on the response payload cap, and `/health` returning 200 says
+   nothing about it. See the blocker above.
+6. **Point the app at it:** `EXPO_PUBLIC_API_URL` to the deployed origin, then
    restart Expo with `-c` (clear cache). The URL is compiled into the bundle —
    a runtime change will not reach the app, and the app's own failure message
    for a missing one says exactly that.
@@ -1547,6 +1609,40 @@ scipy, rasterio and the DEM load (pre-warm before a demo), and a **300 s hard
 duration ceiling** per request on Hobby, which the advisory path's 60–90 s
 worst case fits inside. If a demo is timed, hit `/surge-zone?category=5` first
 to warm the function.
+
+#### What is UNVERIFIED, and cannot be without deploying
+
+Everything below is a local simulation or an estimate. None of it is a
+Vercel-reported number, and none of it can be until a project exists:
+
+- **The 298 MB bundle estimate.** Computed from a local venv plus a walk of
+  the tree. Vercel's own report may differ — it adds `.pyc` files
+  ("includes the resulting `.pyc` files in the function bundle when space
+  allows", [python runtime](https://vercel.com/docs/functions/runtimes/python#controlling-what-gets-bundled))
+  and layers the runtime itself. scipy + rasterio are 165 MB of the total, so
+  the headroom is real but not enormous.
+- **Whether `excludeFiles` behaves as simulated.** The globs were run against
+  the real tree with a local matcher, not by Vercel. The brace-string form
+  matches the documented example, but it has never been through Vercel's
+  builder.
+- **Whether `data/` actually ships.** Proven as far as it can be without a
+  deploy: `data/**` matches no exclude pattern, all 18 files are retained, and
+  every data file the runtime opens (DEM, both road GeoJSONs, shelters,
+  overlays) loads in a venv with only the runtime requirements. Whether the
+  *builder* includes them is a build-time fact this round cannot observe.
+- **Whether `DATA_DIR` resolves on Vercel.** It resolves from
+  `Path(__file__).resolve().parents[2]`, not the CWD, so it should be
+  independent of where the function runs — and the docs confirm the CWD is
+  the project base, not the entrypoint's directory, which is the case this
+  code already avoids depending on. Still unproven in the real runtime.
+- **The 4.5 MB response cap's compression basis.** The one that actually
+  matters, and the only one that can fail a demo. See the blocker above.
+- **Framework auto-detection, region, cold-start timing, and whether
+  `python3.13` resolves to a 3.13 with cp313 wheels for scipy/rasterio on
+  Vercel's build image.** `.python-version` is correct per the docs; that
+  Vercel's build image has the wheels is unmeasured.
+- **Still true from before: the app has never run on a device** (§33), so none
+  of this has been exercised from a handset.
 
 **Still outstanding and blocked on the clock:** the live `POST /advisory`
 capture, now a tool rather than a curl line. `537e4cf` added
@@ -1571,6 +1667,51 @@ RUN_LIVE_CAPTURE=1 venv/bin/python -m backend.tools.capture_advisory
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-29 — Claude Code: Vercel docs read, and a payload cap that may break the demo
+
+**Scope.** Config and dependency work only. Two commits: `4aefeda`
+(`maxDuration` + `excludeFiles` syntax) and this one. Nothing deployed, no
+login, no auth worked around, `.env` never read or printed.
+
+**The docs confirmed most of the previous round and corrected one thing.** The
+`app.py` shim is exactly the documented convention (root `app.py` exposing
+`app`); `.python-version` = 3.13 is a supported version (3.12 default, 3.13,
+3.14); `data/` needs no special handling because "there is no automatic
+tree-shaking" — only `excludeFiles` removes files. What was wrong was
+`excludeFiles` as a JSON **array**: the schema says "A glob pattern",
+singular, and the documented example is a brace-expansion string. Fixed, and
+recorded as §41(d) so it is not tidied back.
+
+**The find: `/surge-zone?category=6` is 7,008,440 bytes uncompressed, and
+Vercel's response payload cap is 4.5 MB.** On the wire it is 936,062 bytes
+because GZipMiddleware compresses it, so this is either a non-issue with 3.6 MB
+to spare or a 413 on the exact category the pitch ends on. Vercel does not say
+which side of gzip it measures, and the answer cannot be obtained without a
+deployment. **Logged as a blocker and deliberately not fixed** — shrinking the
+payload means changing what the endpoint returns, which is an API decision
+outside a config round. Note the earlier recorded figure of 4,386,305 bytes
+for the same request is now superseded: the payload is 60 % larger than
+recorded on 2026-09-28 and this round did not investigate why.
+
+**Verified:** a clean venv from `requirements.txt` alone imports the app
+(16 routes) with uvicorn, pytest, sklearn, joblib, ee and requests all absent
+from `sys.modules`; in that same venv the DEM loads at 2898×3117, the road
+graph at 86,636 nodes from both GeoJSONs, and the shelters file is read — so
+the runtime needs nothing the dev file provides. `pytest tests/` → **320
+passed, 3 skipped**. All 18 files under `data/` survive `excludeFiles`, and
+every data filename the runtime opens is one of them. `git grep -l AIza` over
+tracked files returns nothing: the key is named in 16 files and valued in
+none. Bundle re-measured at **293 MB site-packages + 16.9 MB of `data/` ≈
+299 MB** against the 500 MB uncompressed Python limit.
+
+**Not verified, listed in full under "Next step":** the bundle estimate, the
+exclude globs, whether `data/` ships through Vercel's builder rather than just
+through a local matcher, whether `DATA_DIR` resolves in the real runtime, the
+compression basis of the 4.5 MB cap, and whether Vercel's build image has
+cp313 wheels for scipy and rasterio. **The app has still never run on a
+device** (§33).
+
 
 ### 2026-09-29 — Claude Code: Vercel preparation, and the 865 MB blocker closes
 
