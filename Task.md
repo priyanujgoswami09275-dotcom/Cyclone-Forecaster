@@ -110,15 +110,31 @@ current-state summary.
       `Design .md` renamed to `Design.md` (the stray space is gone). The
       themed components still carry no `fontSize`; applying them is Module E
       work, deliberately not done in the Module C session.
-- [ ] Set up `react-native-maps` with a hardcoded initial region (Sagar
-      Island) — no location permission
-- [ ] Render the cyclone track `Polyline` and infra `Marker`s from static
-      data first, before wiring live API calls
-- [ ] Wire the intensity `Slider` to `/surge-zone` and `/exposure`
-- [ ] Render the flood `Polygon` and exposure counts dynamically
-- [ ] Style compromised-corridor roads (red dashed `Polyline`)
-- [ ] Build the "Generate Advisory" button and advisory `Modal`
-- [ ] Add the `expo-clipboard` SMS-copy button
+- [x] Set up `react-native-maps` with a hardcoded initial region (Sagar
+      Island) — no location permission. `SAGAR_REGION` in `mapStyles.ts`,
+      `rotateEnabled={false}` because `<Overlay>` takes a static bearing.
+- [x] Render the cyclone track `Polyline` and infra `Marker`s from static
+      data first, before wiring live API calls. Done the other way round: the
+      track comes from `GET /track` (Stage A), not from a static file, because
+      five of the nineteen fixes have a blank USA_WIND that the fetch script
+      writes as `0.0` and only the endpoint can report as *not reported*.
+- [x] Wire the intensity `Slider` to `/surge-zone` and `/exposure`. **Partly
+      — deliberately.** The slider drives `/exposure`; the flood is drawn from
+      a pre-rendered raster `<Overlay>`, because `/surge-zone` at category 6
+      returns 7.0 MB raw of geometry that `react-native-maps` stutters on. The
+      picture is a shortcut, the numbers are not.
+- [x] Render the flood `Polygon` and exposure counts dynamically
+- [x] Style compromised-corridor roads (red dashed `Polyline`)
+- [x] Build the "Generate Advisory" button and advisory `Modal` — `cf25a81`.
+      One failure state per `ApiErrorKind`, keyed `${category}:${origin}` so an
+      advisory for a moved slider or origin is flagged stale. The button is
+      disabled on the `/exposure` count alone; no second gate on `/allocation`.
+- [x] Add the `expo-clipboard` SMS-copy button — copies the draft string and
+      nothing else, with a live `n/160` count.
+
+- [ ] **Run it on a device.** Everything above is verified by `tsc --noEmit`,
+      `node --test` and `pytest`, none of which render a pixel. The core loop
+      is complete and unexercised (MEMORY.md §33).
 
 ## Module F — Deployment & demo prep
 

@@ -74,9 +74,44 @@ of each range. Change one and change both.
   `danger`/`dangerDark`/`caution`/`safe` respectively, white text
 - **Flood polygon on map**: fill `waterFill` at 50% opacity, stroke `water`
 - **Compromised road**: dashed `Polyline`, color `danger`
+- **Cyclone track (best-track polyline and its waypoint pins)**: `text`.
+  Added 2026-09-29 to close MEMORY.md §36, which recorded that the token table
+  assigned a colour to the flood, the roads, the priority chips, the shelters
+  and the one main action, and said nothing about a storm's own path — so the
+  app was drawing one from an unrecorded choice. `text` (Onyx) is deliberate:
+  the track is a *record of what happened*, so it is drawn in a neutral that
+  reads as neither hazard nor forecast, and the four colours that carry
+  meaning on this map stay distinct from it. A third option was available and
+  not taken — `primary`, as the single deliberate accent — because that token
+  is reserved for "Generate Advisory" above.
 - **Advisory modal**: `card` background, 16px radius, single soft shadow
 - **"Generate Advisory" button**: `primary` fill, white text, 12px radius
 - **SMS copy button**: ghost style — white fill, 1px `border`, `text` color
+
+### Added 2026-09-29 without a prior spec
+
+These use existing tokens only — no colour, font or size was invented — but
+none of them had a line here before they were built, so they are recorded now
+rather than left as undocumented implementation. Unlike the track token above,
+these are **implementation choices, not decisions**; MEMORY.md §37 lists them
+as owed a human look.
+
+- **"Full track" map control**: a ghost chip at the map's bottom-right —
+  `card` fill, 1px `border`, `text` label, `radius.chip`. Placed bottom-right
+  because the flood-layer banner at the top is full-width and its height
+  varies with its text.
+- **Shelter disclosure notice**: `caution` fill, `text` body, `radius.button`.
+  Placed above the advisory body rather than in a footer, so it is read before
+  the numbers it qualifies. Non-dismissable by design.
+- **"No flood-free route" notice**: `danger` fill, `card` text. Sits directly
+  under the provenance line, above the summary, because it changes how every
+  line below it should be read.
+- **Stale-advisory notice**: `caution` fill, `text` body, shown when the
+  advisory on screen was generated for a different intensity or origin than
+  the current settings.
+- **Failure states**: `danger` heading, `text`/`textMuted` body, violations in
+  a `background` block. Only the `validation` state lists violations; every
+  other failure shows prose alone.
 
 ## React Native theme object
 

@@ -1059,6 +1059,20 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     it was verified by running the suite *with* `.env` present: 3 skipped,
     0 calls made. The residual gap is that a 429 still surfaces as a 502
     rather than a "come back later" — unchanged, still open.
+    **RESOLVED 2026-09-29 (`dcfba38`) — a spent quota is now 429 `quota`, and
+    it is deliberately not a 503.** The 502 was the symptom; the cause is that
+    `google.genai.errors.ClientError` and `ServerError` are **siblings, not a
+    subclass pair**, so a 429 never entered the capacity clause and fell
+    through to the endpoint's blanket `except Exception`. `_generate_with_capacity_retry`
+    now catches `Exception` and tests `_is_quota_error` first, raising
+    `GeminiQuotaError` → 429 with **no `Retry-After` header**. `Retry-After: 60`
+    would be a lie: a minute changes nothing, and a client honouring it would
+    poll until the user's own midnight. The decision this record originally
+    proposed — "make it a 503 with a Retry-After" — was **rejected in favour
+    of 429**: a spent daily limit is a usage limit, not a temporary outage,
+    and the client's `quota` kind is what suppresses the countdown and the
+    retry button. The 503 capacity path is untouched and guarded by tests.
+    `tests/test_advisory_quota.py`, 15 tests, no live calls.
 27. **NEW 2026-09-28 — a live test was missing its skip guard.**
     `test_no_unverified_number_reaches_a_live_advisory` had no
     `@requires_key` and no skip of its own, so it made a real Gemini call on
@@ -1281,20 +1295,51 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     Not edited, per the standing instruction; logging it here instead. Same
     list as #30: the doc and the code have diverged enough that a rewrite is
     probably cheaper than a patch.
-36. **NEW 2026-09-29 — `Design.md` specifies no colour for the cyclone track
-    layer, and the app now draws one anyway.** The token table assigns
-    `water` to the flood, `danger` to compromised roads and CRITICAL,
-    `caution`/`safe` to priority levels, `primary` to the one main action —
-    and says nothing about a storm's own path. The track polyline and its 19
-    waypoint pins use `text` (Onyx), which is a token that already exists and
-    reads as a neutral record rather than a hazard, so no hex was invented and
-    the four colours that *mean* something on this map stay distinct. **The
-    decision that is actually owed: should a historical track be neutral at
-    all?** A third option exists and was not taken — draw it in `primary`, as
-    the one deliberate accent — but that colour is reserved for "Generate
-    Advisory" in Design.md's own reasoning, so it was not spent. Worth a human
-    look, and the same look should decide whether the waypoint pins need to be
-    visually smaller than the infra markers.
+36. **RESOLVED 2026-09-29 — the track is `text` (Onyx), and `Design.md` now
+    says so.** The token table assigned `water` to the flood, `danger` to
+    compromised roads and CRITICAL, `caution`/`safe` to priority levels,
+    `primary` to the one main action — and said nothing about a storm's own
+    path, so the app was drawing one from an unrecorded choice. The question
+    this entry raised — **should a historical track be neutral at all?** — is
+    now decided: yes, `text`, because the track is a *record of what happened*
+    and a neutral reads as neither hazard nor forecast. `Design.md`'s
+    component specs carry the line, with the rejected `primary` alternative
+    recorded there too. Still open, and a smaller thing: the waypoint pins use
+    the default native pin size, identical to the 34 infra markers, so a
+    best-track fix and a flooded hospital are the same visual weight.
+
+37. **NEW 2026-09-29 — five new UI elements were built from existing tokens but
+    had no `Design.md` spec, and four of them are mine, not decisions.** Stage 3
+    added the "Full track" map control, the shelter disclosure notice, the "no
+    flood-free route" notice, the stale-advisory notice, and the failure-state
+    layout. None invented a colour, font or size — all use `caution`, `danger`,
+    `card`, `border`, `text`, `textMuted`, `background`, `radius.chip`,
+    `radius.button` and `typography.caption` — and all are now written into
+    `Design.md` under "Added 2026-09-29 without a prior spec". But **"uses an
+    existing token" is not the same as "was designed"**: the placements are my
+    judgement, and the order in which a reader meets them is an editorial claim
+    rather than a spec. In particular the shelter notice is placed *above* the
+    summary rather than in a footer, on the reasoning that a notice the reader
+    can scroll past has not disclosed anything. Worth a look. The one I would
+    defend hardest is that notice ordering.
+
+38. **NEW 2026-09-29 — `/track` coerces coordinates with `float()` and never
+    range-checks them, and `json.loads` accepts a bare `NaN`.** `load_track`
+    does `float(coords[1])` / `float(coords[0])` per fix, which raises on a
+    non-numeric string but **passes `NaN` straight through** — `float("NaN")`
+    is valid Python, and `json.loads` will hand over a JSON `NaN` token
+    without complaint. So a corrupt or hand-edited `data/remal_track.geojson`
+    can put a non-finite latitude into both `waypoints[].latitude` and the
+    `path` array, and the endpoint will serve it as a 200. On the client the
+    consequence is a `<Polyline>` asked to draw a NaN and a
+    `fitToCoordinates` asked for a region the native map cannot compute. The
+    mobile fit now filters with `Number.isFinite` before calling
+    `fitToCoordinates`, which contains it, but **the filter is a guard, not a
+    fix** — the polyline is not filtered, and the right place to reject this is
+    `load_track` raising `TrackDataError` exactly as it already does for a
+    LineString/Point count disagreement (§`assert_overlay_bounds` is the same
+    shape of check one layer down). Not done this round: it is a backend
+    change and the four-commit brief was mobile-only for this stage.
 
 ## Environment / credentials status
 
@@ -1339,46 +1384,36 @@ lockfile), `.claude/` (settings + skills).
 
 ## Next step
 
-**Module E Stage 3 — the advisory flow. Stage A of the track viewer landed
-2026-09-29 (`e660035` backend, `c3f3549` mobile); Stage B is the queued half.**
+**Stage B is done. Both halves of the track viewer and the whole advisory flow
+landed 2026-09-29: Stage A (`e660035` backend, `c3f3549` mobile), then
+`dcfba38` (quota as 429), `c404395` (fit-to-track), `cf25a81` (advisory flow).
+The fourth planned commit — a saved-example fallback reading `data/samples/` —
+was **skipped: no such directory exists**, and inventing sample advisories
+would have been fabricating the one artefact in this app that is supposed to
+be real output from a real model. The app now has a complete core loop and
+**has still never run on a device** (§33).**
 
-The parts that already exist, verified by reading them, not assumed:
+What the loop does now: adjust intensity → raster flood + exposed infra update
+on the map → Generate Advisory → modal with the summary, block-level
+priorities, post-landfall risks, the SMS draft and a copy button, or a failure
+state that says which of seven distinct things went wrong.
 
-- **`PrimaryButton` is already mounted in `MapScreen.tsx`** with
-  `label="Generate Advisory"`, a `spinner` prop available, and
-  `disabled={exposedCount === 0 || exposureLoading}` plus a `disabledHint`
-  line. Its `onPress` is an empty arrow with the comment "Stage 3 owns the
-  POST." **So the disabled-when-no-allocation behaviour already exists, keyed
-  on the `/exposure` count rather than on `/allocation`** — worth a deliberate
-  decision rather than a second gate, and see the open question below.
-- **`api.ts` already has everything Stage 3 needs**: `postAdvisory(category,
-  origin)`, the `DistrictAdvisory` / `EvacuationPriority` types (field is
-  `locality_name`, §16), and the `ApiError` taxonomy with
-  `kind`/`status`/`detail`/`retryAfterSeconds`/`violations` already parsed off
-  the wire. Branch on `kind`, never on a bare status.
-- **`originId` already exists** in `MapScreen` state (defaults to `sagar`) and
-  `LocalityPicker` already writes it. The advisory call reads that state.
-- **`AdvisoryModal`, `PriorityChip` and `GhostButton` exist** and are
-  content-agnostic by design (the modal takes `children`). `expo-clipboard` is
-  **installed** (0.57-era, in `package.json` since `086efe1`) but nothing
-  imports it yet.
-- The advisory endpoint is live, tested (74 tests) and has produced three real
-  Gemini advisories. The screen is the bottleneck, not the API.
+**The next real step is a device, not a commit.** Everything above has been
+verified by `tsc --noEmit`, `node --test` and `pytest`, none of which render a
+pixel. The specific things only a device can answer: whether the ghost control
+and the bottom-anchored notices clear the Android status bar and the panel;
+whether `expo-clipboard` resolves on a real handset; and whether
+`react-native-maps` accepts `edgePadding` on this platform version. Command
+sequence is in the session log below.
 
-Failure states to implement, each already typed in `api.ts`:
-`config` (EXPO_PUBLIC_API_URL unset — a build problem, say so) / `timeout` /
-`network` ("couldn't reach the server", no diagnosis) / `capacity` (503 +
-`Retry-After`, show a countdown and offer retry) / `validation` (show
-`violations`, not "something went wrong") / `upstream`.
-
-**Decisions still owed a human, unchanged by this round:** §26 the 429 story
-(an exhausted 20/day quota still surfaces as 502, which is the wrong thing to
-show an operator); §24 the eight unresolved border localities; the
-`SIMPLIFY_TOL_DEG` call; the 865 MB deploy decision; and §30/§35 whether
-CLAUDE.md and PRD.md get rewritten or the surge regression re-scoped.
+**Decisions still owed a human, unchanged by this round:** §24 the eight
+unresolved border localities; the `SIMPLIFY_TOL_DEG` call; the 865 MB deploy
+decision; §30/§35 whether CLAUDE.md and PRD.md get rewritten or the surge
+regression re-scoped; and now §37, the five un-specced UI elements.
 
 **Still outstanding and blocked on the clock:** the live `POST /advisory`
-capture. Four sessions have hit the same 503 at capacity. The free tier resets
+capture. Four sessions have hit the same 503 at capacity, and §26's resolution
+changed the failure mode rather than the blocker — the free tier still resets
 at midnight Pacific and allows 20 calls/day, so it must be triggered by hand:
 
 ```
@@ -1390,6 +1425,86 @@ curl -X POST "localhost:8000/advisory?category=2&origin=kakdwip"    # (b)
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-29 — Claude Code: Stage B — the advisory flow, end to end
+
+**Scope.** Three commits, one concern each, plus documentation. No live Gemini
+call was made at any point; every test constructs the SDK error directly and
+stubs `generate_advisory`, and the 3 pytest skips are the unchanged opt-in
+live guards.
+
+- `dcfba38` — a spent daily quota is 429 `quota`, not 502. Resolves §26; see
+  that entry for the class-hierarchy cause and for why 429 beat the 503 this
+  entry originally proposed.
+- `c404395` — the fit-to-track ghost control.
+- `cf25a81` — `POST /advisory` wired, with a failure state per `ApiErrorKind`.
+
+**The fourth planned commit was skipped, deliberately.** It was a saved-example
+fallback sourced from `data/samples/`, which does not exist. The only way to
+populate it this session would have been to invent advisory JSON by hand and
+present it as captured model output — the single thing this app is built not
+to do, and the same reasoning that put the shelter disclosure on a flag from
+the simulation layer rather than from Gemini's prose.
+
+**Three decisions worth keeping, because each is now enforced by a test:**
+
+1. *Failures branch on `ApiErrorKind`, never on a status.* The same 502 means
+   "withheld for honesty checks" and "the model died". `describeAdvisoryError`
+   is an exhaustive `switch` with no `default`, so a ninth kind added to
+   `api.ts` is a compile error rather than a branch that silently falls through
+   to the wrong message.
+2. *A failure that will not clear gets no retry button.* `AdvisoryFailureAction`
+   is a union, not a `canRetry` boolean, so the quota branch **cannot** return
+   a retry even by accident — and quota renders no countdown either, because a
+   countdown promising that waiting helps would poll until the user's own
+   midnight. `timeout` is treated the same way for a different reason: the
+   backend may still be working on a request that has already been charged.
+3. *The shelter disclosure fails closed.* `sheltersAreDemoData` returns `true`
+   for a null or malformed `shelter_status`, so a dropped `/allocation` shows
+   "do not use this to direct evacuations" rather than silently dropping it.
+   A transient network error must not be able to remove a safety warning.
+
+**Two errors I made and corrected mid-commit, both from writing a comment
+before checking the code:**
+
+- The first `TRACK_FIT_PADDING` was `bottom: 220`, padding for the readout
+  panel. The panel is a *sibling* of the map wrapper, not an overlay on it, so
+  the MapView's viewport never includes it — the padding would have wasted a
+  third of the visible map. The real thing at the map's bottom edge is the new
+  control. Corrected to 64.
+- I wrote that `/track` "already validates coordinates as finite". It does
+  not: `load_track` calls `float()` with no range check, and `json.loads`
+  accepts a bare `NaN`, so a non-finite latitude can reach a native
+  `fitToCoordinates` call. Added a `Number.isFinite` filter before the fit.
+  **The endpoint still does not range-check** — the client filter is a guard,
+  not a fix, and the underlying gap is unlogged and worth a §38.
+
+**Also verified rather than assumed:** the 120s `ADVISORY_TIMEOUT_MS` arithmetic
+in `api.ts` against the real constants. `CAPACITY_BACKOFF_SECONDS = (2,4,8)`
+with `CAPACITY_MAX_ATTEMPTS = 3` fires only 2+4 per ladder, so two ladders are
+6 calls and 12s of sleep, 60-90s worst case. The comment was already right.
+
+**Run on a device — how.** Mac and Android on one Wi-Fi, backend bound to the
+LAN, and note that `EXPO_PUBLIC_*` is inlined at build time, so `-c` is
+required or the old URL is baked in:
+
+```
+venv/bin/uvicorn backend.main:app --host 0.0.0.0 --port 8000
+ipconfig getifaddr en0                      # e.g. 192.168.1.24
+cd mobile && EXPO_PUBLIC_API_URL="http://192.168.1.24:8000" npx expo start -c
+```
+
+Then, in order: the map opens on Sagar with the flood raster; **Full track**
+fits all 19 fixes and returns; the preset button jumps to Remal as observed;
+Generate Advisory is enabled at category 5 and 6 only, and at categories 0-4
+is greyed with the "no modelled exposure" hint — **that is correct, not a
+bug**. A blank grey tile grid on Android means the Google Maps key is missing
+or unauthorised, not that the app failed.
+
+**Verified:** `tsc --noEmit` exit 0 · `node --test` 37 passed / 0 failed ·
+`pytest tests/` 286 passed / 3 skipped (the opt-in live guards).
+**Not verified:** anything visual. The app has still never run on a device
+(§33), and every layout claim above is read from the JSX, not from a screen.
 
 ### 2026-09-29 — Z.Code (OpenCode): Stage A of the track viewer — the real Remal track on the map
 
