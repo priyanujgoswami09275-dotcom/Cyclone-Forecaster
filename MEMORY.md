@@ -355,6 +355,40 @@ means in practice is listed under "Flagged for review" below.
   precompute has been started.** The user asked for this finding to be recorded
   and left as a decision. Both remain open.
 
+- **RESOLVED 2026-09-29 (by a plan change, not by optimising anything) — the
+  865 MB blocker is answered by moving to Vercel Hobby, 2 GB.**
+  The comparison table above is about Render's tiers, and Render's *first*
+  tier that clears 865 MB is Standard at ~$25/mo. The target changed instead:
+  **Vercel Hobby gives 2 GB / 300 s for $0**, which is the same memory
+  headroom at no cost, so the "precompute all seven categories" work above is
+  **no longer required to deploy** and has not been started. The measurement
+  that motivated it is unchanged and still true — 865 MB peak is real, and on
+  a 2 GB ceiling it fits with ~1.2 GB to spare.
+
+  What the Vercel preparation actually did (`2341ef7`, `9562a54`, `bd7727d`):
+  `requirements.txt` split to the nine packages the request path actually
+  imports; root `app.py` added as the entrypoint Vercel looks for; `.python-version`
+  pinned to 3.13; `vercel.json` excluding the paths the function never reads.
+
+  **Bundle size, measured in a fresh venv holding only `requirements.txt`:
+  293 MB of site-packages** (281 MB without pip), **17.1 MB of project files**
+  that survive `excludeFiles` — `data/` 16.9 MB, `backend/` 0.2 MB. Estimated
+  bundle **~298 MB against Vercel's 500 MB uncompressed limit**, ~202 MB of
+  headroom. The two dominant packages are **scipy 97 MB and rasterio 68 MB**;
+  rasterio is mostly its bundled GDAL. Neither was touched, per instruction —
+  if headroom ever needs reclaiming, they are where to look, not before.
+
+  **NOT deployed.** Nothing was pushed, no Vercel project was created, and no
+  key was sent anywhere. `render.yaml` is left intact and still correct, and
+  it now installs `requirements-dev.txt` because its start command runs
+  uvicorn, which is no longer in the runtime set.
+
+  **A new limit arrived with the change:** 300 s max duration on Hobby. The
+  advisory path's own budget is 120 s client-side and 60–90 s worst case
+  server-side, so it fits — but it is now bounded by the platform, and a
+  `/surge-zone?category=5` cold start (6.5 s measured warm, 30–50 s cold) sits
+  inside the same 300 s as everything else.
+
 - **NEW 2026-09-28 — the payload finding above is now HALF solved: gzip cuts
   the wire cost 7.6×, and the true uncompressed figure is lower than logged.**
   `GZipMiddleware(minimum_size=1000)` is on the app (registered *after*
@@ -1376,6 +1410,38 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     also refuses without `RUN_LIVE_CAPTURE=1` even when `GEMINI_API_KEY` is
     set, for the same reason the live tests do.
 
+41. **NEW 2026-09-29 — three things the Vercel split turned up that the old
+    single `requirements.txt` never had to be right about.**
+
+    **(a) `httpx` is a runtime dependency in practice, declared as a dev one.**
+    After `import app`, `sys.modules` contains `httpx` — pulled in by
+    `google-genai`, not by `fastapi.testclient`. Nothing imports it directly, so
+    it correctly stays out of `requirements.txt` and lives in
+    `requirements-dev.txt` with the `TestClient` reason. But the reason it is
+    *present* at runtime is google-genai. Do not read the dev file's comment as
+    the whole story if someone ever tries to drop httpx.
+
+    **(b) A `vercel` CLI deploy from the working tree would have shipped
+    `.env`.** `.env` is gitignored, so a git-connected deploy never sees it —
+    but Vercel bundles what it is given, and the local working tree contains
+    the key. `vercel.json`'s `excludeFiles` now names `.env` explicitly for
+    that reason. **This is the only defence, and it is a config file, not a
+    control**: nothing stops a future deploy step from re-adding it, and a key
+    committed to a published bundle cannot be un-published. Keep the exclusion
+    if the file is ever rewritten, and prefer a git-connected project over
+    `vercel --prod` from a dirty tree.
+
+    **(c) `pydantic` was missing from the runtime list, not merely omitted from
+    it.** `backend/ai/advisory.py` imports it directly for the
+    `DistrictAdvisory` schema, and the task brief's expected package list did not
+    include it. It is now named in `requirements.txt` with an explicit `>=2`
+    floor rather than left to fastapi's transitive requirement, because a v1
+    floor would satisfy fastapi and break every model in that file. The list
+    was built by walking the import graph with `ast`, not by editing the old
+    file down — the header of `requirements.txt` says so and names the
+    procedure, because the next person to add a package needs to know that
+    "is it imported at runtime?" has an answer you can recompute.
+
 ## Environment / credentials status
 
 - [x] Google Earth Engine authenticated — done 2026-09-27, DEM fetched and committed
@@ -1396,7 +1462,11 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
       Run `pytest tests/` with `.env` moved aside unless you intend to spend
       quota. A capacity block (503) now skips with a reason; an exhausted
       quota (429) does not, and surfaces as a 502.
-- [ ] Backend deployed (Render / Railway) — URL: _none yet_
+- [ ] Backend deployed — URL: _none yet_. **Prepared for Vercel Hobby, not
+      deployed** (`2341ef7`, `9562a54`, `bd7727d`): split requirements, root
+      `app.py`, `.python-version` 3.13, `vercel.json` excludes, ~298 MB
+      measured against the 500 MB limit. `render.yaml` still exists and is
+      still correct. Deploy steps in "Next step".
 - [x] Expo project initialized — `mobile/`, Expo SDK 57.0.25, deps installed, `npx tsc --noEmit` clean
 - [ ] Expo app run on a device/simulator — never launched; theme is typechecked only (spec §10.5)
 - [ ] `expo-clipboard` installed — needed for the SMS copy button, not yet added
@@ -1442,9 +1512,41 @@ whether `expo-clipboard` resolves on a real handset; and whether
 sequence is in the session log below.
 
 **Decisions still owed a human, unchanged by this round:** §24 the eight
-unresolved border localities; the `SIMPLIFY_TOL_DEG` call; the 865 MB deploy
-decision; §30/§35 whether CLAUDE.md and PRD.md get rewritten or the surge
-regression re-scoped; and now §37, the five un-specced UI elements.
+unresolved border localities; the `SIMPLIFY_TOL_DEG` call; §30/§35 whether
+CLAUDE.md and PRD.md get rewritten or the surge regression re-scoped; §37, the
+five un-specced UI elements; and §41(b), whether to connect a git project
+rather than deploy from a dirty working tree.
+
+**The 865 MB deploy decision is closed** — not by shrinking the backend but by
+choosing Vercel Hobby's 2 GB over Render's 512 MB. That removes the last
+item from the list above, and it means the precompute-all-seven-categories
+work described under "Known issues" is now optional rather than required.
+Nothing was deployed: the repo is Vercel-*ready*, not Vercel-*live*.
+
+### Deploying the backend to Vercel Hobby
+
+Prepared and verified, not performed. When you want to do it:
+
+1. **Push the repo to GitHub** and connect it as a Vercel project. Connect the
+   git repo — do not run `vercel --prod` from this working tree (§41(b)).
+2. **Set `GEMINI_API_KEY`** in Project → Settings → Environment Variables. Add
+   it to Production, and to Preview if you want previews to work. Never in a
+   tracked file, and never in `vercel.json`.
+3. **Leave everything else alone.** Framework preset "Other", build command
+   empty (Vercel installs `requirements.txt` and auto-detects the root
+   `app.py`), install command empty, root directory empty.
+4. **Deploy, then check `/health`.** `advisory_ready: true` means the key
+   arrived. `advisory_implemented: true` is the app itself, not the key.
+5. **Point the app at it:** `EXPO_PUBLIC_API_URL` to the deployed origin, then
+   restart Expo with `-c` (clear cache). The URL is compiled into the bundle —
+   a runtime change will not reach the app, and the app's own failure message
+   for a missing one says exactly that.
+
+Two things to expect on a first request: a **cold start of 30–50 s** while
+scipy, rasterio and the DEM load (pre-warm before a demo), and a **300 s hard
+duration ceiling** per request on Hobby, which the advisory path's 60–90 s
+worst case fits inside. If a demo is timed, hit `/surge-zone?category=5` first
+to warm the function.
 
 **Still outstanding and blocked on the clock:** the live `POST /advisory`
 capture, now a tool rather than a curl line. `537e4cf` added
@@ -1469,6 +1571,57 @@ RUN_LIVE_CAPTURE=1 venv/bin/python -m backend.tools.capture_advisory
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-29 — Claude Code: Vercel preparation, and the 865 MB blocker closes
+
+**Scope.** Three commits, one concern each: `2341ef7` (requirements split),
+`9562a54` (entrypoint + `.python-version`), `bd7727d` (`vercel.json`).
+**Nothing was deployed, no Vercel project was created, and `.env` was never
+read or printed** — it is named in `vercel.json` only as a path to exclude.
+
+**The decision this round closes.** The 865 MB measured peak does not fit
+Render's 512 MB free tier, and the expensive-looking answer (precompute all
+seven categories offline) was never started. Vercel Hobby's 2 GB for $0 makes
+that work optional. Recorded under "Known issues" as resolved-by-plan-change,
+explicitly *not* by optimising anything.
+
+**The requirements list was derived, not curated.** Walking
+`backend/main.py`, `backend/locations.py`, `backend/simulation/*.py` and
+`backend/ai/*.py` with `ast` and keeping only non-stdlib, non-local imports
+gives nine packages. A plain `grep` was tried first and was useless — the
+docstrings in this repo discuss "fetching from Overpass" in prose, so the
+grep returns `from the`, `from a`, `from them`. The `ast` result also caught
+something the brief's expected list had wrong: **`pydantic` is imported
+directly** by `advisory.py` and was not in the expected set. It is now named
+with a `>=2` floor rather than left to fastapi's transitive requirement, since
+a v1 floor satisfies fastapi and breaks every model in the file.
+
+**Verified, not asserted:**
+- fresh venv, only `requirements.txt` → `import app` succeeds, 16 routes, and
+  `uvicorn` is absent from `sys.modules` (proving the split is real, not
+  decorative);
+- uvicorn from the dev venv served `/health` (0.0s), `/categories` (0.0s),
+  `/surge-zone?category=5` (6.5s, 3.88 MB) and `/exposure?category=5` (0.1s)
+  — all 200, none leaking a key-shaped string;
+- `sys.modules` after `import app` contains exactly `backend.main`,
+  `.locations`, `.ai.advisory` and eight simulation modules. `data_pipeline`,
+  `tools` and `experiments` are **absent**, which is what licenses excluding
+  all three from the bundle — their only mentions elsewhere are docstrings and
+  the hints `main.py` prints when a data file is missing;
+- bundle **293 MB site-packages + 17.1 MB of surviving project files ≈ 298 MB**
+  against Vercel's 500 MB. scipy (97 MB) and rasterio (68 MB) dominate and were
+  left alone, per instruction;
+- `pytest tests/` → **320 passed, 3 skipped** after the split.
+
+**Not verified, and stated as such:** nothing was pushed and no Vercel build
+was run, so the 298 MB figure is an estimate from a local venv, not Vercel's
+own bundle report — Vercel may include a base image layer this does not model.
+The exclude globs were checked by simulating them against the real tree, not
+by observing a deployed bundle. First deploy is where `.python-version`,
+`vercel.json` and the entrypoint are actually proven.
+
+**The app has still never run on a device** (§33), and nothing in this round
+changes that.
 
 ### 2026-09-29 — Claude Code: the cached-advisory capture, built but not fired
 

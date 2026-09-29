@@ -138,9 +138,18 @@ current-state summary.
 
 ## Module F — Deployment & demo prep
 
-- [ ] Deploy the backend (Render or Railway — see CLAUDE.md tradeoffs)
-- [ ] Point the Expo app at the deployed backend URL
-- [ ] Pre-warm the backend before any live demo if using Render
+- [x] **Prepared** the backend for Vercel Hobby — split runtime requirements,
+      root `app.py` entrypoint, `.python-version` 3.13, `vercel.json` excludes.
+      Measured ~298 MB against the 500 MB limit. **Not deployed**, no Vercel
+      project created. `render.yaml` still exists and still works (MEMORY.md
+      "Next step" → *Deploying the backend to Vercel Hobby*).
+- [ ] Deploy the backend (Vercel Hobby, 2 GB — chosen over Render's 512 MB
+      free tier, which the 865 MB peak does not fit; Render Standard at ~$25/mo
+      remains the fallback. `render.yaml` is ready if that route is taken)
+- [ ] Point the Expo app at the deployed backend URL (`EXPO_PUBLIC_API_URL`,
+      then restart Expo with `-c` — the URL is compiled in)
+- [ ] Pre-warm the backend before any live demo — 30–50 s cold start, 300 s
+      hard duration ceiling on Hobby
 - [ ] Record a backup screen-capture video of the full demo flow
 - [ ] Rehearse the 3-minute pitch narrative (real event vs. what this
       would have flagged)
