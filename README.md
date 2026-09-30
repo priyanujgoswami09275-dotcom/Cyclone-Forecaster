@@ -35,8 +35,32 @@ what this system would have flagged 48 hours out.*
 
 ## What it actually computes
 
-`anchored_quadratic_scaling` — a trained regression anchored on Remal, not a
-table lookup. Live output from `GET /exposure?category=N` on the committed data:
+### The surge model is anchored scaling, not a trained model
+
+```
+surge_m = 1.2 x (wind_kmph / 115) ** 2
+```
+
+That is the whole method (`backend/simulation/surge.py`,
+`anchored_quadratic_scaling`). **It is not a trained regression and it is not a
+lookup table** — it is a single published anchor point scaled by a power law
+chosen because storm surge rises faster than wind.
+
+**A regression was tried and abandoned.** `backend/experiments/surge_regression/`
+holds it, together with the reason it failed: the training table had **four**
+rows, `[115,16,1] -> 1.2`, `[105,13,0] -> 1.6`, `[95,20,1] -> 2.9`,
+`[70,14,0] -> 0.6` — three of which have no traceable source. Leave-one-out CV
+over four points did not generalise, and two of the three features
+(forward speed, approach angle) are inputs the app **never has** at request
+time, so two thirds of the model would have been assumed rather than measured.
+It was replaced on 2026-09-28. **The experiment is kept as a record of what was
+tried, not as a component of the system.**
+
+What ships is the anchor, the scaling law, and a disclosure string carried on
+every surge figure: *"Screening estimate scaled from one observed event; omits
+tide, pressure, bathymetry and storm size."*
+
+Live output from `GET /exposure?category=N` on the committed data:
 
 | Cat | IMD band | Wind (km/h) | Surge (m) | Flooded (km²) | Hospitals | Substations | Roads cut |
 |---|---|---|---|---|---|---|---|

@@ -11,7 +11,9 @@ contract, that file holds the code.
 ```
 Data sources (track, OSM infra, DEM, historical cyclone dataset)
         |
-Surge ML model — trained regression, not a lookup table
+Surge model — anchored quadratic scaling: 1.2 x (wind/115)^2,
+              scaled from one observed event. Not a trained regression
+              (corrected 2026-10-01; see README.md and MEMORY.md).
         |
 Simulation engine:
   - Flood propagation (BFS cellular automaton, time-stepped)

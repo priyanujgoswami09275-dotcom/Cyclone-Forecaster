@@ -1761,6 +1761,30 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     showing" report on this app should start by counting circles in the DOM
     before suspecting the renderer.
 
+51. **NEW 2026-10-01 — the surge model was described as a "trained regression"
+    in five files, for about a month, and none of them was the code.** The
+    shipped method is `surge_m = 1.2 x (wind_kmph/115)^2` in
+    `backend/simulation/surge.py` — anchored quadratic scaling, plain
+    arithmetic. A regression *was* trained and abandoned on 2026-09-28 (§31 and
+    the 2026-09-28 log); `backend/experiments/surge_regression/` still holds it.
+
+    The overclaim had propagated furthest into the documents a new person reads
+    first, and into `Rules.md`, which is a constitution rather than a
+    description. `Rules.md` was the worst of them: it listed "a trained surge
+    regression (genuine ML)" as one of the two things the AI/ML layer is, so the
+    rule itself asserted a falsehood about the system it governs.
+
+    **Not corrected, deliberately:** `docs/superpowers/specs/2026-09-27-core-loop-design.md`
+    decision D4 still says "Trained regression + clamp to [0, 4] m + expose MAE".
+    It is a dated design record and it was true when written. Rewriting it would
+    make the history of the project false, which is worse than leaving a dated
+    document that a later commit superseded.
+
+    The disclosure was never at risk: every surge figure has shipped with
+    *"Screening estimate scaled from one observed event; omits tide, pressure,
+    bathymetry and storm size"* attached. **What was overstated was the method's
+    sophistication, not its honesty about its own limits.**
+
 ## Environment / credentials status
 
 - [x] Google Earth Engine authenticated — done 2026-09-27, DEM fetched and committed

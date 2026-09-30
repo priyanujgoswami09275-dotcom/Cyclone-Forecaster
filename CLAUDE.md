@@ -43,7 +43,9 @@ simulator — it's more credible and gives a concrete demo narrative.
 ```
 Data sources (track, OSM infra, DEM, historical cyclone dataset)
         |
-Surge ML model — trained regression, not a lookup table
+Surge model — anchored quadratic scaling: 1.2 x (wind/115)^2,
+              scaled from one observed event (NOT a trained regression;
+              see "Corrections / gotchas" below)
         |
 Simulation engine:
   - Flood propagation (BFS cellular automaton, time-stepped)
@@ -65,7 +67,7 @@ before live demos, cold start is 30–50s after 15 min idle).
 | Data | IBTrACS | Real historical track (lat/lon/wind/time) for Remal |
 | Data | OpenStreetMap (Overpass API) | Hospitals, substations, roads for the affected districts |
 | Data | Google Earth Engine | SRTM 30m elevation (DEM) — terrain for the flood model |
-| ML | scikit-learn | Trained regression for surge height (leave-one-out CV given small n); DBSCAN for infra hotspot clustering |
+| Surge | plain arithmetic | `surge_m = 1.2 x (wind_kmph/115)^2`, anchored on Remal's documented 1.2 m at 115 km/h. No ML ships — see "Corrections / gotchas" |
 | Simulation | NumPy / a BFS queue | Time-stepped flood propagation (cellular automaton) |
 | Simulation | osmnx + networkx | Road network graph; Dijkstra shortest safe path avoiding flooded edges |
 | Simulation | scipy.optimize.linprog | Shelter allocation as a capacitated transportation problem |
@@ -98,12 +100,16 @@ to the same bbox, 30m scale, exported via `getDownloadURL`.
 
 ## Modules — assign to teammates
 
-### A. Data pipeline & surge ML model
+### A. Data pipeline & surge model
 - Pull IBTrACS, OSM, DEM per above.
-- Compile a small historical-cyclone training table (wind speed, forward
-  speed, approach angle → observed surge). We have 4 verified real points
-  so far — **add more from the RSMC New Delhi bulletin archive**.
-- Train the regression model with leave-one-out CV given the small sample.
+- **Surge model: DONE, and it is anchored scaling, not a trained regression.**
+  `surge_m = 1.2 x (wind_kmph/115)^2` in `backend/simulation/surge.py`.
+- A regression WAS attempted: `backend/experiments/surge_regression/`. It was
+  trained on 4 points — 3 of which have no traceable source — did not
+  generalise under leave-one-out CV, and needed 2 of its 3 features
+  (forward speed, approach angle) which the API never has at request time.
+  **Abandoned 2026-09-28; kept only as a record of what was tried.** Do not
+  revive it without a real training table.
 
 ### B. Simulation engine
 - Flood propagation: BFS cellular automaton over the DEM grid, producing a
@@ -154,6 +160,20 @@ to the same bbox, 30m scale, exported via `getDownloadURL`.
   inspection instead.
 - Cyclone Yaas evacuation figure: the correct widely-reported number is
   **~1.1 million** people (not 2 million) — use this if citing it.
+- **The surge model is anchored scaling, NOT a trained regression.**
+  It is `surge_m = 1.2 x (wind_kmph/115)^2` in
+  `backend/simulation/surge.py`, scaled from Cyclone Remal's documented
+  ~1.0-1.5 m at 110-120 km/h. A regression *was* trained and is preserved at
+  `backend/experiments/surge_regression/`; it used 4 rows (3 with no traceable
+  source), did not generalise under leave-one-out CV, and needed forward speed
+  and approach angle — neither of which the API has at request time. It was
+  replaced 2026-09-28 and is an **abandoned experiment**, not a component.
+  `CLAUDE.md`, `README.md` and `Rules.md` all described it as a "trained
+  regression" until 2026-10-01; all three are corrected. **Every surge figure
+  ships with the disclosure string "Screening estimate scaled from one observed
+  event; omits tide, pressure, bathymetry and storm size" — do not weaken it.**
+  If a real training table ever appears, reviving the regression is legitimate;
+  describing the current model as one is not.
 - `gemini-3.8-flash` is a real, current model — confirmed, not hallucinated.
   It replaced `gemini-3.7-flash` on 2026-09-28, when a live test found 3.7
   returning `503 UNAVAILABLE` (capacity) on five consecutive attempts over
@@ -170,8 +190,10 @@ to the same bbox, 30m scale, exported via `getDownloadURL`.
 ## Open research items
 
 - More historical surge data points (wind speed, forward speed, approach
-  angle → observed surge) from RSMC New Delhi bulletin archive, to
-  strengthen the regression model beyond n=4.
+  angle → observed surge) from RSMC New Delhi bulletin archive. Until there
+  are enough with traceable sources to fit something, the surge model stays
+  anchored scaling — this is the prerequisite for revisiting the regression
+  in `backend/experiments/surge_regression/`, not a description of it.
 - Verified shelter locations (OSM `amenity=shelter` coverage in this area
   may be sparse — may need a manually curated list of Multi-Purpose
   Cyclone Shelters for the target blocks).
@@ -202,21 +224,29 @@ class DistrictAdvisory(BaseModel):
     )
 ```
 
-**Surge model (leave-one-out CV)**
+**Surge model — what actually ships**
 ```python
+# backend/simulation/surge.py
+ANCHOR_SURGE_M = 1.2      # midpoint of the documented ~1.0-1.5 m range
+ANCHOR_WIND_KMPH = 115    # midpoint of the documented 110-120 km/h range
+
+def surge_for_wind(wind_kmph: float) -> float:
+    return ANCHOR_SURGE_M * (wind_kmph / ANCHOR_WIND_KMPH) ** 2
+```
+
+**The abandoned regression, kept for the record — not a component.**
+```python
+# backend/experiments/surge_regression/ — DO NOT ship this.
 from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import LeaveOneOut
 import numpy as np
 
+# 4 rows. 3 of the 4 surge values have no traceable source.
 X = np.array([[115, 16, 1], [105, 13, 0], [95, 20, 1], [70, 14, 0]])
-y = np.array([1.2, 1.6, 2.9, 0.6])  # verified real surge values (m)
+y = np.array([1.2, 1.6, 2.9, 0.6])
 
-loo_errors = []
-for train_idx, test_idx in LeaveOneOut().split(X):
-    model = LinearRegression().fit(X[train_idx], y[train_idx])
-    loo_errors.append(abs(model.predict(X[test_idx])[0] - y[test_idx][0]))
-
-final_model = LinearRegression().fit(X, y)
+# LOOCV over 4 points did not generalise, and 2 of the 3 features
+# (forward speed, approach angle) are not available at request time.
 ```
 
 **Flood propagation (BFS cellular automaton)**

@@ -8,10 +8,19 @@
 - Frontend is **Expo / React Native**. This is not a web app — don't
   reintroduce Leaflet.js or any browser-only library.
 - The "AI/ML" layer is deliberately two real things, not one black box:
-  a trained surge regression (genuine ML, see PRD.md) and Gemini doing
-  reasoning/synthesis (genuine AI). The simulation engine (flood
-  propagation, routing, shelter allocation) must be real algorithms —
-  not a lookup table dressed up as a model.
+  the surge scaling law (arithmetic, anchored on one observed event —
+  corrected 2026-10-01, see below) and Gemini doing reasoning/synthesis
+  (genuine AI). The simulation engine (flood propagation, routing,
+  shelter allocation) must be real algorithms — not a lookup table
+  dressed up as a model.
+- **The surge model is NOT a trained regression, and must not be described
+  as one.** It is `surge_m = 1.2 x (wind_kmph/115)^2` in
+  `backend/simulation/surge.py`. A regression WAS built and abandoned; it is
+  in `backend/experiments/surge_regression/` with 4 training rows, 3 of them
+  unsourced, and 2 of its 3 features unavailable at request time. Calling the
+  shipped model a "trained regression" is a factual error, and it was in this
+  file until 2026-10-01. The honest framing is "scaled from one observed
+  event, and it says so on every figure".
 - Pin the exact Gemini model string in code (`gemini-3.7-flash` as of the
   current CLAUDE.md). Don't silently swap model versions — check
   MEMORY.md for any later-verified update before changing this.
