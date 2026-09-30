@@ -381,6 +381,30 @@ describe('caseStudyLine', () => {
     assert.match(line.anchor, /Sagar Island/);
   });
 
+  it('names BOTH countries on the landfall, as the backend does', () => {
+    // Khepupara is in Bangladesh. The masthead used to read "Sagar Island and
+    // Khepupara, West Bengal", which put a Bangladeshi landfall point inside
+    // West Bengal. This pins the corrected wording, and specifically pins the
+    // failure it prevents.
+    const line = caseStudyLine(CATEGORIES);
+    assert.match(line.anchor, /Sagar Island \(West Bengal\)/);
+    assert.match(line.anchor, /Khepupara \(Bangladesh\)/);
+    // The old, wrong shape must not come back.
+    assert.ok(
+      !/Khepupara, West Bengal/.test(line.anchor),
+      'Khepupara was attributed to West Bengal',
+    );
+  });
+
+  it('states the landfall geography exactly once', () => {
+    // The masthead subtitle used to repeat it, so the first viewport said
+    // "landfall between Sagar Island and Khepupara" twice. The anchor line is
+    // the single place that owns it now.
+    const anchor = caseStudyLine(CATEGORIES).anchor;
+    const occurrences = (anchor.match(/Khepupara/g) ?? []).length;
+    assert.equal(occurrences, 1, `Khepupara appears ${occurrences} times in the anchor line`);
+  });
+
   it('follows a re-pointed anchor', () => {
     const moved = { ...CATEGORIES, anchor: { ...CATEGORIES.anchor, wind_kmph: 140 } };
     assert.match(caseStudyLine(moved).anchor, /140 km\/h/);

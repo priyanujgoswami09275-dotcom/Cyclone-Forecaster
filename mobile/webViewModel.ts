@@ -244,8 +244,14 @@ export function caseStudyLine(categories: CategoriesResponse | null): {
   const surge = anchor?.surge_m ?? 1.2;
   return {
     anchor:
-      `Anchored on Cyclone Remal, May 2024: landfall between Sagar Island ` +
-      `and Khepupara at ${Math.round(wind)} km/h with ${surge.toFixed(1)} m of surge.`,
+      // **Khepupara is in Bangladesh, not West Bengal.** The wording follows
+      // `backend/main.py`'s `REMAL_PRESET.source`, which has always said
+      // "Sagar Island (West Bengal) and Khepupara (Bangladesh)". The masthead
+      // subtitle used to render this as "Sagar Island and Khepupara, West
+      // Bengal", which put the Bay of Bengal landfall inside India.
+      `Cyclone Remal, May 2024: landfall between Sagar Island (West Bengal) ` +
+      `and Khepupara (Bangladesh), ${Math.round(wind)} km/h with ` +
+      `${surge.toFixed(1)} m of surge above astronomical tide.`,
     limitation:
       categories?.limitation ??
       'Screening estimate scaled from one observed event; omits tide, pressure, bathymetry and storm size.',

@@ -401,10 +401,19 @@ export function MapScreen() {
           <View style={styles.mastheadText}>
             <Text style={styles.eyebrow}>Cyclone impact & infrastructure forecaster</Text>
             <Text style={styles.title}>Cyclone Remal, May 2024</Text>
+            {/*
+              No landfall sentence here. It used to sit in this subtitle *and*
+              in `caseStudyLine`'s anchor line directly below, so the same fact
+              was stated twice in the first viewport — and the copy here also
+              read "Sagar Island and Khepupara, West Bengal", putting a
+              Bangladeshi landfall point inside West Bengal. `caseStudyLine`
+              carries the geography once, with both countries named, and this
+              subtitle states only what the tool does.
+            */}
             <Text style={styles.subtitle}>
-              Landfall between Sagar Island and Khepupara, West Bengal — given a
-              storm strength, this shows which hospitals, substations and roads the
-              flood reaches, and drafts the evacuation advisory.
+              Given a storm strength, this shows which hospitals, substations and
+              roads the flood reaches across the Sundarbans delta, and drafts the
+              evacuation advisory.
             </Text>
             <Text style={styles.anchorLine}>{caseStudy.anchor}</Text>
           </View>
