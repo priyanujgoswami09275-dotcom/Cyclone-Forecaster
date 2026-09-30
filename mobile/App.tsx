@@ -5,6 +5,7 @@ import {
   Inter_600SemiBold,
   useFonts,
 } from '@expo-google-fonts/inter';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 
 import { theme } from './theme';
 import { MapScreen } from './components/MapScreen';
@@ -51,7 +52,12 @@ export default function App() {
     );
   }
 
-  return <MapScreen />;
+  return (
+    <>
+      <MapScreen />
+      <SpeedInsights />
+    </>
+  );
 }
 
 const styles = StyleSheet.create({
