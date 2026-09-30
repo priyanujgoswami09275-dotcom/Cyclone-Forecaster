@@ -23,6 +23,7 @@ import {
   overlayImageUrl,
   postAdvisory,
   roadPaths,
+  shouldDrawOverlay,
   toLatLng,
   waypointSubtitle,
   waypointTitle,
@@ -224,6 +225,33 @@ export function MapScreen() {
     return overlayIndex.find((o) => o.id === `cat${categoryIndex}`) ?? null;
   }, [overlayIndex, categoryIndex, activePreset]);
 
+  /**
+   * The absolute URL to draw, or null when there is nothing worth drawing.
+   *
+   * Null in three distinct cases, and the component treats all three the same
+   * way by not rendering at all:
+   *
+   *   - **no overlay** — the index is still loading, or this category has no
+   *     entry;
+   *   - **no URL** — `EXPO_PUBLIC_API_URL` is unset, so there is nothing
+   *     absolute to fetch. The banner below the map already says so, which is
+   *     the right place for a build-time misconfiguration to be reported;
+   *   - **no water** — `flooded_pixels === 0`, which is the real state of
+   *     categories 0-3. Those are legitimate images, and they are entirely
+   *     transparent.
+   *
+   * The last case is the one this existed to fix. `<Overlay>` was rendered
+   * unconditionally with `uri: overlay ? overlayImageUrl(overlay) ?? '' : ''`,
+   * so on a category with no flood it was handed an empty string and a set of
+   * bounds — an image fetch that can only fail, for a layer whose every pixel
+   * is alpha 0. Not rendering is both cheaper and truthful: there is no flood
+   * at this intensity, so there is no flood layer.
+   */
+  const overlayUri: string | null = useMemo(() => {
+    if (overlay === null) return null;
+    return shouldDrawOverlay(overlay) ? overlayImageUrl(overlay) : null;
+  }, [overlay]);
+
   // --- exposure: one request per committed band --------------------------
   useEffect(() => {
     if (!categories.length) return undefined;
@@ -397,19 +425,28 @@ export function MapScreen() {
           showsUserLocation={false}
           showsMyLocationButton={false}
         >
-          <Overlay
-            image={{ uri: overlay ? overlayImageUrl(overlay) ?? '' : '' }}
-            /*
-             * `bounds` is a two-corner tuple — **right-top, then left-bottom**
-             * — and each corner is `[latitude, longitude]`, i.e. the opposite
-             * order to the GeoJSON the rest of this app speaks. Passing an
-             * object, or a [lon, lat] pair, silently places the image wrong
-             * or not at all. See `overlayBounds` below.
-             */
-            bounds={overlayBounds(overlay)}
-            bearing={OVERLAY_BEARING}
-            tappable={false}
-          />
+          {/*
+            `overlayUri` is the whole condition. When it is null there is no
+            flood to draw, and rendering `<Overlay>` would mean handing the map
+            a bounds tuple for a texture that does not exist — which is how
+            this used to reach an empty `uri` on categories 0-3. See
+            `overlayUri` above.
+          */}
+          {overlayUri !== null && overlay !== null ? (
+            <Overlay
+              image={{ uri: overlayUri }}
+              /*
+               * `bounds` is a two-corner tuple — **right-top, then left-bottom**
+               * — and each corner is `[latitude, longitude]`, i.e. the opposite
+               * order to the GeoJSON the rest of this app speaks. Passing an
+               * object, or a [lon, lat] pair, silently places the image wrong
+               * or not at all. See `overlayBounds` below.
+               */
+              bounds={overlayBounds(overlay)}
+              bearing={OVERLAY_BEARING}
+              tappable={false}
+            />
+          ) : null}
 
           {/* The cyclone's own path, under everything the model computed.
               Real observed history, fetched once at boot and never refetched

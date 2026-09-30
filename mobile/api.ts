@@ -651,6 +651,30 @@ export function overlayImageUrl(entry: OverlayEntry): string | null {
   return `${API_BASE_URL}${entry.image_url}`;
 }
 
+/**
+ * Is there a flood layer worth drawing for this entry?
+ *
+ * False when there is no entry, and false when the entry reports zero
+ * flooded pixels. The second case is not an error and not a loading state —
+ * **categories 0 through 3 genuinely flood nothing** at the anchor surge, and
+ * their overlays are real, valid, entirely transparent 1000x930 images. The
+ * old screen rendered `<Overlay>` anyway, with `uri: ''`, which asked the map
+ * to place a bounds tuple over a texture that does not exist for a layer with
+ * no water in it.
+ *
+ * Fail-closed on the count, and the type check is load-bearing rather than
+ * decoration: `undefined > 0` and `null > 0` are both false, but `'16052' > 0`
+ * is **true** — JavaScript coerces the string. A backend that started
+ * serialising the count as a string would therefore be drawn, which is the
+ * wrong way round. An index that loses the field, or sends it as anything but
+ * a number, stops being drawn rather than being drawn as a solid rectangle
+ * over the delta.
+ */
+export function shouldDrawOverlay(entry: OverlayEntry | null | undefined): boolean {
+  if (!entry) return false;
+  return typeof entry.flooded_pixels === 'number' && entry.flooded_pixels > 0;
+}
+
 // ---------------------------------------------------------------------------
 // Historical track (GET /track)
 // ---------------------------------------------------------------------------
