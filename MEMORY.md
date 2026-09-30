@@ -2208,6 +2208,17 @@ bundle contains zero `RNCWebView`/`codegenNativeComponent`/`RNMapView`/`AIRMap`.
 **NOT VERIFIED:** native rendering on a device — no phone or emulator was
 available. Exact Expo Go steps are in Design.md, "Checking the native map".
 
+**A measurement trap worth recording.** The final Web verification initially
+reported **0 asset markers**, which is exactly the bug item 6 fixed. It was the
+probe, not the build: it waited for the *Generate Advisory* button to enable
+rather than for `/exposure` to resolve, and `/exposure?category=6` measures
+**~114 s cold** on the deployed backend (4.5 s on the second call). Re-run
+polling for the markers themselves — 48 polls, ~96 s — and the same build
+reported 12/12 hospitals, 22/22 substations and 251 road paths, all inside
+`0 0 1000 859`. **Any future "the markers are gone" report on this app should
+first be checked against the request duration**, because the fix for item 6 and
+the shape of a premature assertion look identical from the console.
+
 ### 2026-09-30 — Claude Code: Stage A of the dark rebuild — the slider is gone, and the provenance moved behind a tap
 
 **Scope.** The map screen rebuilt to the human's dark design. `theme.ts`,
