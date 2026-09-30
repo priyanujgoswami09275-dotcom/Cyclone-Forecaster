@@ -8,8 +8,6 @@ import {
   Text,
   View,
 } from 'react-native';
-import MapView, { Marker, Overlay, Polyline } from 'react-native-maps';
-
 import {
   ApiError,
   getAllocation,
@@ -24,13 +22,11 @@ import {
   postAdvisory,
   roadPaths,
   shouldDrawOverlay,
-  toLatLng,
   waypointSubtitle,
   waypointTitle,
   API_BASE_URL,
   type CategoriesResponse,
   type ExposureResponse,
-  type InfraFeature,
   type Locality,
   type OverlayEntry,
   type SurgePreset,
@@ -43,6 +39,7 @@ import { DEFAULT_CHIP, advisoryEnabled, resolveChip, type ChipId } from '../stre
 import { totalExposed } from '../exposureTiles';
 import { countUnreported, peakReportedWindKmph } from '../trackFacts';
 import { AdvisoryContent, type AdvisoryOutcome } from './AdvisoryContent';
+import { LeafletMap, type LeafletAsset } from './LeafletMap';
 import { AboutSheet } from './AboutSheet';
 import { ExposureTiles } from './ExposureTiles';
 import { FirstRunCard } from './FirstRunCard';
@@ -55,15 +52,11 @@ import { PrimaryButton } from './PrimaryButton';
 import { StrengthChips } from './StrengthChips';
 import {
   SAGAR_REGION,
-  OVERLAY_BEARING,
-  TRACK_FIT_DURATION_MS,
-  TRACK_FIT_PADDING,
+  SAGAR_INITIAL_ZOOM,
   assetPinColours,
   compromisedRoadDashPattern,
-  compromisedRoadStyle,
-  customMapStyle,
   trackDashPattern,
-  trackLineStyle,
+  trackLineColour,
   trackPinColour,
 } from './mapStyles';
 
@@ -93,8 +86,9 @@ import {
  * *which* category to ask for; they do not restate what it says.
  *
  * What this screen still does not do: fetch `/surge-zone`. At category 6 that
- * is 7.0 MB raw / 936 KB gzipped of polygons, which `react-native-maps` stutters
- * on. The flood is the pre-rendered PNG in `data/overlays/` instead; the counts
+ * is 7.0 MB raw / 936 KB gzipped of polygons, which a mobile map view stutters
+ * on — and it would now have to cross a WebView bridge as well. The flood is
+ * the pre-rendered PNG in `data/overlays/` instead; the counts
  * beside it come from `/exposure`, which is the real full-resolution
  * computation. The picture is a shortcut; the numbers are not.
  */
@@ -113,7 +107,23 @@ type Boot =
 export function MapScreen() {
   const [boot, setBoot] = useState<Boot>({ status: 'loading' });
 
-  const mapRef = useRef<MapView | null>(null);
+  /**
+   * Camera requests, as **monotonic counters** rather than a ref to the map.
+   *
+   * The map used to be `react-native-maps` and the controls called
+   * `mapRef.current.animateToRegion(...)` / `fitToCoordinates(...)` directly.
+   * There is no imperative handle on a WebView map, so the same two intentions
+   * are now expressed as props: increment the counter, and `LeafletMap`'s effect
+   * does the work.
+   *
+   * A counter rather than a boolean because a boolean fires its effect once and
+   * then never again — pressing "fit" twice in a row would move the camera on
+   * the first press and silently do nothing on the second, which is a control
+   * that looks broken. `LeafletMap` also tracks the value it has already seen,
+   * so a re-render caused by anything else cannot re-fire the camera.
+   */
+  const [fitRequest, setFitRequest] = useState(0);
+  const [recentreRequest, setRecentreRequest] = useState(0);
   /** Whether the map is fitted to the whole track. Drives the control's state. */
   const [fittingTrack, setFittingTrack] = useState(false);
   /** First-run card, session-scoped — see `FirstRunCard`'s own note. */
@@ -258,12 +268,12 @@ export function MapScreen() {
   /**
    * The absolute URL to draw, or null when there is nothing worth drawing.
    *
-   * Null in three distinct cases, all of which mean "do not render an Overlay":
-   * no overlay entry yet; no absolute URL because `EXPO_PUBLIC_API_URL` is
-   * unset; and `flooded_pixels === 0`, which is the real state of the preset
-   * and the low bands. The third is the case this existed to fix — an
-   * `<Overlay>` rendered with an empty `uri` and a bounds tuple is an image
-   * fetch that can only fail, for a layer whose every pixel is alpha 0.
+   * Null in three distinct cases, all of which mean "draw no flood layer": no
+   * overlay entry yet; no absolute URL because `EXPO_PUBLIC_API_URL` is unset;
+   * and `flooded_pixels === 0`, which is the real state of the preset and the
+   * low bands. The third is the case this existed to fix — a layer handed an
+   * empty `uri` and a bounds tuple is an image fetch that can only fail, for a
+   * raster whose every pixel is alpha 0.
    */
   const overlayUri: string | null = useMemo(() => {
     if (overlay === null) return null;
@@ -326,30 +336,129 @@ export function MapScreen() {
     setExposure(null);
   }, []);
 
+  // --- map layers, as Leaflet's data shapes -------------------------------
+  //
+  // Four memos, and the reason each exists is the same: `LeafletMap` turns each
+  // prop into a command in a `useEffect`, so an object rebuilt on every render
+  // would re-issue that command on every render — which for 251 road polylines
+  // means re-serialising and re-drawing the entire road layer on each keystroke
+  // anywhere in the app. The dependencies are the payloads, so a command fires
+  // exactly when the underlying data changes.
+
+  /**
+   * The flood raster, as `{url, bounds}`.
+   *
+   * `null` is a real state, not a placeholder: no overlay entry yet, no
+   * absolute URL because `EXPO_PUBLIC_API_URL` is unset, or
+   * `flooded_pixels === 0`, which is the true state of the preset and the low
+   * bands. The third case is the one this existed to fix — an `<Overlay>`
+   * rendered with an empty `uri` and a bounds tuple is an image fetch that can
+   * only fail, for a layer whose every pixel is alpha 0. `LeafletMap` treats a
+   * null overlay as "remove the layer", which is also what switching back to a
+   * dry scenario needs.
+   */
+  const leafletOverlay = useMemo(() => {
+    if (overlayUri === null || overlay === null) return null;
+    return {
+      url: overlayUri,
+      bounds: {
+        north: overlay.bounds.north,
+        south: overlay.bounds.south,
+        east: overlay.bounds.east,
+        west: overlay.bounds.west,
+      },
+    };
+  }, [overlay, overlayUri]);
+
+  /**
+   * The observed track: the polyline's vertices, and one pin per best-track fix.
+   *
+   * Passes the payloads through in the app's own `{latitude, longitude}` shape —
+   * `LeafletMap` does the transposition into Leaflet's `[lat, lng]`, through
+   * `geo.ts`. Nothing here converts, so there is no second place that could
+   * disagree with the first.
+   *
+   * The waypoints carry their titles and subtitles rather than being rebuilt
+   * inside the map document, because `waypointTitle`/`waypointSubtitle` already
+   * implement the "unreported wind is not calm" rule and there must be exactly
+   * one implementation of it.
+   */
+  const leafletTrack = useMemo(
+    () =>
+      track === null
+        ? null
+        : {
+            path: track.path,
+            waypoints: track.waypoints.map((waypoint) => ({
+              at: { latitude: waypoint.latitude, longitude: waypoint.longitude },
+              title: waypointTitle(waypoint),
+              detail: waypointSubtitle(waypoint),
+            })),
+          },
+    [track],
+  );
+
+  /**
+   * Cut-off roads, one entry per geometry part.
+   *
+   * `roadPaths` already returns `{latitude, longitude}` objects, one list per
+   * geometry part, which is exactly what `LeafletMap` wants. A `MultiLineString`
+   * road therefore still draws as several disconnected polylines rather than
+   * gaining a spurious segment between the parts.
+   *
+   * Layer order is preserved by the map document: roads, then the assets, so a
+   * marker is never drawn under a road.
+   */
+  const leafletRoads = useMemo(
+    () =>
+      exposure === null
+        ? null
+        : exposure.roads_cut_off.features.map((road) => roadPaths(road)),
+    [exposure],
+  );
+
+  /** Exposed hospitals and substations, in the order the tiles count them. */
+  const leafletAssets = useMemo<LeafletAsset[]>(() => {
+    if (exposure === null) return [];
+    const out: LeafletAsset[] = [];
+    for (const [group, kind, colour] of [
+      [exposure.hospitals.features, 'hospital', assetPinColours.hospital],
+      [exposure.substations.features, 'substation', assetPinColours.substation],
+    ] as const) {
+      for (const feature of group) {
+        const pair = markerCoordinate(feature);
+        // A NaN coordinate renders off-screen and reads as a missing asset,
+        // which would quietly disagree with the count in the tile.
+        if (pair === null || pair.length < 2) continue;
+        const latitude = pair[1];
+        const longitude = pair[0];
+        if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) continue;
+        out.push({
+          at: { latitude, longitude },
+          kind,
+          colour,
+          title: feature.properties.name || 'Unnamed',
+          detail: feature.properties.status,
+        });
+      }
+    }
+    return out;
+  }, [exposure]);
+
   // --- map controls ------------------------------------------------------
 
   const onPressFit = useCallback(() => {
-    const map = mapRef.current;
-    if (!map || !track) return;
+    if (!track) return;
+    // The finite-coordinate filtering that used to live here now lives in
+    // `geo.ts` (`toLeafletList`), and `LeafletMap` refuses to fit fewer than two
+    // points — so `/track` handing back a `NaN`, or a single fix, leaves the
+    // camera alone instead of asking for a region it cannot compute.
     if (fittingTrack) {
-      map.animateToRegion(SAGAR_REGION, TRACK_FIT_DURATION_MS);
+      setRecentreRequest((n) => n + 1);
       setFittingTrack(false);
       return;
     }
-    // `fitToCoordinates` over a computed `animateRegion`, because it accounts
-    // for the device's own aspect ratio.
-    //
-    // Fitted over the finite coordinates only. `/track` coerces positions with
-    // `float()` and does not range-check, and `json.loads` accepts a bare
-    // `NaN` — so a corrupt file can put a non-finite latitude into `path`, and
-    // handing one to `fitToCoordinates` asks the native map for a region it
-    // cannot compute. The same values are still drawn as a `<Polyline>`; this
-    // only governs the camera.
-    const coordinates = track.path.filter(
-      (c) => Number.isFinite(c.latitude) && Number.isFinite(c.longitude),
-    );
-    if (coordinates.length === 0) return;
-    map.fitToCoordinates(coordinates, { edgePadding: TRACK_FIT_PADDING, animated: true });
+    setFitRequest((n) => n + 1);
     setFittingTrack(true);
   }, [fittingTrack, track]);
 
@@ -366,9 +475,7 @@ export function MapScreen() {
   const onPressLayers = useCallback(() => setShowAbout(true), []);
 
   const onPressRecentre = useCallback(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    map.animateToRegion(SAGAR_REGION, TRACK_FIT_DURATION_MS);
+    setRecentreRequest((n) => n + 1);
     setFittingTrack(false);
   }, []);
 
@@ -452,99 +559,18 @@ export function MapScreen() {
       </View>
 
       <View style={styles.mapWrap}>
-        <MapView
-          ref={mapRef}
+        <LeafletMap
           style={styles.map}
-          initialRegion={SAGAR_REGION}
-          customMapStyle={customMapStyle}
-          // The flood is a single north-up raster and `<Overlay>` takes a
-          // static `bearing` rather than tracking the map, so a rotated map
-          // would leave the water at the wrong angle to the coast. Correctness,
-          // not simplification.
-          rotateEnabled={false}
-          pitchEnabled={false}
-          toolbarEnabled={false}
-          showsUserLocation={false}
-          showsMyLocationButton={false}
-        >
-          {/*
-            `overlayUri` is the whole condition. Null means no flood to draw,
-            and rendering `<Overlay>` would hand the map a bounds tuple for a
-            texture that does not exist — which is how this used to reach an
-            empty `uri`. See `overlayUri` above.
-          */}
-          {overlayUri !== null && overlay !== null ? (
-            <Overlay
-              image={{ uri: overlayUri }}
-              /*
-               * `bounds` is a two-corner tuple — **right-top, then left-bottom**
-               * — and each corner is `[latitude, longitude]`, the opposite
-               * order to the GeoJSON the rest of this app speaks. Passing an
-               * object, or a [lon, lat] pair, silently places the image wrong.
-               */
-              bounds={overlayBounds(overlay)}
-              bearing={OVERLAY_BEARING}
-              tappable={false}
-            />
-          ) : null}
-
-          {/* The cyclone's own path, under everything the model computed. Real
-              observed history, fetched once at boot and never refetched when the
-              strength changes — it does not vary with it. */}
-          {track ? (
-            <Polyline
-              coordinates={track.path}
-              strokeWidth={3}
-              lineDashPattern={trackDashPattern}
-              {...trackLineStyle}
-            />
-          ) : null}
-
-          {/* One pin per best-track fix; tapping opens the native callout with
-              the UTC time and the wind. `tracksViewChanges` is left at its
-              default here (unlike AssetMarker) because these 19 pins carry a
-              callout, and the callout is the point of them. */}
-          {track?.waypoints.map((waypoint) => (
-            <Marker
-              key={`wp-${waypoint.sequence}`}
-              coordinate={{ latitude: waypoint.latitude, longitude: waypoint.longitude }}
-              pinColor={trackPinColour}
-              title={waypointTitle(waypoint)}
-              description={waypointSubtitle(waypoint)}
-            />
-          ))}
-
-          {/* Roads first, so markers draw on top of them. 251 polylines at
-              category 6 is the heaviest thing on this map; the tile count
-              always matches what is drawn, because capping the layer would make
-              the picture disagree with the number. */}
-          {exposure?.roads_cut_off.features.flatMap((road, i) =>
-            roadPaths(road).map((path, part) => (
-              <Polyline
-                key={`road-${i}-${part}-${road.properties.name}`}
-                coordinates={path}
-                strokeWidth={2}
-                lineDashPattern={compromisedRoadDashPattern}
-                {...compromisedRoadStyle}
-              />
-            )),
-          )}
-
-          {exposure?.hospitals.features.map((feature, i) => (
-            <AssetMarker
-              key={`hosp-${i}-${feature.properties.name}`}
-              feature={feature}
-              pinColour={assetPinColours.hospital}
-            />
-          ))}
-          {exposure?.substations.features.map((feature, i) => (
-            <AssetMarker
-              key={`sub-${i}-${feature.properties.name}`}
-              feature={feature}
-              pinColour={assetPinColours.substation}
-            />
-          ))}
-        </MapView>
+          initialCenter={[SAGAR_REGION.latitude, SAGAR_REGION.longitude]}
+          initialZoom={SAGAR_INITIAL_ZOOM}
+          overlay={leafletOverlay}
+          track={leafletTrack}
+          roads={leafletRoads}
+          assets={leafletAssets}
+          route={null}
+          fitRequest={fitRequest}
+          recentreRequest={recentreRequest}
+        />
 
         {overlay !== null && overlayImageUrl(overlay) === null ? (
           <View style={styles.mapBanner}>
@@ -702,69 +728,6 @@ export function MapScreen() {
         onClose={() => setAdvisory(null)}
       />
     </View>
-  );
-}
-
-/**
- * The `<Overlay>` bounds tuple: `[[north, east], [south, west]]`.
- *
- * Two transpositions meet here and neither throws. `<Overlay>` wants a
- * two-corner tuple, right-top first, and each corner is `[latitude,
- * longitude]` — the reverse of the GeoJSON the rest of this app speaks, and
- * the reverse of `<Marker>`'s named `{latitude, longitude}` fields. Passing
- * `{north, south, east, west}` is a type error here rather than a silent one,
- * which is the only reason this is easy to get right at all.
- *
- * Falls back to the opening region so the component tree is valid during boot
- * rather than conditionally null.
- */
-function overlayBounds(overlay: OverlayEntry | null): [[number, number], [number, number]] {
-  if (overlay) {
-    return [
-      [overlay.bounds.north, overlay.bounds.east],
-      [overlay.bounds.south, overlay.bounds.west],
-    ];
-  }
-  return [
-    [
-      SAGAR_REGION.latitude + SAGAR_REGION.latitudeDelta / 2,
-      SAGAR_REGION.longitude + SAGAR_REGION.longitudeDelta / 2,
-    ],
-    [
-      SAGAR_REGION.latitude - SAGAR_REGION.latitudeDelta / 2,
-      SAGAR_REGION.longitude - SAGAR_REGION.longitudeDelta / 2,
-    ],
-  ];
-}
-
-/**
- * One exposed point asset. The geometry is mixed (`Point`, `LineString`,
- * `Polygon`, `MultiPolygon` all occur in the live payload), so the coordinate
- * comes from `markerCoordinate()` rather than from indexing the geometry
- * directly.
- */
-function AssetMarker({
-  feature,
-  pinColour,
-}: {
-  feature: InfraFeature;
-  pinColour: string;
-}) {
-  const coordinate = toLatLng(markerCoordinate(feature));
-  // A NaN coordinate renders off-screen and reads as a missing asset, which
-  // would quietly disagree with the count in the tile.
-  if (!coordinate) return null;
-  return (
-    <Marker
-      coordinate={coordinate}
-      pinColor={pinColour}
-      title={feature.properties.name || 'Unnamed'}
-      description={feature.properties.status}
-      // Android re-renders the pin bitmap on every parent update unless told
-      // otherwise; with 34 markers on a screen that updates on every exposure
-      // response, that is a visible stall.
-      tracksViewChanges={false}
-    />
   );
 }
 

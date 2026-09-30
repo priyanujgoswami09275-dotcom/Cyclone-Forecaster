@@ -159,6 +159,17 @@ export const trackLineStyle = {
   strokeColor: theme.colors.background,
 } as const;
 
+/**
+ * The storm path's colour, as a plain string for Leaflet.
+ *
+ * `trackLineStyle` above is the `react-native-maps` shape (`{strokeColor}`),
+ * which existed only for `<Polyline strokeColor={...}>`. Leaflet takes a bare
+ * colour, so the map now reads this instead. Same value, one less indirection —
+ * and `trackLineStyle` is kept because nothing else in the app may still
+ * reference it, so removing it here would be a guess rather than a cleanup.
+ */
+export const trackLineColour = theme.colors.background;
+
 /** The dash for the storm path. Wider than the road dash so the two differ. */
 export const trackDashPattern = [10, 6];
 
@@ -220,6 +231,18 @@ export const SAGAR_REGION = {
  * this one is explicit because `animateToRegion` takes a duration argument
  * that has to be a number.
  */
+/**
+ * The opening zoom, in Leaflet tile-zoom units.
+ *
+ * **Chosen from the previous `SAGAR_REGION` deltas rather than picked.** The
+ * react-native-maps camera opened on a 0.36-degree latitude span; Leaflet
+ * expresses zoom as a power-of-two tile scale, so the equivalent framing is
+ * derived in `LeafletMap`'s caller comment rather than guessed. It is exposed
+ * here because the WebView map needs a number and the delta was the only
+ * statement of the intended framing in the codebase.
+ */
+export const SAGAR_INITIAL_ZOOM = 11;
+
 export const TRACK_FIT_DURATION_MS = 600;
 
 /**

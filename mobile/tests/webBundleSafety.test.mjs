@@ -51,6 +51,20 @@ const WEB_GRAPH = [
   'components/LocalitySearch.tsx',
 ];
 
+/**
+ * Files that are **native-only** and must never enter the Web bundle.
+ *
+ * `LeafletMap` pulls in `react-native-webview`, whose native counterpart is
+ * another `codegenNativeComponent` — the same class of failure that killed the
+ * first Web build. `geo.ts` and `leafletHtml.ts` are Leaflet-specific and have
+ * no business in a browser build that deliberately renders its own SVG.
+ */
+const NATIVE_ONLY = [
+  'geo.ts',
+  'leafletHtml.ts',
+  'components/LeafletMap.tsx',
+];
+
 describe('The Web module graph names no native map module', () => {
   for (const relative of WEB_GRAPH) {
     it(`${relative} does not import react-native-maps or mapStyles`, () => {
@@ -73,20 +87,72 @@ describe('The Web module graph names no native map module', () => {
 });
 
 describe('The native screen is still the native screen', () => {
-  it('MapScreen.tsx still imports react-native-maps', () => {
-    // The Web split must not have "fixed" the crash by breaking the native app.
-    // MapScreen.tsx is the file Metro resolves on Android and iOS.
-    const source = readFileSync(join(MOBILE, 'components/MapScreen.tsx'), 'utf8');
-    assert.match(
+  const source = readFileSync(join(MOBILE, 'components/MapScreen.tsx'), 'utf8');
+
+  it('MapScreen.tsx no longer imports react-native-maps', () => {
+    // **This assertion was inverted on 2026-10-01 and the reason matters.**
+    //
+    // The native map rendered solid black on Android in Expo Go:
+    // `react-native-maps` is Google Maps there, which needs an API key, and
+    // Expo Go cannot carry a project's own key. It was replaced with Leaflet in
+    // a `react-native-webview`, which needs no key at all.
+    //
+    // The old test pinned `from 'react-native-maps'` in order to catch the Web
+    // split "fixing" the crash by breaking the native app. Keeping that pin
+    // would have made the black map unfixable; the real invariant is weaker and
+    // more useful — the native screen must render *a* map, and it must not
+    // reach for a key-requiring provider.
+    assert.doesNotMatch(
       source,
-      /from\s*'react-native-maps'/,
-      'the native screen must keep using react-native-maps',
+      /(?:from|import|require)\s*\(?\s*['"][^'"]*react-native-maps['"]/,
+      'MapScreen.tsx still imports react-native-maps',
     );
-    assert.match(
-      source,
-      /<MapView/,
-      'the native screen must still render a MapView',
+  });
+
+  it('MapScreen.tsx renders LeafletMap', () => {
+    assert.match(source, /from\s*'\.\/LeafletMap'/, 'the native screen must render LeafletMap');
+    assert.match(source, /<LeafletMap/, 'and it must actually be in the tree');
+  });
+
+  it('MapScreen.tsx keeps every behaviour the old native map had', () => {
+    // The replacement must not quietly drop a feature. Each of these was a
+    // capability of the `<MapView>` version, so each is pinned.
+    for (const [what, pattern] of [
+      ['the flood overlay', /leafletOverlay/],
+      ['the storm track', /leafletTrack/],
+      ['the cut-off roads', /leafletRoads/],
+      ['the exposed assets', /leafletAssets/],
+      ['fit-to-track', /fitRequest/],
+      ['recentre', /recentreRequest/],
+    ]) {
+      assert.match(source, pattern, `MapScreen.tsx lost ${what}`);
+    }
+  });
+
+  it('no native-only module imports react-native-maps', () => {
+    for (const relative of NATIVE_ONLY) {
+      const text = readFileSync(join(MOBILE, relative), 'utf8');
+      assert.doesNotMatch(
+        text,
+        /(?:from|import|require)\s*\(?\s*['"][^'"]*react-native-maps['"]/,
+        `${relative} imports react-native-maps`,
+      );
+    }
+  });
+
+  it('react-native-webview is a declared dependency, not a phantom', () => {
+    // A `WebView` import with nothing in package.json resolves on this machine
+    // and fails on a clean checkout, which is the worst way for it to fail.
+    const pkg = JSON.parse(readFileSync(join(MOBILE, 'package.json'), 'utf8'));
+    assert.ok(
+      pkg.dependencies['react-native-webview'],
+      'react-native-webview is missing from dependencies',
     );
+    const version = pkg.dependencies['react-native-webview'];
+    const installed = JSON.parse(
+      readFileSync(join(MOBILE, 'node_modules/react-native-webview/package.json'), 'utf8'),
+    ).version;
+    assert.equal(version, installed, 'the declared and installed versions disagree');
   });
 });
 

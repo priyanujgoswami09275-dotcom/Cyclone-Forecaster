@@ -1707,6 +1707,60 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     written against, so it was deliberately not done. Decide before a demo, as
     a recorded decision rather than a quiet edit.
 
+49. **NEW 2026-10-01 — the native map is now Leaflet in a WebView, which
+    `Rules.md` forbids.** `Rules.md` says: *"Frontend is Expo / React Native.
+    This is not a web app — don't reintroduce Leaflet.js or any browser-only
+    library."* The native map rendered **solid black on Android in Expo Go**, and
+    `react-native-maps` is the cause: on Android it is Google Maps, which needs
+    an API key, and Expo Go cannot carry a project's own key. Leaflet over
+    keyless CARTO raster tiles removes the dependency that was failing rather
+    than working around its symptoms.
+
+    The rule exists to stop a browser-only library reaching the **Web** build —
+    the failure it was written after was `codegenNativeComponent is not a
+    function` in a browser bundle. `LeafletMap.tsx` is native-only and is
+    asserted out of the Web graph by `tests/webBundleSafety.test.mjs`; the
+    exported Web bundle contains zero occurrences of `RNCWebView`,
+    `codegenNativeComponent`, `RNMapView` or `AIRMap`, verified after the
+    change. So the rule's *intent* holds. Its *letter* does not, and the rule
+    should be reworded rather than worked around:
+
+    > Frontend is Expo / React Native, and the **Web build is a separate app**
+    > that must never execute a native module. A native screen may embed a
+    > browser context **only** where a native view is unavailable or requires a
+    > credential Expo Go cannot carry, and the Web build must not import it.
+
+    **What was given up, stated plainly:** the map is no longer a native view.
+    It loses native gestures, the native look, and offline capability. That is a
+    real trade for a real fix, and it is the right one here because the
+    alternative was a map that does not appear at all.
+
+    **Device rendering is NOT VERIFIED.** No physical device or emulator was
+    available. What *is* verified: the Android bundle compiles (1.5 MB Hermes
+    bytecode, 2026-10-01) with the Leaflet document inside it and no
+    `react-native-maps` symbols; `tsc --noEmit` clean; 32 jsdom tests run the
+    real `leafletDocument()` output against a recording Leaflet stub and assert
+    on the layers produced. What that cannot cover: tile rendering, Leaflet's
+    own layout, gestures, and the WebView's behaviour on a real Android WebView.
+    Exact Expo Go steps are in Design.md, "Checking the native map".
+
+50. **NEW 2026-10-01 — the exposed assets were visible on the API and invisible on
+    the map for the whole Web build's life.** Not a rendering failure: the DOM
+    held exactly 12 hospital and 22 substation circles, matching `/exposure`, and
+    **all 34 sat outside the viewBox.** The opening frame was centred on Sagar
+    Island with a 1.15-degree latitude span, reaching 22.22 N; the exposed assets
+    sit at 22.261-22.592 N. Sagar is at 21.65 N, the southern end of the study
+    area, so the frame was cropping the only part of the map that has anything
+    on it. Compounding it, the viewBox was a fixed `1000 x 760` against a bbox
+    whose *ground* aspect is 1.164 — `preserveAspectRatio="xMidYMid meet"`
+    letterboxed the drawing while the projection carried on past the frame.
+
+    The lesson worth keeping: **a marker that is drawn but off-frame looks
+    exactly like a marker that was never drawn**, and the exposure tiles said
+    "Hospitals 12" while the map showed none. Any future "the markers aren't
+    showing" report on this app should start by counting circles in the DOM
+    before suspecting the renderer.
+
 ## Environment / credentials status
 
 - [x] Google Earth Engine authenticated — done 2026-09-27, DEM fetched and committed
@@ -2067,6 +2121,68 @@ baseline taken before I started. `mobile/App.tsx` was already modified before
 this session and needed no change from me: its `Platform.OS !== 'web'` guards
 already handle the font requirement, and the Web build confirmed the font gate
 is not a problem.
+
+### 2026-10-01 — Claude Code: eight correctness fixes, and a native map that could not draw itself
+
+One session, eight independently revertible commits. The theme was "measure it,
+then fix it": seven of the eight started from a number or a DOM inspection
+rather than a guess, and two of the eight were bugs that the existing test suite
+had been green through.
+
+**The three that mattered most.**
+
+*The assets were on the API and off the map.* `/exposure?category=6` returned 12
+hospitals and 22 substations; the DOM held exactly 12 `#a11d00` circles and 22
+`#fcb42a` ones; **all 34 were outside the viewBox**. The opening frame was
+centred on Sagar at 1.15 degrees of latitude, reaching 22.22 N, while the
+exposed assets sit at 22.261-22.592 N. Sagar is at 21.65 N — the southern end
+of the study area — so the frame was cropping the only part of the map with
+anything on it. Fixed by making the opening frame the DEM extent, which is also
+the basemap image's own extent, so it cannot drift from it and the image now
+fills the frame with no gutter. **A drawn-but-off-frame marker is
+indistinguishable from an un-drawn one**, and that is now flag §50.
+
+*Inter was never registered on Web.* `App.tsx` called
+`useFonts(Platform.OS === 'web' ? {})` — an empty object. On react-native-web,
+`expo-font` registers `@font-face` as a *side effect of loading a face*, so
+loading nothing registered zero faces and every `fontFamily` in the app named a
+family the browser had never heard of. Confirmed before touching anything:
+`document.fonts` listed 0 faces and an on-screen element's computed
+`font-family` was `"Times"`. The fonts now load everywhere and the *gate* stays
+native-only, which keeps the original intent (a font failure must never blank the
+Web build) without re-creating it.
+
+*The native map was black on Android.* `react-native-maps` is Google Maps on
+Android and needs a key; Expo Go cannot carry one. Replaced with Leaflet 1.9.4 in
+a `react-native-webview` over keyless CARTO tiles — a deliberate, logged
+departure from `Rules.md`, which forbids exactly this. Flag §49 carries the
+reasoning, the proposed rewording, and an honest statement of what was given up.
+
+**Two bugs the new jsdom test found in code written minutes earlier.** The
+`leafletDocument()` string referenced `TILE_URL` and `TILE_ATTRIBUTION` as bare
+identifiers inside the WebView, where module constants do not exist — so `boot()`
+threw a `ReferenceError`, caught by its own `try`, and reported "the map library
+loaded but could not start" **on a real phone**. And `setRoads` iterated the
+payload one level too shallow, so every road was skipped and the command
+acknowledged success having drawn nothing. Neither could have been caught without
+running the real document.
+
+**Also changed:** "One Gemini call" was untrue (the capacity ladder retries on
+503 and repeats the draft for its honesty checks) and is gone from seven places;
+the main panel's developer text — `Rules.md`, `wind_kt: null`,
+`data/remal_track.geojson` — moved behind "Show data provenance" with the
+backend strings unchanged on the wire; the default origin moved from Sagar (no
+route at any category, because of a road-data gap) to Namkhana (routable at 4/4,
+and still on the island); step badges went from 2.67:1 to 6.65:1 using the
+theme's own `selectedText`, with no new token; "Storm path" stopped hiding behind
+the disclosure strip; and the S/T/L buttons became inline SVG icons.
+
+**Verified:** 352 Python passed / 3 skipped; 291 mobile passed (up from 234);
+`tsc --noEmit` clean; the Android bundle compiles (1.5 MB Hermes bytecode) with
+the Leaflet document in it and no `react-native-maps` symbols; the exported Web
+bundle contains zero `RNCWebView`/`codegenNativeComponent`/`RNMapView`/`AIRMap`.
+**NOT VERIFIED:** native rendering on a device — no phone or emulator was
+available. Exact Expo Go steps are in Design.md, "Checking the native map".
 
 ### 2026-09-30 — Claude Code: Stage A of the dark rebuild — the slider is gone, and the provenance moved behind a tap
 

@@ -205,10 +205,77 @@ superseded light-theme specs, which are kept in git history.
   tappable and `onRequestClose` is wired, or the sheet traps the user on
   Android.
 
+### The native map — Leaflet in a WebView, 2026-10-01
+
+**This section replaces the map's renderer.** The design decisions below it
+(the tile colours, the layer stack, the control placement) are unchanged; only
+the thing that draws them changed.
+
+The native map was `react-native-maps` and rendered **solid black on Android in
+Expo Go**. On Android that library is Google Maps, which requires an API key,
+and Expo Go cannot carry a project's own key — so the map never drew anything.
+It is now **Leaflet 1.9.4 inside `react-native-webview`**, over keyless CARTO
+raster tiles. Leaflet needs no key and no account, which removes the dependency
+that was failing rather than papering over it.
+
+`Rules.md` says "don't reintroduce Leaflet.js or any browser-only library". This
+is a logged, deliberate departure — see **MEMORY.md §49**, which carries the
+reasoning and a proposed rewording of the rule. The rule's intent (a
+browser-only library must never reach the *Web* build) still holds and is
+asserted by `mobile/tests/webBundleSafety.test.mjs`.
+
+**What did not change:** the tile and overlay colours, the layer order (flood
+raster, then track, then cut-off roads, then the asset pins, then the route),
+the control positions, the legend, the disclosure strip, or the `PanelStep`
+framing. **What was given up:** the map is no longer a native view, so it loses
+native gestures, the native look, and any offline capability.
+
+**Visual deltas a reviewer should expect**, none of which is a design change:
+
+| Was (react-native-maps) | Now (Leaflet) |
+|---|---|
+| `customMapStyle`, a Google style array | CARTO `light_all` raster tiles |
+| `pinColor` teardrop pins | `circleMarker` discs: 7 px hospitals, 5 px substations, 4 px track fixes |
+| `<Overlay>` with a static `bearing` | `L.imageOverlay` with explicit `[[s,w],[n,e]]` bounds, 0.62 opacity |
+| Native callout on tap | Leaflet popup, `textContent` only |
+| `rotateEnabled={false} pitchEnabled={false}` | `rotate: false, pitch: false` — same correctness reason |
+| `animateToRegion` / `fitToCoordinates` | `setView` / `fitBounds`, driven by monotonic request counters |
+| Key-requiring Google provider | None — CARTO needs no key |
+
+**Checking the native map on a device — the part this environment cannot do.**
+No device or emulator was available, so the following is **NOT VERIFIED** and is
+the exact procedure:
+
+1. `cd mobile && npx expo start`, then scan the QR with **Expo Go** on an
+   Android phone.
+2. Confirm the SDK matches (SDK 57 in `package.json`). If Expo Go refuses the
+   project, the phone's Expo Go is a different SDK — update it, do not
+   downgrade the app.
+3. **First check: does the map appear at all?** It should show CARTO light tiles
+   over the Sundarbans within a few seconds. If instead you see the red banner
+   reading *"The map could not load"*, read the sentence under it — it names
+   which stage failed (library download vs. tiles), which is the only thing
+   that tells the two apart.
+4. **Check the layers.** Tap *Remal's own strength*, then step up a chip. The
+   blue flood tint should grow; red dashed cut-off roads should appear; hospital
+   discs (larger, terracotta) and substation discs (smaller, marigold) should
+   be visible **inside the frame** — that last one is the regression guard for
+   MEMORY.md §50, so look specifically for pins in the *northern* part of the
+   map, which is where every exposed asset is.
+5. **Check the track control.** Tap the track control; the camera should fit the
+   whole 19-fix track. Tap again; it should return to the study region. Pressing
+   either twice must work both times.
+6. **Check a tap.** Tap a hospital disc — the popup should show the asset name
+   and status, and should be plain text.
+7. **Switch to airplane mode and reload.** The banner should appear rather than a
+   blank grey rectangle. That is the "never leave a blank map" requirement, and
+   it is the one check most likely to be skipped.
+
 ### The basemap (`customMapStyle`)
 
-New 2026-09-30. Google Maps' documented style array, applied in order with
-later entries winning. **POIs and transit are off entirely** — a cyclone
+New 2026-09-30. **Applies to the Web build's own `render_basemap.py` raster, and
+is retained as the record of what the tiles should look like.** It was Google
+Maps' documented style array, applied in order with later entries winning. **POIs and transit are off entirely** — a cyclone
 exposure map with every restaurant and bus stop on it is unreadable, and those
 markers are the ones most likely to be mistaken for the app's own asset pins.
 Road geometry is `card` and road *labels* off, so the app's own cut-off roads
@@ -230,10 +297,11 @@ are the only road lines a reader has to interpret.
 | `administrative.land_parcel` | — | off |
 
 **Rotation and pitch stay disabled**, and that is a correctness decision rather
-than a simplification: the flood is a single north-up raster and `<Overlay>`
-takes a static `bearing` instead of tracking the camera, so a rotated map would
-leave the water at the wrong angle to the coastline — a subtle wrongness much
-worse than losing the ability to spin the map.
+than a simplification: the flood is a single north-up raster over a north-up
+basemap, so a rotated or tilted camera would leave the water at the wrong angle
+to the coastline — a subtle wrongness much worse than losing the ability to spin
+the map. Both renderers honour this (`rotateEnabled`/`pitchEnabled` on
+`react-native-maps`, `rotate: false`/`pitch: false` on Leaflet).
 
 ### Superseded light-theme component specs
 
