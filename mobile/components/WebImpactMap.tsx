@@ -62,14 +62,27 @@ import {
   makeProjection,
   openingBounds,
   pathPoints,
+  viewBoxFor,
   type GeoBounds,
 } from '../mapProjection';
 import { theme } from '../theme';
 import { LEGEND_ROWS, type SwatchSource } from '../legend';
 
 /** The SVG user units the map draws in. Scaled by CSS to its container. */
+/**
+ * The drawing's user-unit width. The **height is derived per view** by
+ * `viewBoxFor(bounds)`, never fixed.
+ *
+ * It used to be a fixed `VIEW_H = 760`, and that single number is why 84 of 91
+ * markers were invisible. A plate-carrée projection maps the whole bbox onto
+ * the whole viewBox, so the viewBox aspect has to equal the bbox's *ground*
+ * aspect (`spanLon / (spanLat * cos 22.5°)` ≈ 1.16 here). At 1.32 it did not:
+ * `preserveAspectRatio="xMidYMid meet"` letterboxed the drawing into a band
+ * while the projection carried on past the frame, so most geometry landed
+ * outside the visible area. Deriving the height removes the possibility of the
+ * two disagreeing.
+ */
 const VIEW_W = 1000;
-const VIEW_H = 760;
 
 /** Asset-pin colours, matching `mapStyles.assetPinColours`. */
 const PIN_COLOURS = {
@@ -158,9 +171,14 @@ export function WebImpactMap({
   const svgRef = useRef<SVGSVGElement | null>(null);
 
   const bounds = view.kind === 'track' ? view.bounds : openingBounds();
+  /**
+   * The frame, shaped to the data. See `VIEW_W` above for why the height is
+   * derived rather than fixed.
+   */
+  const frame = useMemo(() => viewBoxFor(bounds, VIEW_W), [bounds]);
   const projection = useMemo(
-    () => makeProjection(bounds, VIEW_W, VIEW_H),
-    [bounds],
+    () => makeProjection(bounds, frame.width, frame.height),
+    [bounds, frame],
   );
 
   /**
@@ -282,13 +300,13 @@ export function WebImpactMap({
   return (
     <View style={styles.wrap}>
       {/*
-        The SVG. `preserveAspectRatio` is left at its default so the drawing
-        scales to the container and letterboxes itself, and `viewBox` is the
-        user-unit space every coordinate above was projected into.
+        The SVG. `viewBox` is the user-unit space every coordinate above was
+        projected into, and its shape is derived from the bbox so the drawing
+        fills the frame rather than being letterboxed inside it.
       */}
       <svg
         ref={svgRef}
-        viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
+        viewBox={`0 0 ${frame.width} ${frame.height}`}
         preserveAspectRatio="xMidYMid meet"
         style={styles.svg}
         role="img"
@@ -304,7 +322,7 @@ export function WebImpactMap({
         */}
         <defs>
           <clipPath id="web-map-clip">
-            <rect x="0" y="0" width={VIEW_W} height={VIEW_H} />
+            <rect x="0" y="0" width={frame.width} height={frame.height} />
           </clipPath>
           {/*
             The flood is the model's own raster, painted #2563eb at four depth
@@ -313,7 +331,13 @@ export function WebImpactMap({
           */}
         </defs>
 
-        <rect x="0" y="0" width={VIEW_W} height={VIEW_H} fill={theme.colors.background} />
+        <rect
+          x="0"
+          y="0"
+          width={frame.width}
+          height={frame.height}
+          fill={theme.colors.background}
+        />
 
         <g clipPath="url(#web-map-clip)">
           {/* --- base layer: land and water from the committed DEM --------- */}

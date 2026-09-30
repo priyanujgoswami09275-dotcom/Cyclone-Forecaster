@@ -32,30 +32,55 @@ export interface GeoBounds {
  * Named here rather than imported because `mapStyles.ts` is native-adjacent.
  * The coordinates are the committed `data/places.geojson` coordinate for the
  * `sagar` locality, which is what `/localities` serves.
+ *
+ * **Retained for the tests and for anyone who needs the case-study point**, but
+ * **no longer used as the centre of the opening view** — see `OPENING_BOUNDS`.
+ * It was, and that hid every exposed asset.
  */
 export const SAGAR_CENTRE = { latitude: 21.6476, longitude: 88.0568 } as const;
 
 /**
- * The opening view's span, chosen to frame the delta and the Sagar Island
- * blocks the flood reaches at the two intensities that expose anything.
+ * The opening view.
  *
- * Slightly wider than the native `SAGAR_REGION` deltas, because a desktop
- * viewport is wider than a phone: at 16:9 the same longitude span shows more
- * latitude, and the extra room costs nothing on a screen with width to spare.
+ * **Chosen to be the basemap's own extent, and the reason is a measurement
+ * rather than a preference.**
+ *
+ * This was centred on Sagar Island at 1.6 x 1.15 degrees, and the infrastructure
+ * the app exists to show is not there. On the live `/exposure?category=6`
+ * payload the 12 exposed hospitals sit at **lat 22.261-22.588** and the 22
+ * substations at **22.265-22.592**. Sagar is at **21.65 N**, the southern end
+ * of the study area, so a 1.15-degree frame centred on it reaches only 22.22 N
+ * and **every one of the 34 markers fell outside it**.
+ *
+ * They were being drawn correctly — the DOM held exactly 12 `#a11d00` circles
+ * and 22 `#fcb42a` ones, matching the API counts — and none could be seen. That
+ * is a worse bug than not drawing them, because the tiles beside the map said
+ * "Hospitals 12" while the map showed none.
+ *
+ * The frame is now the DEM extent, which is what `render_basemap.py` renders
+ * and what `BASEMAP_META.bounds` already records. That single choice closes
+ * three things at once:
+ *
+ *   - **all 34 exposed assets are inside** (verified above), as is Sagar, the
+ *     default origin, and the flood extent at every category;
+ *   - **the basemap image fills the frame exactly**, because it *is* that
+ *     extent — no gutter, and nothing to keep in sync;
+ *   - the reported flood area and the picture are the same thing, which is the
+ *     point of the overlay discipline in MEMORY.md §32.
+ *
+ * `viewBoxFor` then shapes the frame to its ground aspect, so the drawing is
+ * never letterboxed. See `groundAspect`.
  */
-export const OPENING_SPAN_DEG = {
-  latitude: 1.15,
-  longitude: 1.6,
-} as const;
+export const OPENING_BOUNDS: GeoBounds = {
+  west: 87.8,
+  south: 21.3,
+  east: 89.2,
+  north: 22.6016,
+};
 
-/** Bounds centred on `SAGAR_CENTRE` at `OPENING_SPAN_DEG`. */
+/** The opening view. Named as a constant so a test can assert it. */
 export function openingBounds(): GeoBounds {
-  return {
-    west: SAGAR_CENTRE.longitude - OPENING_SPAN_DEG.longitude / 2,
-    east: SAGAR_CENTRE.longitude + OPENING_SPAN_DEG.longitude / 2,
-    south: SAGAR_CENTRE.latitude - OPENING_SPAN_DEG.latitude / 2,
-    north: SAGAR_CENTRE.latitude + OPENING_SPAN_DEG.latitude / 2,
-  };
+  return { ...OPENING_BOUNDS };
 }
 
 /**
@@ -115,10 +140,70 @@ export function boundsOf(
  * makes the flood raster's placement harder to reason about. The basemap and
  * the flood raster use the *same* projection, so they register exactly.
  *
+ * **The cos(lat) factor does appear exactly once, in `groundAspect`** — not to
+ * bend the projection, but to choose a viewBox shape that matches the ground.
+ * That is the only place the two conventions meet, which is why keeping it
+ * there is what makes the rest of this file safe.
+ *
  * The y-axis is flipped: latitude increases northward, SVG y increases
  * downward. Getting that backwards draws the Bay of Bengal where the delta
  * is, and the whole delta in the sea.
  */
+/**
+ * The cosine of latitude at the centre of the study area, used to convert a
+ * geographic span into a ground-distance ratio.
+ *
+ * At 22.5°N, `cos(lat) = 0.924`. One degree of longitude is therefore ~92% of
+ * one degree of latitude in ground distance, which is why a bbox quoted in
+ * degrees cannot be compared to a pixel aspect ratio directly. This constant is
+ * the whole of the correction, and it is named because two places need it and
+ * they must agree.
+ */
+export const LATITUDE_COSINE = 0.924;
+
+/**
+ * Ground-distance aspect ratio (width / height) of a geographic box.
+ *
+ * This is what the viewBox aspect has to match for a plate-carrée projection to
+ * fill its frame. `spanLon / (spanLat * cos(lat))` — **not** `spanLon /
+ * spanLat`, which is wrong by 8% here: small enough to look fine in a test and
+ * large enough to push real geometry off-screen.
+ */
+export function groundAspect(bounds: GeoBounds): number {
+  const spanLon = bounds.east - bounds.west;
+  const spanLat = bounds.north - bounds.south;
+  if (spanLat === 0) return 1;
+  return spanLon / (spanLat * LATITUDE_COSINE);
+}
+
+/**
+ * A viewBox whose aspect ratio matches `bounds`, so the drawing fills the
+ * frame instead of being letterboxed.
+ *
+ * **This is the fix for markers that were drawn but invisible.** The Web map
+ * drew every hospital and substation — 12 and 22 circles, exactly matching the
+ * API — and 84 of 91 circles fell *outside* the viewBox. The cause was an
+ * aspect mismatch: a fixed `1000x760` viewBox against a bbox whose ground
+ * aspect was ~1.62, so `preserveAspectRatio="xMidYMid meet"` fitted the data
+ * into a letterboxed band while the projection — which assumes the full viewBox
+ * *is* the full bbox — overshot vertically. The basemap image had the same
+ * problem, which is the black gutters reported alongside it.
+ *
+ * Deriving the height from the width means the frame is always the right shape
+ * for whatever is being drawn: the opening region, a fitted track, or anything
+ * else. No hand-tuned numbers, and it cannot drift out of sync with the
+ * projection the rest of this file applies.
+ */
+export function viewBoxFor(
+  bounds: GeoBounds,
+  width = 1000,
+): { width: number; height: number } {
+  const aspect = groundAspect(bounds);
+  if (!Number.isFinite(aspect) || aspect <= 0) return { width, height: width };
+  return { width, height: Math.round(width / aspect) };
+}
+
+
 export interface Projection {
   bounds: GeoBounds;
   /** The SVG viewBox the projection maps onto. */
