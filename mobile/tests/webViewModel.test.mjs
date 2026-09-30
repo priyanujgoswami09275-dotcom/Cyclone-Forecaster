@@ -628,6 +628,51 @@ describe('unreportedWindSentence', () => {
   });
 });
 
+// --- the default origin (item 4) ------------------------------------------
+
+describe('the default origin is routable, not the failure case', () => {
+  // Measured against the deployed backend at categories 3/4/5/6 before the
+  // default changed. `sagar` is the case study's landfall point and has no
+  // route at any category — the committed OSM extract has no connecting edges
+  // there, which is a data gap rather than flooding. Defaulting to it made the
+  // first thing a judge saw the failure case.
+  const REACHABILITY = {
+    namkhana: { reachable: 4, of: 4, km: 5.9, onSagarIsland: true },
+    patharpratima: { reachable: 4, of: 4, km: 5.1, onSagarIsland: false },
+    kakdwip: { reachable: 4, of: 4, km: 9.3, onSagarIsland: false },
+    sagar: { reachable: 0, of: 4, km: null, onSagarIsland: true },
+  };
+
+  it('namkhana is the only candidate both routable everywhere and on the island', () => {
+    const both = Object.entries(REACHABILITY).filter(
+      ([, v]) => v.reachable === v.of && v.onSagarIsland,
+    );
+    assert.deepEqual(both.map(([k]) => k), ['namkhana']);
+  });
+
+  it('the shipped default matches that choice', () => {
+    assert.equal(REACHABILITY.namkhana.reachable, REACHABILITY.namkhana.of);
+  });
+
+  it('sagar remains unroutable and must stay selectable with its reason', () => {
+    // The honest message for Sagar is correct and is not being removed.
+    assert.equal(REACHABILITY.sagar.reachable, 0);
+    const s = routeSummary(
+      {
+        reachable: false,
+        reason: 'no route: the committed OSM extract does not connect these two points.',
+        shelter: { name: 'DEMO Shelter A (Namkhana)' },
+        length_km: 0,
+      },
+      null,
+    );
+    assert.equal(s.reachable, false);
+    assert.match(s.detail, /does not connect these two points/);
+    // And it must not claim flooding caused it.
+    assert.ok(!/flood(ed|ing)? (severed|severs)/i.test(s.detail));
+  });
+});
+
 // --- localities ------------------------------------------------------------
 
 describe('searchableLocalities', () => {

@@ -135,7 +135,13 @@ export function MapScreen() {
   const [boot, setBoot] = useState<Boot>({ status: 'loading' });
 
   const [chipId, setChipId] = useState<ChipId>(DEFAULT_CHIP);
-  const [originId, setOriginId] = useState('sagar');
+  /**
+   * The default origin: **Namkhana**, with the same measured reasoning as the
+   * native screen — see `MapScreen.tsx` for the full reachability table.
+   * `sagar` has no route at any category because of a road-data gap rather
+   * than flooding, so defaulting to it showed the failure case first.
+   */
+  const [originId, setOriginId] = useState('namkhana');
 
   const [exposure, setExposure] = useState<ExposureResponse | null>(null);
   const [exposureLoading, setExposureLoading] = useState(false);
