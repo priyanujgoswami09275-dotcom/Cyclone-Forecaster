@@ -327,6 +327,66 @@ as owed a human look.
   the human's decision on whether to delete it.
 - **The "Where are you" locality card** → the one-line `OriginLine`.
 
+## The Web build, 2026-10-01
+
+Added because the Web app is now a real screen rather than a compatibility
+fallback, and because **it is not a variation on the spec above — it is a
+different medium**. The native screen is a map with a panel under it on a
+phone; the Web screen is a two-column briefing at desktop width that collapses
+to one. Tokens are identical (`mobile/theme.ts` is the single source for both),
+so nothing here re-specifies a colour, a font or a size.
+
+### What is shared, and what is genuinely different
+
+**Shared verbatim:** `theme.ts`, `strengthChips.ts`, `exposureTiles.ts`,
+`trackFacts.ts`, `legend.ts`, `advisoryFlow.ts`, `api.ts`. The Web screen is
+held to the same four chips, the same enabled-when-anything-is-exposed rule, the
+same `—`-vs-`0` distinction and the same failure wording as the native one,
+because it imports the modules rather than restating them.
+
+**Different by necessity:**
+
+- **The basemap.** There is no Google Maps key for the browser and this project
+  ships no tile server, so the Web map draws its own. `land` and `water` — the
+  two tokens this file already reserves for "map tints, not UI surfaces" — are
+  read out of `theme.ts` at build time and painted onto
+  `data/basemap/basemap.png`, rendered by `backend/tools/render_basemap.py` from
+  the **0 m contour of the committed DEM**. That is the same threshold
+  `dem.py`'s `ocean_mask()` floods from, so the coastline and the flood extent
+  agree by construction. Display-only and deterministic; no figure is measured
+  off it, and the screen says so.
+- **The flood layer is an `<image>`, not a `<Polygon>`.** Same
+  `/overlays` raster the native `<Overlay>` samples, placed through the same
+  projection as every vector layer so they register exactly.
+- **The track is dashed and always renders dashed.** `lineDashPattern` is
+  *not* honoured by react-native-maps on Android (§ "Superseded light-theme
+  component specs"); SVG honours it everywhere, so on Web the texture matches
+  the legend instead of contradicting it.
+- **The map chrome is the app's chrome, not white floating pills.** On a
+  desktop the map is one panel in a grid rather than a full-bleed surface
+  behind a control stack, so `white`/`onWhite` have nothing to sit against and
+  the controls use `card` + `border` + `selectedText`. The inversion described
+  in "Dark theme" above exists to keep controls legible *on a pale basemap*;
+  on Web the controls sit on the app's own dark panel, so it would be a
+  contradiction, not a deliberate echo.
+- **The advisory is inline, not a modal.** A judge's viewport has the height for
+  a document; a modal over the map would hide the map the advisory describes.
+  Same content, same order, same disclosures.
+
+### Still the same design system
+
+`theme.typography` sizes are unchanged (22/16/16/13), the eight-px spacing base
+holds, and the radius table (12 button / 16 card / 32 chip) is used as-is. The
+four chips keep the documented idle/selected treatment. The map's flooded-area
+figure keeps the "(model)" qualifier wherever it appears.
+
+### Not specified anywhere, and still owed a human
+
+The Web build's **information hierarchy** — which of the four steps is visually
+primary at desktop width, and whether the map or the numbers should hold the
+left column — is an editorial decision made here and not recorded above, in the
+same sense as §37 and §43 for the native screen.
+
 ## React Native theme object
 
 **SUPERSEDED — the light theme's object.** The current one is `mobile/theme.ts`

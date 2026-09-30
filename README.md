@@ -76,6 +76,41 @@ requests/IP and a live call during a demo fails.
 
 ---
 
+## The Web build
+
+The judge-facing version is live at
+**https://cyclone-forecaster-ui.vercel.app** and talks to the backend at
+`https://cyclone-forecaster-chi.vercel.app`. Same three-step loop, same four
+chips, same numbers — one build for a browser instead of a handset.
+
+It is a **separate file, deliberately**: `mobile/components/MapScreen.web.tsx`
+rather than a platform branch inside `MapScreen.tsx`. `react-native-maps` is a
+native module, and imported into a browser bundle it throws
+`codegenNativeComponent is not a function` on first render — which is how the
+first Web attempt produced a blank page. Metro resolves the `.web.tsx` file in
+preference, so the native import never enters the browser graph. The native app
+still uses `react-native-maps` and is unchanged.
+
+There is **no mapping library**. The browser has no Google Maps key and this
+project ships no tile server, so the Web map is a projected SVG over a basemap
+rendered from the committed DEM — the same 0 m contour the flood model floods
+from, so the coastline and the water agree by construction. Deterministic,
+offline, and no figure is measured off it.
+
+Build and deploy it:
+
+```bash
+cd mobile
+EXPO_PUBLIC_API_URL=https://cyclone-forecaster-chi.vercel.app \
+  npx expo export --platform web --output-dir dist
+cd dist && vercel deploy --prod        # project: cyclone-forecaster-ui
+```
+
+`EXPO_PUBLIC_API_URL` is set on the Vercel project, but the project has no
+build command — it consumes the uploaded `dist/`, so build locally and upload.
+Note `README.md` above says the app needs a LAN IP for a device; that is true
+of the **native** app only. The Web build talks to HTTPS.
+
 ## Honest limits
 
 These are on screen, not buried here.
@@ -95,9 +130,17 @@ These are on screen, not buried here.
   not be used for real resource allocation.
 - **"Roads cut" means the road geometry intersects the flood extent** — not
   that the road is impassable.
-- **The app has never run on a physical device.** Everything here is verified by
-  `tsc`, `node --test` (96) and `pytest` (331 passed, 3 skipped). Rendering is
-  unverified. Four things in particular need a real phone: whether the chips and
+- **The native app has never run on a physical device.** It is verified by
+  `tsc`, `node --test` (234) and `pytest` (352 passed, 3 skipped). Rendering on
+  a handset is unverified. **The Web build is verified in a real browser**
+  against production: all four chips drive the API, exposure changes as the
+  scenario changes, the map and track draw from real data, and there are no
+  console errors.
+- **The advisory's success rendering has not been seen from a live call.**
+  Gemini's free tier allows 20 requests/day and was exhausted while this was
+  built, so the loading and error states were observed live and the success
+  state is covered by tests with the model stubbed. The error states are the
+  real ones: a spent quota says so and does not pretend to have an advisory. Four things in particular need a real phone: whether the chips and
   the Generate button stay above the fold at a 40% map floor, whether the white
   map controls read against the pale basemap, whether the chip row scrolls or
   clips, and whether the dashed storm path renders dashed —
@@ -154,9 +197,9 @@ Two things that will bite:
 ### Tests
 
 ```bash
-venv/bin/python -m pytest -q          # 331 passed, 3 skipped
-cd mobile && node --test 'tests/*.test.mjs'   # 96 pass
-cd mobile && npx tsc --noEmit         # clean
+venv/bin/python -m pytest -q                   # 352 passed, 3 skipped
+cd mobile && node --test 'tests/*.test.mjs'    # 234 pass
+cd mobile && npx tsc --noEmit                  # clean
 ```
 
 No test calls Gemini live. The AI layer is mocked; the daily quota is spent by
@@ -166,7 +209,8 @@ hand.
 
 ## API
 
-Base URL `http://localhost:8000`. All eleven routes:
+Base URL `http://localhost:8000` (or the deployed
+`https://cyclone-forecaster-chi.vercel.app`). All eleven routes:
 
 | Route | Returns |
 |---|---|
@@ -176,6 +220,7 @@ Base URL `http://localhost:8000`. All eleven routes:
 | `GET /overlays` | Pre-rendered flood PNGs per category (display shortcut only) |
 | `GET /track` | 19 IBTrACS fixes for Remal, with wind provenance |
 | `GET /localities` | 45 origin candidates (32 excluded by scoping) |
+| `GET /basemap/basemap.png` | **Not served** — 404 by design. The basemap ships inside the Web bundle; see "The Web build" |
 | `GET /surge-zone?category=N` | Surge height, method, anchor, flood polygon |
 | `GET /exposure?category=N` | Submerged hospitals and substations, cut-off roads |
 | `GET /routes?category=N&origin=<id>` | Dijkstra route avoiding flooded edges |
@@ -196,10 +241,20 @@ backend/
   locations.py       locality scoping (45 in, 32 excluded)
   ai/advisory.py     Gemini call + Pydantic response_schema
   simulation/        surge, flood, exposure, routing, allocation, shelters, population, dem
+  tools/
+    render_overlays.py   flood PNGs per intensity, for map display
+    render_basemap.py    land/water PNG from the DEM's 0 m contour, for Web
   data_pipeline/     IBTrACS, Overpass, GEE fetchers (run offline, not per-request)
-data/                committed datasets — track, DEM, OSM infra, overlays, shelters
-mobile/              Expo app; pure logic in legend/strengthChips/exposureTiles/trackFacts
-tests/               12 pytest modules
+data/
+  overlays/          flood rasters + overlays.json (display only)
+  basemap/           land/water raster + basemap.json (display only, Web only)
+  *.geojson *.tif    track, DEM, OSM infra, shelters
+mobile/
+  components/MapScreen.tsx      native screen — react-native-maps
+  components/MapScreen.web.tsx  Web screen — projected SVG, no map library
+  legend.ts strengthChips.ts exposureTiles.ts trackFacts.ts   shared logic
+  mapProjection.ts webViewModel.ts basemap.ts                  Web-only logic
+tests/               13 pytest modules
 ```
 
 ---

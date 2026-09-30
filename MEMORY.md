@@ -64,8 +64,9 @@ step" before starting any work.
 | B. Simulation engine (flood propagation, routing, shelter allocation) | In progress | Engine complete and tested on real data. Only the shelter *dataset* is missing — no real locations/capacities exist to use (see blockers). |
 | C. Backend / API (FastAPI) | Done | `backend/main.py` + `backend/locations.py`. All contract endpoints live and curl-verified. `/advisory` is live (Module D below). **Display overlay layer added 2026-09-28** — `backend/tools/render_overlays.py` + `data/overlays/` + `GET /overlays`; display-only, §32. **`GET /track` added 2026-09-29** — the case study's real IBTrACS track; an endpoint, not a mount, because a blank `USA_WIND` must not read as calm. |
 | D. AI advisory layer (Gemini) | Done | `backend/ai/advisory.py` + the `POST /advisory` handler. Schema, prompt, call, an honesty validator, district-scoped localities, a capacity-retry wrapper, and `load_dotenv()` key loading. 70 tests. **Three live advisories produced**; all three rounds of defects are now closed (§20–§25). Two operational notes, not code gaps: the free tier is 20 calls/day (§26) and eight border-cluster localities still need a boundary dataset (§24). |
-| E. Mobile app (Expo / React Native) | In progress | Design system + `theme.typography` + `api.ts` (Stage 1) all landed 2026-09-28. **Stage 2, the map screen, landed 2026-09-28** (`1f23721`): `MapView` on a fixed Sagar Island region, flood as a `<Overlay>` raster, slider over `/categories` fetching on `onSlidingComplete`, Remal preset, markers, roads, locality picker, empty state. **Stage 3 remains: the advisory modal wiring and `POST /advisory`.** **The real track layer landed 2026-09-29** (`c3f3549`): `TrackResponse`/`getTrack()` in `api.ts`, a `Polyline` plus 19 waypoint pins with UTC-time and wind callouts, and a source caption. Never run on a device. |
-| F. Deployment | In progress | `render.yaml` + pinned `requirements.txt` landed 2026-09-28 (Stage 0). **Blocked on a plan decision** — the backend does not fit 512 MB; see "Known issues / blockers". |
+| E. Mobile app (Expo / React Native) | In progress | Design system + `theme.typography` + `api.ts` (Stage 1) all landed 2026-09-28. **Stage 2, the map screen, landed 2026-09-28** (`1f23721`). **Stage 3 landed 2026-09-29** (`cf25a81`, `dcfba38`). **Stage A of the dark rebuild landed 2026-09-30.** **The Web build was rebuilt 2026-10-01** (`b8090a0`): `MapScreen.web.tsx` is now the judge-facing product rather than a compatibility fallback, with a DEM-derived SVG map in place of a Google Maps iframe, all four chips wired to the real API, a searchable 45-locality picker, and the advisory rendered as a document. **Live at `cyclone-forecaster-ui.vercel.app` and verified in a real browser.** The native app is untouched and still uses `react-native-maps`. **Still never run on a physical phone.** |
+| E2. Web app (judge-facing) | Done, one round | `b8090a0`. Platform-specific build, no mapping library, no native map module. Owns `mapProjection.ts`, `basemap.ts`, `webBasemap.ts`, `webViewModel.ts`, `WebImpactMap.tsx`, `AdvisoryPanel.tsx`, `LocalitySearch.tsx`. Reuses `api.ts`/`strengthChips.ts`/`exposureTiles.ts`/`trackFacts.ts`/`legend.ts`/`advisoryFlow.ts`/`theme.ts` verbatim so it cannot disagree with the native screen. Verified against production in Chrome: four chips, real exposure changes, origin search, no console errors, no overflow at 420–1600 px. |
+| F. Deployment | Done | **Both projects are live on Vercel** and were verified through the MCP on 2026-10-01. Backend `cyclone-forecaster` → `cyclone-forecaster-chi.vercel.app` (FastAPI, `dpl_DjhJU7bk3MbgvGnoWGdBE44xR5vm`). Web `cyclone-forecaster-ui` → `cyclone-forecaster-ui.vercel.app` (`dpl_84AgfTBUMAuokBP1RdX9TjJExVkd`). `EXPO_PUBLIC_API_URL` is set on the UI project only. `render.yaml` is retained and still correct. |
 
 *(Status values: Not started / In progress / Blocked / Done)*
 
@@ -211,6 +212,72 @@ step" before starting any work.
   rig, which works *because* `api.ts` imports nothing from react-native. Plain
   `.mjs` on purpose: a `.ts` test would need `types: ["node"]` +
   `allowImportingTsExtensions` added to the app's own tsconfig.
+- **`backend/tools/render_basemap.py` + `data/basemap/` (new 2026-10-01,
+  `b8090a0`).** The DEM-derived basemap the Web map draws under everything.
+  `venv/bin/python -m backend.tools.render_basemap` writes
+  `data/basemap/basemap.png` (**48,074 B**, 1000×930, fully opaque RGBA) and
+  `data/basemap/basemap.json`. It renders the **0 m contour** of the committed
+  `data/dem.tif` — measured 59.07% land, 40.93% Bay and delta channels — in
+  `theme.colors.land` / `theme.colors.water`, **parsed out of
+  `mobile/theme.ts`** so the basemap cannot drift from the design. Same encoder
+  shape as `render_overlays.py`, stdlib `zlib` + `struct`, no new dependency,
+  and **byte-identical on rebuild** (verified with `cmp`).
+  **Display-only and enforced so:** nothing in `backend/simulation/` may contain
+  the string "basemap" (a test greps for it), no endpoint reads it, and
+  `/basemap/basemap.png` returns **404** on the live backend. **0 m is not an
+  arbitrary cut** — `dem.py`'s `ocean_mask()` floods from `elevation <= 0.0`,
+  so the coastline and the flood raster's extent agree by construction.
+- **`tests/test_basemap.py` (21 tests, new).** Opens the PNG with **Pillow** —
+  the §42 lesson applied a second time, since a decoder mirroring its own
+  encoder cannot disagree with it. Asserts IHDR colour type **6** (the eight
+  flood overlays shipped type 9 for two days), full opacity, exactly the two
+  theme tints and nothing else, the land fraction **recomputed from the DEM
+  rather than trusted**, bounds matching `/overlays`' cat6 to 1e-4 degrees, and
+  determinism by re-encoding and comparing bytes.
+- **`mobile/mapProjection.ts` (new, `b8090a0`).** Plate-carrée projection into
+  an SVG viewBox, plus `boundsOf` / `pathPoints` / `latLngPoints` /
+  `imageRect`. Every one of those functions is a way the map can be **silently**
+  wrong — a transposed axis puts Sagar Island in the Bay, a y-flip puts the
+  delta in the sea, a zero-span division yields `NaN` that renders as an empty
+  map with no error. None throw, so all are pinned by
+  `mobile/tests/mapProjection.test.mjs` (28 tests) against **real coordinates
+  from the committed data**.
+- **`mobile/webViewModel.ts` + `mobile/tests/webViewModel.test.mjs` (69 tests,
+  new).** Every displayed string and figure, extracted from the JSX so the
+  honesty rules are testable without a renderer: `—` vs `0`, the `≥` prefix
+  driven only by `wind_is_band_midpoint`, "intersected" never "impassable",
+  shelter disclosure failing **closed**, the backend's own `reason` shown
+  verbatim, and a real-zero exposure rendering as `0` because that is a finding.
+- **`mobile/components/WebImpactMap.tsx` (new).** The SVG map: DEM basemap,
+  the `/overlays` flood raster, the 19-fix track, cut-off roads as real
+  `<path>` geometry, hospital/substation pins, origin and shelter pins, the
+  route polyline, and a legend resolved from the shared `legend.ts` name/value
+  split so no colour is retyped.
+- **`mobile/components/AdvisoryPanel.tsx` (new).** The `DistrictAdvisory` as a
+  document — summary, per-locality priorities with reasoning, SMS draft with a
+  real clipboard copy and `n/160`, post-landfall risks, historical context.
+  Never stringified. Failure copy comes from the shared `describeAdvisoryError`,
+  so it cannot disagree with the native modal.
+- **`mobile/components/LocalitySearch.tsx` (new).** A searchable combobox over
+  **all 45** localities, sorted by `radius_km` then alphabetically. The previous
+  Web build used `localities.slice(0, 10)`, which hid Sagar Island — the case
+  study's actual landfall — whenever the API's ordering put it eleventh.
+- **`mobile/tests/webBundleSafety.test.mjs` (new).** Three guards on the native
+  map boundary: the Web graph names neither `react-native-maps` nor
+  `mapStyles`; the **native** `MapScreen.tsx` still imports and renders
+  `react-native-maps` (so the Web fix cannot have broken the native app); and
+  the **exported bundle** contains no `RNMapView`/`RNMaps`/`AIRMap`/
+  `codegenNativeComponent`, plus no `localhost`/LAN address.
+- **`mobile/assets/basemap.png` + `basemap.json`** — the build-asset copy the
+  Web bundle ships, verified byte-identical to `data/basemap/` by a test.
+  `mobile/assets/favicon.png` (474 B) is new too: `app.json` referenced a
+  favicon that **did not exist**, so every production load 404'd. Painted in
+  `theme.background` and `theme.selectedText`.
+- **Deployment, live and MCP-verified 2026-10-01.** Backend
+  `cyclone-forecaster-chi.vercel.app` → `dpl_DjhJU7bk3MbgvGnoWGdBE44xR5vm`.
+  Web `cyclone-forecaster-ui.vercel.app` → `dpl_84AgfTBUMAuokBP1RdX9TjJExVkd`.
+  `EXPO_PUBLIC_API_URL=https://cyclone-forecaster-chi.vercel.app` set on the UI
+  project only (production + preview), never in a tracked file.
 - Typecheck: `cd mobile && npx tsc --noEmit` → clean, all **16** project files covered
 *(List real files/paths as they get created. Keep this in sync with reality
 — this is what stops the next session from re-deriving something that
@@ -1595,6 +1662,51 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
      The rebuild replaced all three. They are left in the tree rather than
      deleted (standing instruction: delete nothing) and are the human's call.
 
+45. **NEW 2026-10-01 — the Web build is a genuinely separate app, and that is a
+    cost as well as a win.** `b8090a0` made it platform-specific rather than a
+    conditional inside one file, because the alternative is a native module in a
+    browser bundle. The cost is real: **`MapScreen.web.tsx` duplicates the flow**
+    that `MapScreen.tsx` implements, and the two can now drift. What holds them
+    together is that the *logic* is shared — `strengthChips.ts`,
+    `exposureTiles.ts`, `trackFacts.ts`, `legend.ts`, `advisoryFlow.ts`,
+    `api.ts`, `theme.ts` — so the decisions cannot diverge, only the pixels.
+    `tests/webBundleSafety.test.mjs` pins both halves of the boundary: the Web
+    graph must name neither `react-native-maps` nor `mapStyles`, **and** the
+    native screen must still import and render `react-native-maps`. What nobody
+    pins is a *layout* decision: if the Web panel gains a step, the native one
+    will not be told.
+
+46. **NEW 2026-10-01 — `EXPO_PUBLIC_API_URL` is a Vercel env var, but the bundle
+    is a hand-uploaded prebuild, so the two can silently disagree.** The Vercel
+    variable is real and set (production + preview) and the current bundle
+    contains the right origin. But the UI project has **no build command** — it
+    consumes a prebuilt `mobile/dist` uploaded by hand — so nothing makes a
+    Vercel-side rebuild reproduce what was deployed. The safety test asserts the
+    origin is absent from *source* and present in the *bundle*, which catches
+    hardcoding but **not** a stale bundle. Fixing it means giving the project a
+    build command, which is a deployment decision rather than a code one.
+
+47. **NEW 2026-10-01 — the basemap is a new committed artefact, and per the §37
+    convention it is owed a human look.** It is deterministic, display-only, and
+    derived from committed data at the same 0 m threshold the flood model uses,
+    so it introduces no new claim about geography. But **the coastline it draws
+    is a 0 m contour on a 50 m SRTM grid subsampled to ~150 m/px**, and nobody
+    has looked at whether that reads as the Sundarbans to someone who knows it.
+    The three limits are disclosed on screen and in `data/basemap/basemap.json`;
+    whether they are *adequate* is a judgement, not a check.
+
+48. **NEW 2026-10-01 — the advisory success path has still never rendered from a
+    live call.** Gemini returned 503 through this round and 429
+    (`RESOURCE_EXHAUSTED`) by the end; the free tier allows 20 calls/day and
+    resets at midnight Pacific. So the live path is verified only for its
+    **loading** and **error** states, both observed in a real browser, and the
+    success rendering is covered by the stubbed suite alone. There is also **no
+    model fallback**: `ADVISORY_MODEL` is a single pinned string and nothing in
+    `backend/ai/advisory.py` rotates it. Adding one would be a deliberate
+    architecture change of the kind Rules.md's "pin the model string" is
+    written against, so it was deliberately not done. Decide before a demo, as
+    a recorded decision rather than a quiet edit.
+
 ## Environment / credentials status
 
 - [x] Google Earth Engine authenticated — done 2026-09-27, DEM fetched and committed
@@ -1615,11 +1727,25 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
       Run `pytest tests/` with `.env` moved aside unless you intend to spend
       quota. A capacity block (503) now skips with a reason; an exhausted
       quota (429) does not, and surfaces as a 502.
-- [ ] Backend deployed — URL: _none yet_. **Prepared for Vercel Hobby, not
-      deployed** (`2341ef7`, `9562a54`, `bd7727d`): split requirements, root
-      `app.py`, `.python-version` 3.13, `vercel.json` excludes, ~298 MB
-      measured against the 500 MB limit. `render.yaml` still exists and is
-      still correct. Deploy steps in "Next step".
+- [x] **Backend deployed** — `https://cyclone-forecaster-chi.vercel.app`
+      (project `cyclone-forecaster`, `dpl_DjhJU7bk3MbgvGnoWGdBE44xR5vm`,
+      FastAPI lambda). All eight simulation/track/locality endpoints verified
+      200 against production on 2026-10-01. Prepared in `2341ef7`/`9562a54`/
+      `bd7727d` and deployed by a later session; ~298 MB against the 500 MB
+      limit. `render.yaml` still exists and is still correct.
+- [x] **Web deployed** — `https://cyclone-forecaster-ui.vercel.app` (project
+      `cyclone-forecaster-ui`, `dpl_84AgfTBUMAuokBP1RdX9TjJExVkd`).
+      `EXPO_PUBLIC_API_URL` set on that project only. Rebuilt as the real
+      product in `b8090a0` and verified in a real browser.
+- [ ] **Build and runtime logs are not readable through the Vercel MCP.**
+      `list_deployment_events` (build logs), `get_runtime_logs` and
+      `get_runtime_errors` all return **403 "Not authorized: Trying to access
+      resource under scope `priyanuj1`"**, with and without `teamId`, on both
+      projects. The token has project-level read access (projects, deployments,
+      env vars, aliases, domains all work) but not the personal-scope grant
+      those endpoints require. Deployment *status* is therefore verifiable and
+      deployment *output* is not. Re-authenticating the MCP connection with the
+      `priyanuj1` scope would close this.
 - [x] Expo project initialized — `mobile/`, Expo SDK 57.0.25, deps installed, `npx tsc --noEmit` clean
 - [ ] Expo app run on a device/simulator — never launched; theme is typechecked only (spec §10.5)
 - [ ] `expo-clipboard` installed — needed for the SMS copy button, not yet added
@@ -1655,12 +1781,47 @@ lockfile), `.claude/` (settings + skills).
 
 ## Next step
 
-**The immediate next step is a phone, and then Stage B.** The dark rebuild's
-Stage A landed 2026-09-30: the map screen is rebuilt to the supplied design,
-the seven-band slider is replaced by four strength chips, provenance is behind
-an "About this estimate" sheet, and 96 mobile tests are green (§44 has the four
-decisions that need a ruling). The brief says **stop and wait for a human to
-look at the phone** — so that is the next action, not another commit.
+**The Web app is live and verified. The next step is a phone, and then Stage B.**
+
+`b8090a0` (2026-10-01) rebuilt the Web experience into the real product and
+deployed it. Verified in a real browser against production: four chips driving
+the real API, exposure changing 0/0/0 → 5/10/122 → 12/22/251, all 45 localities
+searchable, the DEM-derived map drawing 251 real road paths and 91 real pins,
+the Remal track as 19 real IBTrACS fixes, no console errors, no horizontal
+overflow from 1600 px down to 420 px. **The native app was not touched** and
+still uses `react-native-maps`.
+
+**The one thing that is still unverified is the advisory's *success* rendering.**
+Gemini's free tier was exhausted today (429 `RESOURCE_EXHAUSTED` after repeated
+503s), so only the loading and error states were observed live; the success
+path is covered by the stubbed suite alone. The quota resets at **midnight
+Pacific**. To see the real thing:
+
+```
+# after the reset, with GEMINI_API_KEY in .env and the backend running
+RUN_LIVE_CAPTURE=1 venv/bin/python -m backend.tools.capture_advisory
+```
+
+That both populates the cached fallback `mobile/sampleAdvisory.ts` (still the
+`null` form — §40) and proves the live path. The Web app shows the capture
+behind a "Load cached example (not live)" button, and native behind its own.
+
+**Then, unchanged and still owed a human:** the phone (§33, §44), and Stage B
+of the dark rebuild — display-only smoothing in `render_overlays.py` behind a
+flag, restyling the advisory modal to the same dark tokens, and the doc updates.
+Note Stage B **would change the pixel counts `tests/test_overlays.py` pins**,
+so those tests need updating deliberately rather than as a side effect. The
+model's km² figures are untouched by Stage B — it is a display change only.
+
+**Two decisions waiting before a demo**, both raised in §45–§48 and neither
+actionable in code alone:
+- **Give the UI project a build command.** It currently consumes a hand-uploaded
+  prebuilt `mobile/dist`, so a Vercel-side rebuild cannot reproduce what is
+  deployed and a stale bundle is invisible to every current test (§46).
+- **Decide whether `POST /advisory` gets a model fallback.** There is none
+  today, by design under Rules.md's pinning rule. With the free tier at 20
+  calls/day, a fallback is a demo-day reliability question rather than a code
+  one (§48).
 
 **Stage B, only after a go-ahead:** display-only smoothing in
 `render_overlays.py` (close small gaps, drop specks, keep 4 depth classes,
@@ -1809,6 +1970,103 @@ RUN_LIVE_CAPTURE=1 venv/bin/python -m backend.tools.capture_advisory
 ---
 
 ## Session log (newest entry first)
+
+### 2026-10-01 — OpenCode: the Web build rebuilt into the real product, and a real map
+
+**Scope.** `b8090a0`, 21 files, +5,896 lines. The Web app was a generic
+dashboard; it is now the judge-facing product. **The native app and the backend
+were not modified** — no endpoint, contract, model, dataset or Gemini schema
+touched. Live at `cyclone-forecaster-ui.vercel.app`.
+
+**What was actually wrong with the old Web build**, read before writing anything:
+seven numbered buttons instead of the four chips; `localities.slice(0, 10)`;
+a Google Maps **iframe** showing no flood and no track; `TrackPreview` drawing
+real IBTrACS coordinates onto a **decorative grid** — data that looks like a map
+with no geography under it; the advisory through `JSON.stringify(advisory, …)`
+with four fallback `||` guesses ahead of it; and the backend origin hardcoded as
+`|| 'https://cyclone-forecaster-chi.vercel.app'`, which meant the UI project had
+**zero** environment variables and a misconfigured deploy would have worked
+silently. That last one is now a test.
+
+**The native-map boundary is the whole reason this is a file split.**
+`react-native-maps` is native; in a browser bundle it resolves
+`codegenNativeComponent`, which throws on first render — that is exactly how the
+previous build produced a blank page. Metro resolves `MapScreen.web.tsx` ahead
+of `MapScreen.tsx`, so the import never enters the Web graph. `mapStyles.ts` is
+avoided too even though its `react-native-maps` import is type-only: relying on
+erasure for a safety-critical boundary is the wrong kind of clever. Checked
+three ways — source text, the exported bundle, and a real browser.
+
+**No mapping library, and the basemap is real data.** There is no Google Maps
+key for the browser and no tile server in this project, so `WebImpactMap.tsx` is
+a projected SVG over a basemap rendered from the **DEM already committed**:
+`render_basemap.py` takes the 0 m contour of `data/dem.tif` to a 48 KB PNG in
+the theme's own `land`/`water` tokens, parsed from `theme.ts` at build time. 0 m
+is the *same* threshold `dem.py`'s `ocean_mask()` floods from, so the coastline
+and the flood extent agree by construction rather than by coincidence. 0.2 s to
+render, byte-identical on rebuild, no new dependency, and enforced display-only
+by a grep tripwire over `backend/simulation/` plus a 404 on the live backend.
+
+**Three defects that only running it could find.** All three were found by
+driving the deployed app in a real browser, not by reading it:
+1. A failed `/routes` or `/exposure` request was **indistinguishable from one
+   still in flight** — the panel read "Checking the road network…" forever.
+   `routeSummary` now takes an explicit `failed` flag, and both surfaces carry
+   an error state that says the exposure figures are unaffected.
+2. **`READ_TIMEOUT_MS` was 45 s while `/exposure?category=6` measures 113.9 s
+   cold and 1.4 s warm.** The app was aborting its own request on the category
+   the demo leads with, making a correct backend look broken. Now 150 s, with
+   the measurement in the comment. This is the narrowest compatibility fix in
+   the change and it is in the *client*, not the backend.
+3. `app.json` referenced `./assets/favicon.png`, which did not exist. Every
+   production load 404'd on it.
+
+**Two of my own bugs, caught by my own tests, before either reached a deploy.**
+`scenarioFigures` threw on a header-only `/exposure` payload (`exposure.hospitals
+.count` with no optional chaining) — a partially-shaped response white-screens
+the screen. And `windIsBandMidpoint` defaulted to `true` for an absent flag,
+which made the headline read "222 km/h" while `figuresLine` directly below it
+read "≥222 km/h" — the same screen contradicting itself, and §31's error class.
+Default is now `false`, matching `strengthChips.ts`.
+
+**Verified in a real browser against production**, not just locally: title and
+favicon serve; all four chips drive the real API and swap the real flood raster
+(`flood_cat4/5/6` and `flood_remal_observed`), with exposure reading
+**0/0/0 · 0/0/0 · 5/10/122 · 12/22/251**; 251 road paths and 91 pins drawn;
+the locality search filters all 45 ("1 of 45 localities"); no horizontal
+overflow at 1600/1024/768/420 px; **zero console errors, zero uncaught
+exceptions**. Generate Advisory shows its spinner, then the truthful quota
+message with the exposure figures still live.
+
+**Gemini is unavailable and that is external.** The free tier returned **429
+RESOURCE_EXHAUSTED** (and earlier 503 UNAVAILABLE) on every attempt today. I
+inspected `ADVISORY_MODEL` and the surrounding code: it is a single pinned
+string with **no fallback and no rotation mechanism**, and adding one would be
+exactly the architecture rewrite I was told not to do — and Rules.md forbids a
+silent model swap. So the error path is left intact and honest, which the brief
+asked for. **The advisory's success rendering is therefore verified only through
+the stubbed suite, not live.** Say so before a demo.
+
+**Vercel, through the MCP.** `cyclone-forecaster-ui` had **zero** env vars;
+`EXPO_PUBLIC_API_URL` is now set on it (production + preview), and the backend
+project's env is untouched (`GEMINI_API_KEY` still the only variable there).
+**I deployed the web build to the backend project by mistake once** — the CLI
+resolved the link to `prj_OHhyRzzk270p8amCNdNPexPO4dEl` because `dist/.vercel`
+had been cleared by the export. Caught it, rolled the backend back to
+`dpl_DjhJU7bk3MbgvGnoWGdBE44xR5vm` via `request_rollback`, confirmed its
+production alias points there again, and re-deployed with the link written
+explicitly. All eight backend endpoints re-verified 200 afterwards. **Build and
+runtime logs remain unreadable through the MCP** — `list_deployment_events`,
+`get_runtime_logs` and `get_runtime_errors` all 403 on scope `priyanuj1`, the
+same limitation recorded below.
+
+**Committed and pushed** as `b8090a0`. The pre-existing working-tree changes
+(`.gitignore`, `mobile/App.tsx`, `mobile/package.json`, `package-lock.json`)
+were left **unstaged and byte-identical** — verified with `cmp` against a
+baseline taken before I started. `mobile/App.tsx` was already modified before
+this session and needed no change from me: its `Platform.OS !== 'web'` guards
+already handle the font requirement, and the Web build confirmed the font gate
+is not a problem.
 
 ### 2026-09-30 — Claude Code: Stage A of the dark rebuild — the slider is gone, and the provenance moved behind a tap
 

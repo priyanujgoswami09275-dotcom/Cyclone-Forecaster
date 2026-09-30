@@ -132,24 +132,49 @@ current-state summary.
 - [x] Add the `expo-clipboard` SMS-copy button — copies the draft string and
       nothing else, with a live `n/160` count.
 
-- [ ] **Run it on a device.** Everything above is verified by `tsc --noEmit`,
-      `node --test` and `pytest`, none of which render a pixel. The core loop
-      is complete and unexercised (MEMORY.md §33).
+- [ ] **Run the NATIVE app on a device.** Verified by `tsc --noEmit`,
+      `node --test` and `pytest`, none of which render a pixel. The core loop is
+      complete and unexercised on hardware (MEMORY.md §33). **The Web build is
+      no longer in this category** — it was driven in a real browser against
+      production on 2026-10-01 (four chips, real exposure changes, origin search,
+      map layers, advisory loading and error states, four viewport widths, zero
+      console errors).
 
 ## Module F — Deployment & demo prep
 
-- [x] **Prepared** the backend for Vercel Hobby — split runtime requirements,
-      root `app.py` entrypoint, `.python-version` 3.13, `vercel.json` excludes.
-      Measured ~298 MB against the 500 MB limit. **Not deployed**, no Vercel
-      project created. `render.yaml` still exists and still works (MEMORY.md
-      "Next step" → *Deploying the backend to Vercel Hobby*).
-- [ ] Deploy the backend (Vercel Hobby, 2 GB — chosen over Render's 512 MB
-      free tier, which the 865 MB peak does not fit; Render Standard at ~$25/mo
-      remains the fallback. `render.yaml` is ready if that route is taken)
-- [ ] Point the Expo app at the deployed backend URL (`EXPO_PUBLIC_API_URL`,
-      then restart Expo with `-c` — the URL is compiled in)
-- [ ] Pre-warm the backend before any live demo — 30–50 s cold start, 300 s
-      hard duration ceiling on Hobby
+- [x] **Prepared and deployed** the backend for Vercel Hobby — split runtime
+      requirements, root `app.py` entrypoint, `.python-version`, `vercel.json`
+      excludes; measured ~298 MB against the 500 MB limit; live at
+      `cyclone-forecaster-chi.vercel.app`. `render.yaml` still exists and still
+      works.
+- [x] **Rebuild and deploy the Web experience** (`b8090a0`) — the Web app was a
+      generic dashboard with a Google Maps iframe and a stringified advisory.
+      It is now the judge-facing product: a DEM-derived SVG map in place of the
+      iframe, the four `strengthChips.ts` chips wired to the real API, all 45
+      localities searchable, and `DistrictAdvisory` rendered as a document.
+      Platform-specific, and the native map module is verifiably absent from the
+      bundle three ways. Live at `cyclone-forecaster-ui.vercel.app`.
+- [x] **Generate the basemap the Web map needs** — no mapping library, no
+      Google key for the browser, so `backend/tools/render_basemap.py` renders
+      the 0 m contour of the committed DEM to a 48 KB PNG. Deterministic,
+      display-only, verified by Pillow and by re-deriving it from the raster.
+- [x] **Deploy the backend** — live at `https://cyclone-forecaster-chi.vercel.app`
+      (Vercel Hobby, 2 GB). Project `cyclone-forecaster`, deployment
+      `dpl_DjhJU7bk3MbgvGnoWGdBE44xR5vm`. All eight endpoints verified 200
+      against production 2026-10-01.
+- [x] **Deploy the judge-facing Web app** — live at
+      `https://cyclone-forecaster-ui.vercel.app`. Project
+      `cyclone-forecaster-ui`, deployment `dpl_84AgfTBUMAuokBP1RdX9TjJExVkd`.
+      Rebuilt as the real product in `b8090a0` and verified in a real browser.
+      `EXPO_PUBLIC_API_URL` set on that project only. **No build command** — it
+      consumes a hand-uploaded prebuilt `mobile/dist` (MEMORY.md §46).
+- [ ] Point the **native** Expo app at the deployed backend URL
+      (`EXPO_PUBLIC_API_URL`, then restart Expo with `-c` — the URL is compiled
+      in). The Web app is already pointed; the native app still needs this.
+- [ ] Pre-warm the backend before any live demo — **measured 113.9 s cold** for
+      `/exposure?category=6` on 2026-10-01 (1.4 s warm), against a 300 s hard
+      duration ceiling on Hobby. The client's read timeout was raised to 150 s
+      to match. Hit `/exposure?category=6` first to warm the function.
 - [ ] Record a backup screen-capture video of the full demo flow
 - [ ] Rehearse the 3-minute pitch narrative (real event vs. what this
       would have flagged)
