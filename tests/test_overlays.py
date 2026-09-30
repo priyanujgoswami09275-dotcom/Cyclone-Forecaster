@@ -30,6 +30,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from backend import main
 from backend.tools import render_overlays as ro
@@ -68,9 +69,19 @@ def decode_png_rgba(path: Path) -> np.ndarray:
 
     Exists so the committed files can be checked as images rather than
     trusted as files. It handles exactly the subset the renderer writes
-    (8-bit, colour type 4/6, filter 0), and asserts anything else, so a
+    (8-bit, colour type 6, filter 0), and asserts anything else, so a
     future change to the encoder cannot quietly produce something this
     silently misreads.
+
+    **This is not sufficient on its own, and used to look like it was.**
+    Between 2026-09-28 and 2026-09-30 the encoder wrote colour type 9 — not a
+    value the PNG spec defines — and this decoder asserted `colour in (6, 9)`,
+    on a comment claiming 9 was RGBA with tRNS disallowed and 6 was RGBA
+    allowing it. Neither half of that was true. A decoder written as the
+    inverse of an encoder, taught to tolerate that encoder's mistake, cannot
+    find that mistake. `TestOverlaysAreRealImages` opens the same files with
+    Pillow, which knows nothing about this project, and that is the check that
+    would have caught it.
     """
     raw = path.read_bytes()
     assert raw[:8] == b"\x89PNG\r\n\x1a\n", f"{path.name}: bad PNG signature"
@@ -83,10 +94,11 @@ def decode_png_rgba(path: Path) -> np.ndarray:
         assert crc == zlib.crc32(tag + payload) & 0xFFFFFFFF, f"{path.name}: CRC fail in {tag!r}"
         if tag == b"IHDR":
             width, height, depth, colour = struct.unpack(">IIBB", payload[:10])
-            # Colour type 9 is RGBA (truecolour + alpha) with the
-            # tRNS chunk disallowed; 6 is RGBA allowing tRNS. Either is
-            # fine to read as 4 channels, so accept both.
-            assert depth == 8 and colour in (6, 9), f"{path.name}: expected 8-bit RGBA"
+            # Colour type 6 = truecolour with alpha. PNG defines 0, 2, 3, 4
+            # and 6 only -- there is no 9, and nothing about tRNS selects
+            # between colour types. This asserts exactly 6.
+            assert depth == 8, f"{path.name}: expected 8-bit, got {depth}"
+            assert colour == 6, f"{path.name}: expected colour type 6, got {colour}"
         elif tag == b"IDAT":
             idat += payload
         pos += 12 + length
@@ -150,6 +162,75 @@ class TestDepthClasses:
     def test_never_fully_opaque(self):
         """At alpha 255 the overlay would hide the basemap underneath it."""
         assert max(a for _u, a in ro.DEPTH_CLASSES) < 255
+
+
+class TestOverlaysAreRealImages:
+    """The independent opinion, from a decoder that has never seen this repo.
+
+    Everything else in this file that decodes a PNG does so with
+    `decode_png_rgba`, which is the inverse of the function that wrote the
+    files. That is a closed loop: it agrees with the encoder by construction,
+    and when the encoder wrote an invalid IHDR colour type the decoder was
+    updated to accept the invalid value, so eight unopenable images passed
+    every test here for two days.
+
+    Pillow knows nothing about `encode_png_rgba`, about colour type 6, or
+    about what this project intended. It either opens the file or it does not.
+    That is the whole point, and it is why Pillow is a dev dependency rather
+    than a runtime one: the service never decodes a PNG, only serves bytes.
+    """
+
+    def test_every_overlay_opens_with_pillow(self, entries):
+        for entry in entries.values():
+            path = OVERLAY_DIR / entry["image"]
+            with Image.open(path) as img:
+                img.load()  # forces the decode; open() alone only reads the header
+            assert path.exists()
+
+    def test_mode_is_rgba(self, entries):
+        """Not palette, not greyscale-alpha, not RGB. `<Overlay>` composites
+        the texture with per-pixel alpha, so anything without a real alpha
+        channel either renders opaque or renders nothing."""
+        for entry in entries.values():
+            with Image.open(OVERLAY_DIR / entry["image"]) as img:
+                assert img.mode == "RGBA", (
+                    f"{entry['id']}: mode is {img.mode!r}, not 'RGBA'"
+                )
+
+    def test_size_matches_the_index(self, entries):
+        """The index's `width_px`/`height_px` are what `<Overlay>` places the
+        image by. If the file and the index disagree, the map places a texture
+        of one size into bounds sized for another and the flood lands in the
+        wrong place — silently, and only on a device."""
+        for entry in entries.values():
+            with Image.open(OVERLAY_DIR / entry["image"]) as img:
+                assert img.size == (entry["width_px"], entry["height_px"]), (
+                    f"{entry['id']}: file is {img.size}, "
+                    f"index says {(entry['width_px'], entry['height_px'])}"
+                )
+
+    def test_an_alpha_channel_that_actually_varies(self, entries):
+        """RGBA is a claim about the file, not a guarantee about the picture.
+        The shallowest and deepest bands must both be present and different,
+        or the alpha channel is being written as a constant and the depth
+        ramp is a lie."""
+        alphas = set()
+        for entry in entries.values():
+            if entry["flooded_pixels"] == 0:
+                continue  # cat0-cat3 legitimately have no water at all
+            with Image.open(OVERLAY_DIR / entry["image"]) as img:
+                alphas.update(a for a in np.asarray(img)[..., 3].ravel() if a)
+        assert len(alphas) > 1, f"alpha channel is constant across all overlays: {alphas}"
+
+    def test_the_transparent_pixels_are_truly_transparent(self, entries):
+        """The complement of the above, and the one that decides whether the
+        overlay hides the basemap: dry land must have alpha exactly 0, not a
+        small non-zero value that greys out the map underneath."""
+        for entry in entries.values():
+            with Image.open(OVERLAY_DIR / entry["image"]) as img:
+                alpha = np.asarray(img)[..., 3]
+            assert alpha.min() == 0, f"{entry['id']}: no fully transparent pixel"
+            assert alpha.max() < 255, f"{entry['id']}: something is fully opaque"
 
 
 class TestCommittedOverlays:

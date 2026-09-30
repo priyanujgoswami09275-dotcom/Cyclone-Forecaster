@@ -31,3 +31,12 @@ uvicorn[standard]>=0.27 # installed 0.54.0
 # Tests
 httpx>=0.27             # installed 0.28.x — fastapi.testclient
 pytest>=7.4
+pillow>=10.0            # Reads the committed overlay PNGs in tests only. It is
+                         # here to be a second opinion on whether
+                         # backend/tools/render_overlays.py produced real
+                         # images: the encoder shipped an invalid IHDR colour
+                         # type for two days and the only decoder was its own
+                         # inverse, which had been taught to accept the bad
+                         # value. Deliberately NOT in requirements.txt -- the
+                         # service never opens a PNG, and adding it would put
+                         # Pillow in the Vercel bundle for no runtime reason.

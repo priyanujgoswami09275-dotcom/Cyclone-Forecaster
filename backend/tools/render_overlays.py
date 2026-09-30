@@ -41,6 +41,16 @@ No new dependency: the PNG is encoded with stdlib `zlib` + `struct`. Pillow
 would be a heavier way to write a file format this simple, and adding it for
 an offline build step is not a trade worth making.
 
+Pillow *is* now a dev dependency, for reading rather than writing. It was
+added on 2026-09-30 after this encoder shipped an invalid IHDR colour type
+(9, which the PNG spec does not define) in all eight images, and nothing
+noticed for two days: the only thing that ever decoded these files was
+`decode_png_rgba` in `tests/test_overlays.py`, which is the inverse of the
+function that wrote them and had been taught to accept the bad value. A
+decoder that mirrors its own encoder cannot disagree with it. Every overlay
+is now opened by Pillow as well — a second, independent opinion about whether
+these are images at all.
+
 Per Rules.md nothing here fetches anything live — the DEM, the surge model
 and the flood engine are all local and deterministic.
 """
@@ -120,8 +130,10 @@ def encode_png_rgba(width: int, height: int, rgba: np.ndarray) -> bytes:
             + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
         )
 
-    # 9 = colour type 4 (truecolour + alpha), bit depth 8, per PNG spec.
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 9, 0, 0, 0)
+    # Colour type 6 = truecolour with alpha (RGBA), bit depth 8. PNG defines
+    # only 0, 2, 3, 4 and 6; there is no 9. This file wrote 9 until
+    # 2026-09-30, which produced eight files no conforming decoder accepts.
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
     return (
         b"\x89PNG\r\n\x1a\n"
         + chunk(b"IHDR", ihdr)
