@@ -7,13 +7,24 @@ import { theme } from '../theme';
  * One numbered step in the panel: a navy badge with a blue number, a title, and
  * whatever the step is.
  *
- * **The badge is `selectedFill` and the number is `primary`.** That split is the
- * design's, and it is not decoration: `selectedFill` (#011132) is *darker* than
- * the page (#090909), so the badge reads as a recessed well rather than a
- * sticker, and the number inside it is the only `primary` on the panel. Three
- * badges down the left edge give the panel a spine and make the three steps
- * countable at a glance — which is the point, because the app's pitch is
- * literally "three things, in this order".
+ * **The badge is `selectedFill` and the number is `selectedText`.** The badge
+ * fill is the design's and is not decoration: `selectedFill` (#011132) is
+ * *darker* than the page (#090909), so the badge reads as a recessed well
+ * rather than a sticker. Three badges down the left edge give the panel a spine
+ * and make the three steps countable at a glance — which is the point, because
+ * the app's pitch is literally "three things, in this order".
+ *
+ * **The numeral was `primary` until 2026-10-01, and that was unreadable.**
+ * `#0d52c3` on `#011132` is a contrast ratio of **2.67:1**, well under the
+ * 4.5:1 WCAG AA floor for text at this size, so the numbers were dark blue on
+ * near-black and effectively invisible. `selectedText` (#5f9dea) on the same
+ * fill is **6.65:1** — and it is the pairing the theme already specifies for
+ * *any* selected surface, including `StrengthChips`' selected chip. So this is
+ * the existing design system applied consistently, not a new colour and not a
+ * new token.
+ *
+ * `primary` still carries the accent it is for: the Generate button, and the
+ * selected chip's border. A 2.67:1 pairing cannot carry a numeral.
  *
  * This is the same visual as `FirstRunCard`'s badges, which are `primary`-filled.
  * They are deliberately different: the first-run card is a transient overlay on
@@ -60,7 +71,9 @@ const styles = StyleSheet.create({
   badgeLabel: {
     fontFamily: theme.fonts.bodySemibold,
     fontSize: theme.typography.caption,
-    color: theme.colors.primary,
+    // 6.65:1 on this badge's `selectedFill`. `primary` here was 2.67:1 — see the
+    // component's doc comment.
+    color: theme.colors.selectedText,
   },
   body: {
     flex: 1,

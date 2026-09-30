@@ -44,7 +44,7 @@ below rather than sitting alongside it. `mobile/theme.ts` is the implementation.
 | `text` | `#eeedea` | Primary text — a warm off-white, **not** pure `#fff` |
 | `textMuted` | `#bcbbaf` | Secondary text, captions |
 | `border` | `#3d3d3c` | Hairlines and card outlines; visible on `#090909` |
-| `primary` | `#0d52c3` | The single accent — Generate advisory, step badges |
+| `primary` | `#0d52c3` | The single accent — Generate advisory, selected-chip borders |
 | `selectedFill` | `#011132` | Selected chip fill — darker than `background`, not a tint of it |
 | `selectedText` | `#5f9dea` | Text of a selected chip |
 | `land` | `#e6ece0` | Basemap land tint in `customMapStyle` |
@@ -144,12 +144,20 @@ superseded light-theme specs, which are kept in git history.
   `fonts.heading`; **subtitle** "What would a storm like this hit today?" at
   `typography.caption` in `textMuted`.
 - **Step badge** (`PanelStep`): a `radius.chip` circle filled `selectedFill`
-  with the number in `primary`. The badge is *darker* than the page, so it
-  reads as a recessed well and the number is the only `primary` on the panel.
-  Three badges give the panel a spine and make the three steps countable.
+  with the number in `selectedText`. The badge is *darker* than the page, so it
+  reads as a recessed well. Three badges give the panel a spine and make the
+  three steps countable.
   Deliberately **not** the first-run card's `primary` fill: that card is a
   transient overlay on a pale map, while these sit on near-black where a bright
   blue disc would out-shout the Generate button they lead to.
+  **Revised 2026-10-01:** the numeral was `primary` (`#0d52c3`), which on
+  `#011132` is a contrast ratio of **2.67:1** — below the 4.5:1 WCAG AA floor for
+  text at this size, so the badges were dark blue on near-black and effectively
+  invisible. `selectedText` (`#5f9dea`) on the same fill is **6.65:1**, and it
+  is the pairing this document already specifies for a selected surface
+  (see `StrengthChips`). `primary` keeps the Generate button and the selected
+  chip's border. **No new token was added** — this is the existing system
+  applied consistently.
 - **Step titles** "Pick a storm strength", "See what gets hit", "Get the
   evacuation plan" at `typography.body` in `fonts.bodySemibold`.
 - **Strength chips** (`StrengthChips`): a horizontal scrolling row, because
@@ -293,7 +301,7 @@ as owed a human look.
   control; they are close in hue, so the key reads correctly against the layer.
   Logged in MEMORY.md.
 - **First-open card**: top of the map, `card` fill, `radius.card`, 1px
-  `border`. Three numbered steps in `primary` badges naming the three gestures
+  `border`. Three numbered steps in `selectedFill` badges naming the three gestures
   that make up the app's loop. Dismissible. **Session-scoped, not persisted** —
   it returns on every cold start. See MEMORY.md.
 - **Shelter disclosure notice**: `caution` fill, `text` body, `radius.button`.

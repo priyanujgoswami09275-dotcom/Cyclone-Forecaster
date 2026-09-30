@@ -1049,7 +1049,19 @@ const styles = StyleSheet.create({
   stepBadgeLabel: {
     fontFamily: theme.fonts.bodySemibold,
     fontSize: 12,
-    color: theme.colors.primary,
+    /**
+     * `selectedText`, not `primary`.
+     *
+     * The badge is `selectedFill` (#011132) and the numeral was `primary`
+     * (#0d52c3) — a contrast ratio of **2.67:1**, below the 4.5:1 WCAG AA floor
+     * for 12px text, which is why the step numbers 1-4 were almost invisible
+     * against the near-black panel.
+     *
+     * `selectedText` (#5f9dea) on the same `selectedFill` is **6.65:1** and is
+     * the pairing the theme already uses for a selected chip, so this is the
+     * existing design system applied consistently rather than a new colour.
+     */
+    color: theme.colors.selectedText,
   },
   stepTitle: {
     fontFamily: theme.fonts.bodySemibold,
