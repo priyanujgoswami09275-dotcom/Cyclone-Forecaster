@@ -145,6 +145,57 @@ export const ROADS_DISCLOSURE =
   'not a network-connectivity analysis and does not mean the road is ' +
   'impassable.';
 
+/**
+ * Plain-language versions of the two backend disclosures that are the wordiest.
+ *
+ * **`/track` and `/localities` return disclosure strings written for a
+ * developer, and the Web build was rendering them verbatim in its main
+ * panel.** They name a source file (`data/remal_track.geojson`), an internal
+ * project rule (`Rules.md`), and wire-format fields (`wind_kt: null`,
+ * `wind_reported: false`). All three are true and none of them belongs in the
+ * first thing a judge reads.
+ *
+ * **The backend strings are NOT changed** — they stay exactly as they are on
+ * the wire, and the full original text is still shown, verbatim, behind
+ * "Show data provenance". What changes is that the main panel reads the plain
+ * sentence and the provenance panel shows the whole thing. Nothing is removed
+ * from the app; it is moved to where it belongs.
+ *
+ * The claims are preserved one-for-one. "record of what happened, not a
+ * forecast"; positions are 3-hourly; a fix with no reported wind is *not* calm;
+ * the study area is a scoping decision and not the district boundary.
+ */
+
+/** Plain-language track disclosure for the main panel. */
+export const TRACK_DISCLOSURE_PLAIN =
+  'The storm path is the observed track of Cyclone Remal, as recorded in ' +
+  'IBTrACS. It is a record of what happened — not a forecast, and not this ' +
+  "app's prediction for any other storm. Positions are 3-hourly. Where a " +
+  'fix reported no wind, the app says so rather than showing a calm value.';
+
+/** Plain-language study-area disclosure for the main panel. */
+export const SCOPING_DISCLOSURE_PLAIN =
+  'The study area covers South and North 24 Parganas and Sagar Island. It is ' +
+  'a scoping decision made to keep the numbers legible — it is an ' +
+  'approximation, not the district boundary, which is not in this dataset. ' +
+  'Places outside the study area are listed by name in the data provenance ' +
+  'below.';
+
+/**
+ * The unreported-wind sentence, assembled from the payload rather than stated.
+ *
+ * Counted from `waypoints` so it tracks the data, which is the same reason
+ * `AboutSheet` takes it as a prop rather than writing it in a comment.
+ */
+export function unreportedWindSentence(track: {
+  waypoint_count: number;
+  waypoints: ReadonlyArray<{ wind_reported: boolean }>;
+}): string {
+  const missing = track.waypoints.filter((w) => !w.wind_reported).length;
+  if (missing === 0) return '';
+  return ` ${missing} of the ${track.waypoint_count} fixes report no wind at all, and those are shown as unreported rather than as calm.`;
+}
+
 /** The headline sentence under the scenario control. */
 export function scenarioHeadline(figures: ScenarioFigures): string {
   if (figures.windKmph === null) return 'Reading the live model…';
@@ -378,7 +429,7 @@ export function advisoryAvailability(
   loadingAdvisory: boolean,
 ): { enabled: boolean; reason: string | null } {
   if (loadingAdvisory) {
-    return { enabled: false, reason: 'Generating an advisory — this spends a Gemini call.' };
+    return { enabled: false, reason: 'Generating an advisory…' };
   }
   if (loadingExposure) {
     return { enabled: false, reason: 'Reading the exposure figures for this strength…' };

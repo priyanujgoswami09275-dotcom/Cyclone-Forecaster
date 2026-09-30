@@ -30,6 +30,9 @@ import { describe, it } from 'node:test';
 
 import {
   advisoryAvailability,
+  unreportedWindSentence,
+  SCOPING_DISCLOSURE_PLAIN,
+  TRACK_DISCLOSURE_PLAIN,
   advisoryStaleNote,
   areaLabel,
   caseStudyLine,
@@ -518,7 +521,9 @@ describe('advisoryAvailability', () => {
     // A second press sends a second POST and spends up to six more calls.
     const a = advisoryAvailability(285, false, true);
     assert.equal(a.enabled, false);
-    assert.match(a.reason, /Gemini call/);
+    // The reason no longer states a model-call count (that claim was wrong),
+    // but it must still explain *why* the button is unavailable.
+    assert.match(a.reason, /Generating an advisory/);
   });
 });
 
@@ -544,6 +549,82 @@ describe('advisoryStaleNote', () => {
   it('compares against the server echo, not the client’s arguments', () => {
     // The server's `generated_for` is what the prose was written for.
     assert.equal(advisoryStaleNote(response, 6, 'sagar'), null);
+  });
+});
+
+// --- plain-language disclosures (item 3) ---------------------------------
+
+describe('the main panel reads plain language, not the wire', () => {
+  // The backend strings are unchanged on the wire and still shown verbatim
+  // behind "Show data provenance". These pin what the main panel says instead.
+
+  it('the plain track disclosure contains none of the developer strings', () => {
+    for (const leak of [
+      'Rules.md',
+      'wind_kt',
+      'wind_reported',
+      'remal_track.geojson',
+      '.geojson',
+      'USA_WIND',
+    ]) {
+      assert.ok(
+        !TRACK_DISCLOSURE_PLAIN.includes(leak),
+        `the main-panel track disclosure leaks "${leak}"`,
+      );
+    }
+  });
+
+  it('the plain scoping disclosure contains no file paths or lat/lon notation', () => {
+    for (const leak of ['Rules.md', '.geojson', '.py', 'lat 22', 'bbox', 'DEM']) {
+      assert.ok(
+        !SCOPING_DISCLOSURE_PLAIN.includes(leak),
+        `the main-panel scoping disclosure leaks "${leak}"`,
+      );
+    }
+  });
+
+  it('the plain track disclosure keeps every honest claim', () => {
+    // Rewording is allowed; dropping a claim is not.
+    assert.match(TRACK_DISCLOSURE_PLAIN, /record of what happened/i);
+    assert.match(TRACK_DISCLOSURE_PLAIN, /not a forecast/i);
+    assert.match(TRACK_DISCLOSURE_PLAIN, /3-hourly/);
+    assert.match(
+      TRACK_DISCLOSURE_PLAIN,
+      /says so rather than showing a calm value/i,
+      'the "not reported is not calm" claim must survive the rewording',
+    );
+    assert.match(TRACK_DISCLOSURE_PLAIN, /IBTrACS/, 'the source stays named');
+  });
+
+  it('the plain scoping disclosure keeps the boundary caveat', () => {
+    assert.match(SCOPING_DISCLOSURE_PLAIN, /not the district boundary/i);
+    assert.match(SCOPING_DISCLOSURE_PLAIN, /24 Parganas/);
+    assert.match(SCOPING_DISCLOSURE_PLAIN, /Sagar Island/);
+  });
+
+  it('both plain strings are non-empty', () => {
+    assert.ok(TRACK_DISCLOSURE_PLAIN.length > 80);
+    assert.ok(SCOPING_DISCLOSURE_PLAIN.length > 80);
+  });
+});
+
+describe('unreportedWindSentence', () => {
+  const wp = (n) => Array.from({ length: n }, (_, i) => ({ wind_reported: i % 4 !== 0 }));
+
+  it('counts the gaps from the payload rather than stating a number', () => {
+    const s = unreportedWindSentence({ waypoint_count: 8, waypoints: wp(8) });
+    assert.match(s, /^ 2 of the 8 fixes report no wind at all/);
+  });
+
+  it('is empty when every fix reported a wind', () => {
+    const all = Array.from({ length: 5 }, () => ({ wind_reported: true }));
+    assert.equal(unreportedWindSentence({ waypoint_count: 5, waypoints: all }), '');
+  });
+
+  it('never says "calm" about an unreported fix', () => {
+    const s = unreportedWindSentence({ waypoint_count: 4, waypoints: wp(4) });
+    assert.match(s, /unreported rather than as calm/);
+    assert.ok(!/0 knots|0 km/.test(s));
   });
 });
 

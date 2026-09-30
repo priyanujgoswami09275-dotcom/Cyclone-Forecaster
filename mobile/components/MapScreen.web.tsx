@@ -84,10 +84,12 @@ import {
 } from '../strengthChips';
 import { SAMPLE_ADVISORY } from '../sampleAdvisory';
 import { theme } from '../theme';
-import { countUnreported, peakReportedWindKmph } from '../trackFacts';
+import { peakReportedWindKmph } from '../trackFacts';
 import {
   ROADS_DISCLOSURE,
   ROADS_HONEST_LABEL,
+  SCOPING_DISCLOSURE_PLAIN,
+  TRACK_DISCLOSURE_PLAIN,
   advisoryAvailability,
   advisoryStaleNote,
   areaLabel,
@@ -102,6 +104,7 @@ import {
   shelterDisclosure,
   surgeLabel,
   trackCaption,
+  unreportedWindSentence,
   windLabel,
 } from '../webViewModel';
 import { AdvisoryPanel, type WebAdvisoryOutcome } from './AdvisoryPanel';
@@ -634,7 +637,8 @@ export function MapScreen() {
                 <Text style={styles.generateHint}>{availability.reason}</Text>
               ) : (
                 <Text style={styles.generateHint}>
-                  One Gemini call. The impact figures above do not depend on it.
+                  The advisory text is written by a language model. The impact
+                  figures above do not depend on it.
                 </Text>
               )}
 
@@ -670,11 +674,16 @@ export function MapScreen() {
               <Disclosure label="Screening estimate, not a forecast">
                 {caseStudy.limitation}
               </Disclosure>
+              {/*
+                Plain language here; the backend's own disclosure string is
+                shown verbatim in "Show data provenance" below. It names a
+                source file and two wire-format fields, which belong with the
+                provenance and not in the first thing a judge reads.
+              */}
               <Disclosure label="The storm track is history, not a prediction">
-                {track?.disclosure ??
-                  'Positions are 3-hourly IBTrACS best-track fixes for the real event.'}
+                {TRACK_DISCLOSURE_PLAIN}
                 {track !== null
-                  ? ` The strongest fix reports ${formatPeak(peakReportedWindKmph(track.waypoints))}; ${countUnreported(track.waypoints)} of ${track.waypoint_count} fixes report no wind at all, and those are shown as unreported rather than as calm.`
+                  ? ` The strongest fix reports ${formatPeak(peakReportedWindKmph(track.waypoints))};${unreportedWindSentence(track)}`
                   : ''}
               </Disclosure>
               <Disclosure label="Population figures are estimates">
@@ -689,8 +698,7 @@ export function MapScreen() {
                 orientation only, and no figure is measured off it.
               </Disclosure>
               <Disclosure label="Study area is scoped, not an administrative boundary">
-                {localitiesResponse?.scoping.disclosure ??
-                  'The study area is a scoping decision, not a district boundary.'}
+                {SCOPING_DISCLOSURE_PLAIN}
               </Disclosure>
               <Pressable
                 onPress={() => setShowAbout((on) => !on)}
@@ -726,6 +734,25 @@ export function MapScreen() {
                     }
                   />
                   <Text style={styles.provenanceNote}>{overlay?.disclosure ?? ''}</Text>
+
+                  {/*
+                    The backend's own disclosure strings, verbatim. They are
+                    unchanged on the wire and nothing here is edited — this is
+                    where they belong, so the main panel can be plain language
+                    without losing a single claim.
+                  */}
+                  <View style={styles.provenanceRow}>
+                    <Text style={styles.provenanceKey}>Track, verbatim</Text>
+                    <Text style={styles.provenanceValue}>
+                      {track?.disclosure ?? '—'}
+                    </Text>
+                  </View>
+                  <View style={styles.provenanceRow}>
+                    <Text style={styles.provenanceKey}>Study area, verbatim</Text>
+                    <Text style={styles.provenanceValue}>
+                      {localitiesResponse?.scoping.disclosure ?? '—'}
+                    </Text>
+                  </View>
                 </View>
               ) : null}
             </View>

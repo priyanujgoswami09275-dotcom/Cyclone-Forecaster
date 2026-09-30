@@ -88,12 +88,12 @@ function LoadingBody() {
   return (
     <View style={styles.block}>
       {/* No seconds-based estimate here. The backend's worst case is 60-90s
-          (6 Gemini calls across two capacity ladders, 12s of backoff between
+          (several model calls across two capacity ladders, 12s of backoff between
           them), so any number short of that would be a promise it cannot
           keep — and the real elapsed time is already visible in the button's
           own spinner on the screen behind this sheet. */}
       <Text style={styles.paragraph}>
-        Generating. This spends a Gemini call and can take a minute or two — the
+        Generating. The text is written by a language model and can take a minute or two — the
         request is retried with backoff if the model is busy.
       </Text>
     </View>

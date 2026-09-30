@@ -617,13 +617,13 @@ export function MapScreen() {
             {/*
               The AI + shelter-placeholder disclosure, kept as strict as it was
               in `ReadoutPanel`. Two separate claims, and they must both be on
-              screen: the prose is machine-written from one Gemini call, and
+              screen: the prose is machine-written by a language model, and
               the shelters it names are placeholders. A reader who takes the
               shelter names as real would send people to buildings that were
               never verified to be open, so this is not a footnote.
             */}
             <Text style={styles.disclosure}>
-              Written by AI, uses one Gemini call. Shelter data is a placeholder.
+              Written by a language model. Shelter data is a placeholder.
             </Text>
           </PanelStep>
 
