@@ -68,6 +68,17 @@ import {
 import { theme } from '../theme';
 import { LEGEND_ROWS, type SwatchSource } from '../legend';
 
+/**
+ * Height reserved at the bottom of the map for the disclosure strip.
+ *
+ * The strip is `position: absolute; bottom: 0` across the full width, and the
+ * legend was independently `bottom: 12` — so the legend's last rows rendered
+ * *behind* the strip and "Storm path" was cut off. Positioning the legend
+ * above this value fixes it, and naming the value here means the two cannot
+ * be changed in one place only.
+ */
+const DISCLOSURE_STRIP_HEIGHT = 44;
+
 /** The SVG user units the map draws in. Scaled by CSS to its container. */
 /**
  * The drawing's user-unit width. The **height is derived per view** by
@@ -76,7 +87,7 @@ import { LEGEND_ROWS, type SwatchSource } from '../legend';
  * It used to be a fixed `VIEW_H = 760`, and that single number is why 84 of 91
  * markers were invisible. A plate-carrée projection maps the whole bbox onto
  * the whole viewBox, so the viewBox aspect has to equal the bbox's *ground*
- * aspect (`spanLon / (spanLat * cos 22.5°)` ≈ 1.16 here). At 1.32 it did not:
+ * aspect (`spanLon / (spanLat * cos 22.5°)` ≈ 1.62 here). At 1.32 it did not:
  * `preserveAspectRatio="xMidYMid meet"` letterboxed the drawing into a band
  * while the projection carried on past the frame, so most geometry landed
  * outside the visible area. Deriving the height removes the possibility of the
@@ -487,27 +498,30 @@ export function WebImpactMap({
       {/* --- controls, bottom-right, mirroring MapControl ---------------- */}
       <View style={styles.controls}>
         <MapButton
-          label="S"
+          Icon={TargetIcon}
           active={view.kind === 'region'}
-          title="Zoom to the Sagar Island study region"
+          label="Study region"
+          title="Zoom to the study region"
           onPress={onPressRecentre}
         />
         <MapButton
-          label="T"
+          Icon={TrackIcon}
           active={view.kind === 'track'}
+          label="Storm path"
           title={
             canFitTrack
               ? view.kind === 'track'
                 ? 'Return to the study region'
-                : 'Fit the whole 19-fix storm track'
+                : 'Fit the whole storm track'
               : 'Track unavailable'
           }
           disabled={!canFitTrack}
           onPress={onPressFitTrack}
         />
         <MapButton
-          label="L"
+          Icon={LegendIcon}
           active={showLegend}
+          label="Legend"
           title={showLegend ? 'Hide the legend' : 'Show the legend'}
           onPress={() => setShowLegend((on) => !on)}
         />
@@ -606,14 +620,32 @@ function LegendSwatch({ row }: { row: (typeof LEGEND_ROWS)[number] }) {
   );
 }
 
-/** A 44px square map button. Real `Pressable`, with hover and focus states. */
+/**
+ * A square map button carrying a real icon.
+ *
+ * **This drew the letters S / T / L until 2026-10-01.** They were placeholders
+ * standing in for icons that were never drawn — `ControlIcon.tsx` on the native
+ * side does the same thing with two `View`s, because `@expo/vector-icons` does
+ * not resolve in this SDK (MEMORY.md §44). On Web there is no such limitation,
+ * so these are **inline SVG paths drawn here** rather than a font: no new
+ * dependency, and their colour is passed in from the button's own state so
+ * the active and hover states cannot drift apart.
+ *
+ * `Icon` is the component to render rather than an element, so `MapButton`
+ * can supply the colour it computed rather than the caller having to.
+ *
+ * `label` is the accessible name and the tooltip; it is not drawn, which is why
+ * it no longer doubles as the visible glyph.
+ */
 function MapButton({
+  Icon,
   label,
   title,
   onPress,
   active = false,
   disabled = false,
 }: {
+  Icon: React.ComponentType<MapIconProps>;
   label: string;
   title: string;
   onPress: () => void;
@@ -621,12 +653,25 @@ function MapButton({
   disabled?: boolean;
 }) {
   const [hovered, setHovered] = useState(false);
+  /**
+   * The icon's colour, taken from the same states that change the button's
+   * background, so the glyph always contrasts with what is behind it.
+   *
+   * Passed as an explicit prop rather than relying on a `color` entry in a
+   * `View` style: RN's `ViewStyle` type has no `color` key, and on the Web
+   * build it would need a cast to `WebOnly`. An explicit prop is checked by
+   * `tsc` and cannot silently fall out of step with the button's own states.
+   */
+  const iconColour = active || (hovered && !disabled)
+    ? theme.colors.selectedText
+    : theme.colors.onWhite;
+
   return (
     <Pressable
       onPress={onPress}
       disabled={disabled}
       accessibilityRole="button"
-      accessibilityLabel={title}
+      accessibilityLabel={label}
       // `title` and the hover handlers are browser/RNW props the native types
       // do not declare. See `WebOnly`.
       {...({ title, onHoverIn: () => setHovered(true), onHoverOut: () => setHovered(false) } as WebOnly)}
@@ -640,10 +685,69 @@ function MapButton({
         disabled && styles.mapButtonDisabled,
       ]}
     >
-      <Text style={[styles.mapButtonLabel, active && styles.mapButtonLabelActive]}>
-        {label}
-      </Text>
+      <Icon colour={iconColour} />
     </Pressable>
+  );
+}
+
+/** The props every inline map icon takes. */
+interface MapIconProps {
+  /** Stroke and fill colour. Named `colour` to avoid colliding with SVG's own
+   *  `color` presentation attribute in the spread props below. */
+  colour: string;
+}
+
+/**
+ * Three inline SVG icons, drawn on a 24x24 grid.
+ *
+ * Inline rather than a font or an icon package: no dependency, no network
+ * request at render time, and they scale with the button without a second
+ * asset. Each takes its colour as a prop so it always contrasts with the
+ * button's current background.
+ */
+function iconProps(colour: string) {
+  return {
+    width: 20,
+    height: 20,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: colour,
+    strokeWidth: 2,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+  };
+}
+
+/** Concentric target: the study region. */
+function TargetIcon({ colour }: MapIconProps) {
+  return (
+    <svg {...iconProps(colour)} accessibility-hidden="true">
+      <circle cx="12" cy="12" r="8" />
+      <circle cx="12" cy="12" r="2.5" fill={colour} stroke="none" />
+      <path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3" />
+    </svg>
+  );
+}
+
+/** A dashed path with waypoints: the observed storm track. */
+function TrackIcon({ colour }: MapIconProps) {
+  return (
+    <svg {...iconProps(colour)} accessibility-hidden="true">
+      <path d="M3 18c3 0 3-5 6-5s3 5 6 5 3-8 6-8" strokeDasharray="3 2.5" />
+      <circle cx="3" cy="18" r="1.8" fill={colour} stroke="none" />
+      <circle cx="21" cy="10" r="1.8" fill={colour} stroke="none" />
+    </svg>
+  );
+}
+
+/** Stacked rows: the legend. */
+function LegendIcon({ colour }: MapIconProps) {
+  return (
+    <svg {...iconProps(colour)} accessibility-hidden="true">
+      <rect x="3" y="4" width="18" height="3.5" rx="1" />
+      <rect x="3" y="10.2" width="18" height="3.5" rx="1" />
+      <rect x="3" y="16.4" width="18" height="3.5" rx="1" />
+    </svg>
   );
 }
 
@@ -664,7 +768,8 @@ const styles = StyleSheet.create({
   controls: {
     position: 'absolute',
     right: 14,
-    bottom: 52,
+    // Also above the strip, for the same reason as the legend.
+    bottom: DISCLOSURE_STRIP_HEIGHT + 8,
     gap: 8,
   },
   mapButton: {
@@ -689,14 +794,6 @@ const styles = StyleSheet.create({
   },
   pressed: {
     opacity: 0.7,
-  },
-  mapButtonLabel: {
-    fontFamily: theme.fonts.bodySemibold,
-    fontSize: theme.typography.caption,
-    color: theme.colors.onWhite,
-  },
-  mapButtonLabelActive: {
-    color: theme.colors.selectedText,
   },
   areaTag: {
     position: 'absolute',
@@ -730,7 +827,8 @@ const styles = StyleSheet.create({
   legend: {
     position: 'absolute',
     left: 12,
-    bottom: 12,
+    // Above the disclosure strip. See DISCLOSURE_STRIP_HEIGHT.
+    bottom: DISCLOSURE_STRIP_HEIGHT + 8,
     backgroundColor: theme.colors.card,
     borderWidth: 1,
     borderColor: theme.colors.border,
