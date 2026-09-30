@@ -1,0 +1,24 @@
+{
+  "generated_by": "backend/tools/render_basemap.py",
+  "image": "basemap.png",
+  "image_url": "/basemap/basemap.png",
+  "width_px": 1000,
+  "height_px": 930,
+  "png_bytes": 48074,
+  "bounds": {
+    "west": 87.79998839691585,
+    "north": 22.60161254844716,
+    "east": 89.20001276721612,
+    "south": 21.299953701757975
+  },
+  "crs": "EPSG:4326",
+  "source_dem": "data/dem.tif",
+  "source_dem_id": "USGS/SRTMGL1_003 (via Google Earth Engine)",
+  "land_colour": "#e6ece0",
+  "water_colour": "#c9e0ec",
+  "land_fraction": 0.590666,
+  "threshold_m": 0,
+  "is_display_raster": true,
+  "reads_no_numbers": true,
+  "disclosure": "Land/water is derived from the committed SRTM DEM at the 0 m contour, not from a surveyed coastline, and the image is subsampled to ~150 m/px. It is a basemap for orientation, not a navigable chart, and no figure shown anywhere in this app is measured off it \u2014 every number on screen comes from the simulation endpoints at full resolution."
+}

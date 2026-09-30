@@ -19,7 +19,12 @@
       "package": "com.hackathon.cycloneforecaster"
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/favicon.png",
+      "name": "Cyclone Remal Impact Forecaster",
+      "shortName": "Remal Forecaster",
+      "description": "Given a cyclone strength, show which hospitals, substations and roads the flood reaches across the Sundarbans delta, and draft the evacuation advisory.",
+      "backgroundColor": "#090909",
+      "themeColor": "#090909"
     }
   }
 }

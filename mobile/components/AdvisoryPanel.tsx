@@ -1,0 +1,753 @@
+/**
+ * The advisory, rendered as an operational document.
+ *
+ * ## What this is not
+ *
+ * It is not a stringified object and not a JSON viewer. `POST /advisory`
+ * returns a validated `DistrictAdvisory` — an executive summary, one entry per
+ * locality with a priority and a reason, an SMS draft, a post-landfall risk
+ * paragraph and a historical comparison — and each of those five fields gets
+ * its own section with its own heading. A judge should be able to read the
+ * recommendation and act on it without recognising it as an API response.
+ *
+ * ## Reuse, and the one thing that differs
+ *
+ * The copy, the failure taxonomy and the SMS-length rule all come from
+ * `advisoryFlow.ts` — the same module the native `AdvisoryContent.tsx` uses,
+ * so the two platforms cannot disagree about what a quota failure says or
+ * where the 160-character line is. `AdvisoryContent.tsx` renders inside the
+ * native `Modal` with `expo-clipboard`; this renders inline in a scrollable
+ * column, because a judge's laptop has the height for a document and a modal
+ * over a map would hide the map the advisory is describing.
+ *
+ * The clipboard is the one genuinely different piece: `expo-clipboard` has no
+ * Web implementation, so this uses `navigator.clipboard` where it exists and
+ * reports honestly when it does not.
+ */
+
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+
+import type { AdvisoryResponse } from '../api';
+import {
+  describeAdvisoryError,
+  sheltersAreDemoData,
+  smsLengthStatus,
+  type AdvisoryFailure,
+} from '../advisoryFlow';
+import { theme } from '../theme';
+
+export type WebAdvisoryOutcome =
+  | { status: 'loading' }
+  | { status: 'ready'; response: AdvisoryResponse; capturedAt: string | null }
+  | { status: 'failed'; failure: AdvisoryFailure; retryAfterSeconds: number | null };
+
+export interface AdvisoryPanelProps {
+  outcome: WebAdvisoryOutcome | null;
+  /** `/allocation`'s `shelter_status`. Null discloses. */
+  shelterStatus: Record<string, unknown> | null;
+  onRetry: () => void;
+  onClose: () => void;
+}
+
+/** Priority → colour. The dark palette supplies two severity tokens. */
+const PRIORITY_COLOURS = {
+  CRITICAL: theme.colors.danger,
+  HIGH: theme.colors.danger,
+  MEDIUM: theme.colors.caution,
+  LOW: theme.colors.border,
+} as const;
+
+export function AdvisoryPanel({
+  outcome,
+  shelterStatus,
+  onRetry,
+  onClose,
+}: AdvisoryPanelProps) {
+  if (outcome === null) return null;
+
+  return (
+    <View style={styles.panel}>
+      <View style={styles.header}>
+        <Text style={styles.kicker}>District advisory</Text>
+        <Text style={styles.title}>
+          {outcome.status === 'ready'
+            ? `${outcome.response.generated_for.imd_category} · ${outcome.response.generated_for.origin.name}`
+            : 'Advisory'}
+        </Text>
+        <Pressable
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel="Close the advisory"
+          style={styles.closeButton}
+        >
+          <Text style={styles.closeLabel}>Close</Text>
+        </Pressable>
+      </View>
+
+      <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
+        {outcome.status === 'loading' ? (
+          <LoadingBody />
+        ) : outcome.status === 'failed' ? (
+          <FailureBody
+            failure={outcome.failure}
+            retryAfterSeconds={outcome.retryAfterSeconds}
+            onRetry={onRetry}
+          />
+        ) : (
+          <AdvisoryBody
+            response={outcome.response}
+            shelterStatus={shelterStatus}
+            capturedAt={outcome.capturedAt}
+          />
+        )}
+      </ScrollView>
+    </View>
+  );
+}
+
+function LoadingBody() {
+  return (
+    <View style={styles.block}>
+      <ActivityIndicator color={theme.colors.primary} />
+      {/*
+        No seconds estimate. The backend's documented worst case is 60–90 s —
+        up to six Gemini calls across two capacity ladders with 12 s of backoff
+        between them — so any number shorter than that would be a promise it
+        cannot keep, and a countdown that expires without an answer reads as a
+        hang.
+      */}
+      <Text style={styles.paragraph}>
+        Generating the advisory. This makes one Gemini call and can take a minute
+        or two; the request is retried with backoff if the model is busy.
+      </Text>
+      <Text style={styles.note}>
+        Everything on the map and in the impact figures above is already computed
+        and stays valid while this runs.
+      </Text>
+    </View>
+  );
+}
+
+function FailureBody({
+  failure,
+  retryAfterSeconds,
+  onRetry,
+}: {
+  failure: AdvisoryFailure;
+  retryAfterSeconds: number | null;
+  onRetry: () => void;
+}) {
+  const remaining = useCountdown(retryAfterSeconds);
+
+  return (
+    <View style={styles.block}>
+      {/*
+        A model-capacity or quota failure is scoped to *this section*. The
+        wording comes from `describeAdvisoryError`, which branches on
+        `ApiErrorKind` rather than on a status code — the same taxonomy the
+        native app uses, so the two platforms cannot tell a judge different
+        things about the same failure.
+      */}
+      <Text style={styles.failureTitle}>{failure.title}</Text>
+      <Text style={styles.paragraph}>{failure.body}</Text>
+
+      {remaining === null ? null : (
+        <Text style={styles.countdown}>Retry in about {remaining}s</Text>
+      )}
+
+      {failure.violations.length === 0 ? null : (
+        <View style={styles.violations}>
+          <Text style={styles.violationsHeading}>What the honesty checks caught:</Text>
+          {failure.violations.map((violation, index) => (
+            <Text key={index} style={styles.violation}>
+              • {violation}
+            </Text>
+          ))}
+        </View>
+      )}
+
+      {failure.action.type === 'retry' ? (
+        <Pressable
+          onPress={onRetry}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.retryButton, pressed && styles.pressed]}
+        >
+          <Text style={styles.retryLabel}>{failure.action.label}</Text>
+        </Pressable>
+      ) : (
+        <Text style={styles.actionNote}>{failure.action.label}</Text>
+      )}
+
+      {/*
+        Stated plainly, because the most damaging failure mode here is a judge
+        concluding the whole product is broken. It is a Gemini-side condition
+        on a free tier; the simulation is unaffected.
+      */}
+      <View style={styles.scopeNote}>
+        <Text style={styles.scopeNoteText}>
+          Only the advisory text is affected. The flood extent, exposure counts,
+          routing and shelter allocation above are computed by the simulation
+          engine and are unaffected by the model.
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+function AdvisoryBody({
+  response,
+  shelterStatus,
+  capturedAt,
+}: {
+  response: AdvisoryResponse;
+  shelterStatus: Record<string, unknown> | null;
+  capturedAt: string | null;
+}) {
+  const { advisory, generated_for: forWhom } = response;
+  const isDemo = sheltersAreDemoData(shelterStatus);
+
+  return (
+    <View style={styles.block}>
+      {capturedAt === null ? null : (
+        <View style={styles.cachedBanner}>
+          <Text style={styles.cachedBannerText}>
+            Cached example from {capturedAt}, not live.
+          </Text>
+        </View>
+      )}
+
+      {/*
+        Above everything else. A reader who takes a placeholder shelter name
+        for a real one sends people to a building nobody verified, so this has
+        to be read *before* the allocation figures rather than scrolled past
+        after them. `sheltersAreDemoData` fails closed — a missing status
+        discloses rather than suppresses.
+      */}
+      {isDemo ? (
+        <View style={styles.notice}>
+          <Text style={styles.noticeHeading}>Shelter data is not verified</Text>
+          <Text style={styles.noticeBody}>
+            The shelters and capacities behind this plan are placeholders used to
+            demonstrate the allocation algorithm, not real cyclone shelters. No
+            verified shelter dataset exists for this district. Do not use this to
+            direct a real evacuation.
+          </Text>
+        </View>
+      ) : null}
+
+      {/*
+        Prominent, and above the summary. When the origin cannot be reached the
+        advisory is about a place the reader may not be able to leave, which
+        changes how every line below it should be read.
+      */}
+      {forWhom.origin_reachable ? null : (
+        <View style={styles.unreachable}>
+          <Text style={styles.unreachableHeading}>No flood-free route from here</Text>
+          <Text style={styles.unreachableBody}>{forWhom.origin_reason}</Text>
+        </View>
+      )}
+
+      <Text style={styles.provenance}>
+        {forWhom.imd_category} · {forWhom.wind_kmph} km/h · written for{' '}
+        {forWhom.origin.name}
+      </Text>
+
+      <Section heading="Summary">
+        <Text style={styles.paragraph}>{advisory.executive_summary}</Text>
+      </Section>
+
+      {/*
+        The plan, one row per locality with its priority and the model's
+        reasoning. `validation.plan_coverage` reports how many of the
+        allocation's localities this covers, and it is shown because a partial
+        plan is worth knowing about rather than discovering.
+      */}
+      <Section
+        heading={`Evacuation priorities (${advisory.evacuation_plan.length})`}
+        caption={response.validation.plan_coverage}
+      >
+        <View style={styles.plan}>
+          {advisory.evacuation_plan.map((item, index) => (
+            <View key={`${item.locality_name}-${index}`} style={styles.planRow}>
+              <View style={styles.planHeader}>
+                <View
+                  style={[
+                    styles.priorityChip,
+                    {
+                      backgroundColor:
+                        PRIORITY_COLOURS[item.priority_level] ?? theme.colors.border,
+                    },
+                  ]}
+                >
+                  <Text style={styles.priorityLabel}>{item.priority_level}</Text>
+                </View>
+                <Text style={styles.planLocality}>{item.locality_name}</Text>
+              </View>
+              <Text style={styles.planReasoning}>{item.reasoning}</Text>
+            </View>
+          ))}
+        </View>
+      </Section>
+
+      <Section heading="After landfall">
+        <Text style={styles.paragraph}>{advisory.post_landfall_risks}</Text>
+      </Section>
+
+      <Section heading="Historical context">
+        <Text style={styles.paragraph}>{advisory.historical_context}</Text>
+      </Section>
+
+      <SmsBlock draft={advisory.sms_dispatch_draft} />
+
+      {/*
+        The provenance the native modal shows in its title bar. Here it is a
+        footer line, because on a Web page the model string and the call count
+        are audit detail rather than headline.
+      */}
+      <View style={styles.audit}>
+        <Text style={styles.auditText}>
+          {response.model} · {response.validation.gemini_calls} call
+          {response.validation.gemini_calls === 1 ? '' : 's'} ·{' '}
+          {response.validation.attempts} attempt
+          {response.validation.attempts === 1 ? '' : 's'} · all honesty checks
+          passed
+        </Text>
+        <Text style={styles.auditText}>
+          Validated against the simulation output. Nothing in this advisory is
+          invented: every locality, figure and emergency number is checked
+          against the model before it is returned.
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+/**
+ * The dispatch draft, with its live length and a real copy action.
+ *
+ * **Copies the draft exactly** — no prefix, no suffix, no trailer. The draft is
+ * written to be pasted into an existing district dispatch system, where a line
+ * this app added would be read out to the public as though the district had
+ * sent it.
+ *
+ * `expo-clipboard` has no Web implementation, so this uses
+ * `navigator.clipboard.writeText` where it exists. That API requires a secure
+ * context and can be refused by permission policy, so the button reports what
+ * actually happened rather than optimistically claiming a copy it cannot
+ * confirm — and it falls back to selecting the text, which is what a browser
+ * offers when the async clipboard is unavailable.
+ */
+function SmsBlock({ draft }: { draft: string }) {
+  const [state, setState] = useState<'idle' | 'copied' | 'manual'>('idle');
+  const draftRef = useRef<View | null>(null);
+  const status = smsLengthStatus(draft);
+
+  useEffect(() => {
+    if (state === 'idle') return undefined;
+    const timer = setTimeout(() => setState('idle'), 2500);
+    return () => clearTimeout(timer);
+  }, [state]);
+
+  const onCopy = useCallback(() => {
+    const clipboard =
+      typeof navigator !== 'undefined' && typeof navigator.clipboard !== 'undefined'
+        ? navigator.clipboard
+        : null;
+
+    if (clipboard === null) {
+      // No async clipboard. Selecting the draft is the only thing this browser
+      // will let us do, and it is better than a button that silently fails.
+      setState('manual');
+      return;
+    }
+
+    clipboard
+      .writeText(draft)
+      .then(() => setState('copied'))
+      // A rejected clipboard (insecure context, permission policy) is a real
+      // outcome, so it gets its own message instead of pretending to succeed.
+      .catch(() => setState('manual'));
+  }, [draft]);
+
+  return (
+    <Section heading="SMS dispatch draft">
+      <View style={styles.smsBlock}>
+        {/* `selectable` so a manual copy works when the clipboard is blocked. */}
+        <Text style={styles.smsDraft} selectable>
+          {draft}
+        </Text>
+        <View style={styles.smsFooter}>
+          <Text style={[styles.smsCount, status.over ? styles.smsCountOver : null]}>
+            {status.label}
+          </Text>
+          <Pressable
+            onPress={onCopy}
+            accessibilityRole="button"
+            accessibilityLabel={
+              state === 'copied' ? 'SMS draft copied' : 'Copy the SMS draft'
+            }
+            style={({ pressed }) => [styles.copyButton, pressed && styles.pressed]}
+          >
+            <Text style={styles.copyLabel}>
+              {state === 'copied' ? 'Copied' : 'Copy'}
+            </Text>
+          </Pressable>
+        </View>
+        {state === 'manual' ? (
+          <Text style={styles.smsWarning}>
+            This browser blocked clipboard access. The draft is selected — press
+            ⌘C / Ctrl+C to copy it.
+          </Text>
+        ) : null}
+        {status.over ? (
+          <Text style={styles.smsWarning}>
+            Over {status.limit} characters. Copy is still available — the draft is
+            the model's text and you may want to send it as it stands.
+          </Text>
+        ) : null}
+      </View>
+    </Section>
+  );
+}
+
+function Section({
+  heading,
+  caption,
+  children,
+}: {
+  heading: string;
+  caption?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionHeading}>{heading}</Text>
+      {caption === undefined ? null : (
+        <Text style={styles.sectionCaption}>{caption}</Text>
+      )}
+      {children}
+    </View>
+  );
+}
+
+/**
+ * Ticks down from `seconds`, or null.
+ *
+ * Null for a non-capacity failure, so the countdown cannot outlive the thing
+ * it is counting for. Quota arrives with the value forced to null upstream, so
+ * this can never count down to the user's own midnight.
+ */
+function useCountdown(seconds: number | null): number | null {
+  const [remaining, setRemaining] = useState<number | null>(seconds);
+
+  useEffect(() => setRemaining(seconds), [seconds]);
+
+  useEffect(() => {
+    if (remaining === null) return undefined;
+    if (remaining <= 0) return undefined;
+    const timer = setTimeout(() => setRemaining((value) => (value === null ? null : value - 1)), 1000);
+    return () => clearTimeout(timer);
+  }, [remaining]);
+
+  return remaining;
+}
+
+const styles = StyleSheet.create({
+  panel: {
+    backgroundColor: theme.colors.card,
+    borderRadius: theme.radius.card,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    overflow: 'hidden',
+  },
+  header: {
+    paddingHorizontal: theme.spacing.sm,
+    paddingTop: theme.spacing.sm,
+    paddingBottom: theme.spacing.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  kicker: {
+    fontFamily: theme.fonts.bodyMedium,
+    fontSize: 11,
+    letterSpacing: 1.4,
+    color: theme.colors.textMuted,
+    textTransform: 'uppercase',
+  },
+  title: {
+    fontFamily: theme.fonts.heading,
+    fontSize: theme.typography.heading,
+    color: theme.colors.text,
+    marginTop: 4,
+    paddingRight: 70,
+  },
+  closeButton: {
+    position: 'absolute',
+    right: theme.spacing.sm,
+    top: theme.spacing.sm,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: theme.radius.button,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  closeLabel: {
+    fontFamily: theme.fonts.bodyMedium,
+    fontSize: theme.typography.caption,
+    color: theme.colors.text,
+  },
+  body: {
+    maxHeight: 620,
+  },
+  bodyContent: {
+    padding: theme.spacing.sm,
+  },
+  block: {
+    gap: theme.spacing.xs,
+  },
+  section: {
+    marginTop: theme.spacing.md,
+  },
+  sectionHeading: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: theme.typography.caption,
+    letterSpacing: 1.3,
+    textTransform: 'uppercase',
+    color: theme.colors.selectedText,
+    marginBottom: 6,
+  },
+  sectionCaption: {
+    fontFamily: theme.fonts.body,
+    fontSize: 11,
+    color: theme.colors.textMuted,
+    marginBottom: 6,
+  },
+  paragraph: {
+    fontFamily: theme.fonts.body,
+    fontSize: theme.typography.body,
+    lineHeight: 24,
+    color: theme.colors.text,
+  },
+  note: {
+    fontFamily: theme.fonts.body,
+    fontSize: theme.typography.caption,
+    color: theme.colors.textMuted,
+    lineHeight: 18,
+  },
+  provenance: {
+    fontFamily: theme.fonts.bodyMedium,
+    fontSize: theme.typography.caption,
+    color: theme.colors.textMuted,
+    marginTop: 4,
+  },
+  failureTitle: {
+    fontFamily: theme.fonts.heading,
+    fontSize: theme.typography.heading,
+    color: theme.colors.danger,
+  },
+  countdown: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: theme.typography.caption,
+    color: theme.colors.caution,
+  },
+  violations: {
+    backgroundColor: theme.colors.background,
+    borderRadius: theme.radius.button,
+    padding: 12,
+    marginTop: 4,
+    gap: 4,
+  },
+  violationsHeading: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 12,
+    color: theme.colors.text,
+  },
+  violation: {
+    fontFamily: theme.fonts.body,
+    fontSize: 12,
+    color: theme.colors.textMuted,
+    lineHeight: 18,
+  },
+  retryButton: {
+    marginTop: theme.spacing.xs,
+    alignSelf: 'flex-start',
+    backgroundColor: theme.colors.primary,
+    borderRadius: theme.radius.button,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+  },
+  retryLabel: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: theme.typography.emphasis,
+    color: theme.colors.background,
+  },
+  pressed: {
+    opacity: 0.72,
+  },
+  actionNote: {
+    fontFamily: theme.fonts.bodyMedium,
+    fontSize: theme.typography.caption,
+    color: theme.colors.caution,
+    marginTop: 4,
+  },
+  scopeNote: {
+    marginTop: theme.spacing.sm,
+    padding: 12,
+    borderRadius: theme.radius.button,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  scopeNoteText: {
+    fontFamily: theme.fonts.body,
+    fontSize: 12,
+    lineHeight: 18,
+    color: theme.colors.textMuted,
+  },
+  notice: {
+    backgroundColor: theme.colors.caution,
+    borderRadius: theme.radius.button,
+    padding: 14,
+    marginTop: 4,
+  },
+  noticeHeading: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 13,
+    color: theme.colors.background,
+  },
+  noticeBody: {
+    fontFamily: theme.fonts.body,
+    fontSize: 12,
+    lineHeight: 18,
+    color: theme.colors.background,
+    marginTop: 4,
+  },
+  unreachable: {
+    backgroundColor: theme.colors.danger,
+    borderRadius: theme.radius.button,
+    padding: 14,
+    marginTop: 4,
+  },
+  unreachableHeading: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 13,
+    color: theme.colors.card,
+  },
+  unreachableBody: {
+    fontFamily: theme.fonts.body,
+    fontSize: 12,
+    lineHeight: 18,
+    color: theme.colors.card,
+    marginTop: 4,
+  },
+  plan: {
+    gap: 6,
+  },
+  planRow: {
+    backgroundColor: theme.colors.background,
+    borderRadius: theme.radius.button,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    padding: 12,
+  },
+  planHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 5,
+  },
+  priorityChip: {
+    borderRadius: theme.radius.chip,
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+  },
+  priorityLabel: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 10,
+    letterSpacing: 0.6,
+    color: theme.colors.background,
+  },
+  planLocality: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: theme.typography.body,
+    color: theme.colors.text,
+  },
+  planReasoning: {
+    fontFamily: theme.fonts.body,
+    fontSize: 13,
+    lineHeight: 19,
+    color: theme.colors.textMuted,
+  },
+  smsBlock: {
+    backgroundColor: theme.colors.background,
+    borderRadius: theme.radius.button,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    padding: 13,
+  },
+  smsDraft: {
+    fontFamily: theme.fonts.body,
+    fontSize: theme.typography.body,
+    lineHeight: 22,
+    color: theme.colors.text,
+  },
+  smsFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 10,
+  },
+  smsCount: {
+    fontFamily: theme.fonts.bodyMedium,
+    fontSize: 12,
+    color: theme.colors.textMuted,
+  },
+  smsCountOver: {
+    color: theme.colors.caution,
+  },
+  copyButton: {
+    backgroundColor: theme.colors.card,
+    borderRadius: theme.radius.button,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  copyLabel: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: theme.typography.caption,
+    color: theme.colors.text,
+  },
+  smsWarning: {
+    fontFamily: theme.fonts.body,
+    fontSize: 11,
+    lineHeight: 16,
+    color: theme.colors.caution,
+    marginTop: 8,
+  },
+  audit: {
+    marginTop: theme.spacing.md,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+    gap: 5,
+  },
+  auditText: {
+    fontFamily: theme.fonts.body,
+    fontSize: 11,
+    lineHeight: 16,
+    color: theme.colors.textMuted,
+  },
+  cachedBanner: {
+    backgroundColor: theme.colors.caution,
+    borderRadius: theme.radius.button,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 4,
+  },
+  cachedBannerText: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 12,
+    color: theme.colors.background,
+  },
+});

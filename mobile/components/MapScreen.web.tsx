@@ -1,0 +1,1321 @@
+/**
+ * The Web screen — the judge-facing build of the Cyclone Forecaster.
+ *
+ * ## Why this file exists separately from `MapScreen.tsx`
+ *
+ * `react-native-maps` is a **native module**. Import it into a browser bundle
+ * and its components resolve to `codegenNativeComponent`, a function that only
+ * exists inside a React Native runtime — which throws on first render and
+ * leaves a blank page. That is exactly how the previous Web build failed
+ * (`codegenNativeComponent is not a function`), and it is why the platform
+ * split is a **file** split rather than a branch inside one file: Metro
+ * resolves `MapScreen.web.tsx` in preference to `MapScreen.tsx` on Web, so the
+ * native import never enters the Web module graph at all. Sharing one file
+ * would require importing the native module for the native path, and one
+ * careless barrel export puts it back.
+ *
+ * The native screen and its `react-native-maps` experience are untouched and
+ * continue to ship to Android and iOS.
+ *
+ * ## What is shared with the native build, and what is not
+ *
+ * **Shared, deliberately:** `api.ts` (the whole typed client and its error
+ * taxonomy), `strengthChips.ts` (the four-chip vocabulary and its mapping
+ * rules), `exposureTiles.ts`, `trackFacts.ts`, `legend.ts`, `advisoryFlow.ts`
+ * (the failure wording and the SMS limit), `theme.ts`, `sampleAdvisory.ts`.
+ * So the two platforms cannot disagree about which scenarios exist, when the
+ * advisory button is enabled, what a quota failure says, or what the colours
+ * are.
+ *
+ * **Web-only:** `mapProjection.ts` (plate carrée into an SVG viewBox — the
+ * native screen projects through the map's own camera and has no use for it),
+ * `basemap.ts` + `webBasemap.ts` (the DEM-derived base layer, which exists
+ * because there is no Google tile server for the browser),
+ * `webViewModel.ts` (every displayed string and figure, extracted so the
+ * honesty rules are testable without a renderer), and the four components in
+ * this directory.
+ *
+ * ## The rules this screen must not break
+ *
+ *  - **Every number comes from the API.** No lookup table, no hardcoded
+ *    figure, no stringified JSON. `webViewModel.ts` derives each one from a
+ *    payload and returns `null` — rendered `—`, never `0` — when a value has
+ *    not arrived.
+ *  - **The four chips, not seven buttons.** `strengthChips.ts` decides the
+ *    mapping; this screen only says which chip is selected.
+ *  - **A Gemini failure never fabricates.** 429/503 render the truthful
+ *    message from `describeAdvisoryError` while the impact analysis stays live.
+ *  - **The disclosures stay visible**, compactly: screening estimate, track is
+ *    not a forecast, shelter placeholders, population estimates, and road
+ *    intersection is not impassability.
+ */
+
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+
+import {
+  ApiError,
+  getAllocation,
+  getCategories,
+  getExposure,
+  getLocalities,
+  getOverlays,
+  getRoutes,
+  getTrack,
+  nearestCategory,
+  postAdvisory,
+  API_BASE_URL,
+  type AllocationResponse,
+  type CategoriesResponse,
+  type ExposureResponse,
+  type LocalitiesResponse,
+  type OverlayEntry,
+  type RoutesResponse,
+  type TrackResponse,
+} from '../api';
+import { describeAdvisoryError } from '../advisoryFlow';
+import { totalExposed } from '../exposureTiles';
+import {
+  DEFAULT_CHIP,
+  advisoryEnabled,
+  figuresLine,
+  resolveChip,
+  type ChipId,
+} from '../strengthChips';
+import { SAMPLE_ADVISORY } from '../sampleAdvisory';
+import { theme } from '../theme';
+import { countUnreported, peakReportedWindKmph } from '../trackFacts';
+import {
+  ROADS_DISCLOSURE,
+  ROADS_HONEST_LABEL,
+  advisoryAvailability,
+  advisoryStaleNote,
+  areaLabel,
+  caseStudyLine,
+  countLabel,
+  countUnit,
+  personKmLabel,
+  populationDisclosure,
+  routeSummary,
+  scenarioFigures,
+  scenarioHeadline,
+  shelterDisclosure,
+  surgeLabel,
+  trackCaption,
+  windLabel,
+} from '../webViewModel';
+import { AdvisoryPanel, type WebAdvisoryOutcome } from './AdvisoryPanel';
+import { LocalitySearch } from './LocalitySearch';
+import { WebImpactMap } from './WebImpactMap';
+
+/**
+ * Web-only HTML attributes React Native's types do not declare.
+ *
+ * `title` is the browser's native tooltip. This file never ships to a native
+ * target, and the alternative — dropping the caveat — would lose the road
+ * tile's most important sentence.
+ */
+type WebOnly = Record<string, unknown>;
+
+type Boot =
+  | { status: 'loading' }
+  | { status: 'error'; error: ApiError }
+  | {
+      status: 'ready';
+      categories: CategoriesResponse;
+      overlayIndex: OverlayEntry[];
+      localities: LocalitiesResponse;
+      track: TrackResponse;
+    };
+
+export function MapScreen() {
+  const [boot, setBoot] = useState<Boot>({ status: 'loading' });
+
+  const [chipId, setChipId] = useState<ChipId>(DEFAULT_CHIP);
+  const [originId, setOriginId] = useState('sagar');
+
+  const [exposure, setExposure] = useState<ExposureResponse | null>(null);
+  const [exposureLoading, setExposureLoading] = useState(false);
+  /** As `routesFailed`: an error must not read as a pending request. */
+  const [exposureFailed, setExposureFailed] = useState(false);
+  const [routes, setRoutes] = useState<RoutesResponse | null>(null);
+  const [routesLoading, setRoutesLoading] = useState(false);
+  /**
+   * Whether the last `/routes` request failed, as distinct from never having
+   * returned. Without this a failed or aborted request renders as
+   * "Checking the road network…" forever — a spinner for something that is
+   * not happening. Found in the browser during the Web build: an aborted fetch
+   * left the panel claiming to still be working.
+   */
+  const [routesFailed, setRoutesFailed] = useState(false);
+  const [allocation, setAllocation] = useState<AllocationResponse | null>(null);
+
+  const [advisory, setAdvisory] = useState<WebAdvisoryOutcome | null>(null);
+  const [advisoryBusy, setAdvisoryBusy] = useState(false);
+
+  const [showAbout, setShowAbout] = useState(false);
+  /** Hovered chip id — see the note in `LocalitySearch` about the RNW flag. */
+  const [hoveredChip, setHoveredChip] = useState<ChipId | null>(null);
+
+  // --- boot -------------------------------------------------------------
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // Parallel: four cold requests in series is four round trips before
+        // anything paints, and none depends on another.
+        const [categories, overlays, localities, track] = await Promise.all([
+          getCategories(),
+          getOverlays(),
+          getLocalities(),
+          getTrack(),
+        ]);
+        if (cancelled) return;
+        setBoot({
+          status: 'ready',
+          categories,
+          overlayIndex: overlays.overlays,
+          localities,
+          track,
+        });
+      } catch (err) {
+        if (cancelled) return;
+        setBoot({ status: 'error', error: err as ApiError });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const categories = boot.status === 'ready' ? boot.categories.categories : [];
+  const overlayIndex = boot.status === 'ready' ? boot.overlayIndex : [];
+  const localitiesResponse = boot.status === 'ready' ? boot.localities : null;
+  const track = boot.status === 'ready' ? boot.track : null;
+
+  const preset = boot.status === 'ready' ? (boot.categories.presets[0] ?? null) : null;
+
+  /**
+   * The single place `chipId` becomes a category index, via the shared
+   * `resolveChip`. The Remal preset is not an IMD band, so it borrows the
+   * nearest one and the panel discloses that the counts are the band's.
+   */
+  const resolved = useMemo(
+    () => resolveChip(chipId, categories, overlayIndex),
+    [chipId, categories, overlayIndex],
+  );
+  const overlay = resolved.overlay;
+
+  const { requestCategory, borrowedCategory } = useMemo(() => {
+    if (resolved.categoryIndex !== null) {
+      return {
+        requestCategory: resolved.categoryIndex,
+        borrowedCategory: resolved.borrowedCategory,
+      };
+    }
+    if (preset === null) return { requestCategory: null, borrowedCategory: null };
+    const nearest = nearestCategory(categories, preset.wind_kmph);
+    return { requestCategory: nearest, borrowedCategory: categories[nearest]?.imd_category ?? null };
+  }, [resolved, preset, categories]);
+
+  // --- exposure: one request per committed chip --------------------------
+  useEffect(() => {
+    if (requestCategory === null) return undefined;
+    let cancelled = false;
+    setExposureLoading(true);
+    setExposureFailed(false);
+    getExposure(requestCategory)
+      .then((next) => {
+        if (!cancelled) setExposure(next);
+      })
+      // A failed exposure drops to the empty state rather than leaving the
+      // previous chip's counts on screen under the new chip's heading.
+      .catch(() => {
+        if (!cancelled) setExposure(null);
+      })
+      .finally(() => {
+        if (!cancelled) setExposureLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [requestCategory]);
+
+  // --- routes: changes with both the chip and the origin -----------------
+  useEffect(() => {
+    if (requestCategory === null) return undefined;
+    let cancelled = false;
+    setRoutesLoading(true);
+    setRoutesFailed(false);
+    getRoutes(requestCategory, originId)
+      .then((next) => {
+        if (cancelled) return;
+        setRoutes(next);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setRoutes(null);
+        setRoutesFailed(true);
+      })
+      .finally(() => {
+        if (!cancelled) setRoutesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [requestCategory, originId]);
+
+  // --- allocation: for the shelter summary and the disclosure ------------
+  useEffect(() => {
+    if (requestCategory === null) return undefined;
+    let cancelled = false;
+    getAllocation(requestCategory, originId)
+      .then((next) => {
+        if (!cancelled) setAllocation(next);
+      })
+      .catch(() => {
+        // Left null on purpose: `shelterDisclosure` fails closed, so a failed
+        // allocation shows the placeholder warning rather than suppressing it.
+        if (!cancelled) setAllocation(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [requestCategory, originId]);
+
+  /**
+   * On a chip press the previous exposure is dropped immediately.
+   *
+   * Otherwise selecting a chip shows the *previous* chip's counts for the
+   * duration of the fetch, under a heading that already names the new one.
+   * The tiles' `—` is what replaces it.
+   */
+  const onSelectChip = useCallback((id: ChipId) => {
+    setChipId(id);
+    setExposure(null);
+  }, []);
+
+  // --- advisory ----------------------------------------------------------
+  const onGenerateAdvisory = useCallback(() => {
+    // The in-flight lock, not a spinner decoration: a second press sends a
+    // second POST and the backend's capacity ladder will spend up to six more
+    // Gemini calls on it.
+    if (advisoryBusy || requestCategory === null) return;
+    setAdvisoryBusy(true);
+    setAdvisory({ status: 'loading' });
+
+    postAdvisory(requestCategory, originId)
+      .then((response) => setAdvisory({ status: 'ready', response, capturedAt: null }))
+      .catch((err: unknown) => {
+        const error = err as ApiError;
+        // `describeAdvisoryError` is the shared taxonomy: a 503 capacity block
+        // and a 429 spent quota read differently, because they need different
+        // things from the reader.
+        setAdvisory({
+          status: 'failed',
+          failure: describeAdvisoryError(error),
+          // Non-null only for a 503. Quota arrives with it forced to null so
+          // the countdown cannot promise that waiting helps.
+          retryAfterSeconds: error.retryAfterSeconds,
+        });
+      })
+      .finally(() => setAdvisoryBusy(false));
+  }, [advisoryBusy, requestCategory, originId]);
+
+  const onLoadCachedAdvisory = useCallback(() => {
+    if (!SAMPLE_ADVISORY) return;
+    setAdvisoryBusy(false);
+    setAdvisory({
+      status: 'ready',
+      response: SAMPLE_ADVISORY.response,
+      capturedAt: SAMPLE_ADVISORY.captured_at,
+    });
+  }, []);
+
+  // --- derived view model -----------------------------------------------
+  const figures = useMemo(
+    () => scenarioFigures(overlay, exposure, resolved.borrowedCategory),
+    [overlay, exposure, resolved.borrowedCategory],
+  );
+
+  const counts = useMemo(
+    () => ({
+      hospitals: exposure?.hospitals.count ?? null,
+      substations: exposure?.substations.count ?? null,
+      roads: exposure?.roads_cut_off.count ?? null,
+    }),
+    [exposure],
+  );
+
+  const exposedCount = totalExposed(counts);
+  const availability = useMemo(
+    () => advisoryAvailability(exposedCount, exposureLoading, advisoryBusy),
+    [exposedCount, exposureLoading, advisoryBusy],
+  );
+  // The shared rule, kept as the single authority on the button's state; the
+  // availability object adds the reason for the hint text.
+  const canGenerate = availability.enabled && advisoryEnabled(exposedCount, exposureLoading);
+
+  const route = useMemo(
+    () => routeSummary(routes, allocation, routesFailed),
+    [routes, allocation, routesFailed],
+  );
+  const shelters = useMemo(
+    () => shelterDisclosure(allocation?.shelter_status ?? null, allocation?.shelter_loads.length ?? null),
+    [allocation],
+  );
+  const population = useMemo(() => populationDisclosure(allocation), [allocation]);
+  const caseStudy = useMemo(
+    () => caseStudyLine(boot.status === 'ready' ? boot.categories : null),
+    [boot],
+  );
+
+  const staleNote =
+    advisory?.status === 'ready' && requestCategory !== null
+      ? advisoryStaleNote(advisory.response, requestCategory, originId)
+      : null;
+
+  // --- render ------------------------------------------------------------
+  if (boot.status === 'loading') {
+    return (
+      <View style={styles.centred}>
+        <ActivityIndicator color={theme.colors.primary} size="large" />
+        <Text style={styles.centredText}>Reading categories, overlays and localities…</Text>
+      </View>
+    );
+  }
+
+  if (boot.status === 'error') {
+    return <BootError error={boot.error} />;
+  }
+
+  return (
+    <View style={styles.screen}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.page}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* --- masthead: the case study, in the first viewport ---------- */}
+        <View style={styles.masthead}>
+          <View style={styles.mastheadText}>
+            <Text style={styles.eyebrow}>Cyclone impact & infrastructure forecaster</Text>
+            <Text style={styles.title}>Cyclone Remal, May 2024</Text>
+            <Text style={styles.subtitle}>
+              Landfall between Sagar Island and Khepupara, West Bengal — given a
+              storm strength, this shows which hospitals, substations and roads the
+              flood reaches, and drafts the evacuation advisory.
+            </Text>
+            <Text style={styles.anchorLine}>{caseStudy.anchor}</Text>
+          </View>
+          <View style={styles.mastheadBadges}>
+            <Badge label="Case study" value="Remal 2024" />
+            <Badge
+              label="Localities"
+              value={String(localitiesResponse?.localities.length ?? 0)}
+            />
+            <Badge
+              label="Storm fixes"
+              value={track ? String(track.waypoint_count ?? track.path.length) : '—'}
+            />
+          </View>
+        </View>
+
+        {/* --- the working area: map + control column -------------------- */}
+        <View style={styles.workspace}>
+          <View style={styles.mapColumn}>
+            <WebImpactMap
+              exposure={exposure}
+              track={track}
+              overlay={overlay}
+              localities={localitiesResponse}
+              originId={originId}
+              shelter={routes?.shelter ?? null}
+              routeCoordinates={routes?.coordinates ?? []}
+              routeReachable={routes?.reachable ?? false}
+              loading={exposureLoading}
+              busy={exposureLoading || routesLoading}
+            />
+            <Text style={styles.trackCaption}>{trackCaption(track)}</Text>
+          </View>
+
+          <View style={styles.controlColumn}>
+            {/* Step 1 — scenario */}
+            <Step index={1} title="Pick a storm strength">
+              <View style={styles.chips}>
+                {STRENGTH_CHIP_IDS.map((id) => {
+                  const chip = resolveChip(id, categories, overlayIndex).chip;
+                  const selected = id === chipId;
+                  return (
+                    <Pressable
+                      key={id}
+                      onPress={() => onSelectChip(id)}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={`${chip.label} scenario`}
+                      onHoverIn={() => setHoveredChip(id)}
+                      onHoverOut={() =>
+                        setHoveredChip((current) => (current === id ? null : current))
+                      }
+                      style={({ pressed }: { pressed: boolean }) => [
+                        styles.chip,
+                        selected && styles.chipSelected,
+                        hoveredChip === id && !selected && styles.chipHovered,
+                        pressed && styles.pressed,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.chipLabel,
+                          selected && styles.chipLabelSelected,
+                        ]}
+                      >
+                        {chip.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text style={styles.scenarioHeadline}>{scenarioHeadline(figures)}</Text>
+
+              {/*
+                `figuresLine` is the shared string from `strengthChips.ts`, so
+                the Web and native screens state the scenario identically —
+                including the `≥` that marks category 6's wind as a band floor
+                rather than a midpoint.
+              */}
+              <Text style={styles.figuresLine}>
+                {figuresLine(
+                  overlay,
+                  exposure?.wind_is_band_midpoint,
+                )}
+              </Text>
+
+              {chipId === 'remal_observed' && borrowedCategory !== null ? (
+                <Text style={styles.borrowed}>
+                  The preset is 115 km/h, which is not an IMD band. The counts
+                  below borrow the nearest band ({borrowedCategory}).
+                </Text>
+              ) : null}
+
+              {figures.bandNote !== null ? (
+                <Text style={styles.bandNote}>{figures.bandNote}</Text>
+              ) : null}
+            </Step>
+
+            {/* Step 2 — impact */}
+            <Step index={2} title="See what gets hit">
+              <View style={styles.factGrid}>
+                <Fact label="Wind" value={windLabel(figures.windKmph, figures.windIsBandMidpoint)} />
+                <Fact label="Storm surge" value={surgeLabel(figures.surgeM)} note="estimate" />
+                <Fact label="Flooded land" value={areaLabel(figures.floodedKm2)} note="model" />
+                <Fact label="IMD classification" value={figures.bandLabel || '—'} small />
+              </View>
+
+              <View style={styles.tiles}>
+                <Tile
+                  label="Hospitals"
+                  count={countLabel(counts.hospitals)}
+                  unit={countUnit(counts.hospitals, 'submerged')}
+                />
+                <Tile
+                  label="Substations"
+                  count={countLabel(counts.substations)}
+                  unit={countUnit(counts.substations, 'submerged')}
+                />
+                {/*
+                  The road tile's wording is the project's honest position and
+                  is asserted against the backend's own `definitions` block by
+                  `tests/webViewModel.test.mjs`. "Impassable" would be a
+                  connectivity claim this computation never makes.
+                */}
+                <Tile
+                  label="Roads"
+                  count={countLabel(counts.roads)}
+                  unit={countUnit(counts.roads, ROADS_HONEST_LABEL)}
+                  disclosure={ROADS_DISCLOSURE}
+                />
+              </View>
+
+              {exposureFailed ? (
+                <Text style={styles.errorNote}>
+                  The exposure request did not complete, so these counts are
+                  unknown rather than zero. Pick the strength again to retry.
+                </Text>
+              ) : exposureLoading ? (
+                <Text style={styles.loadingNote}>Reading the exposure figures…</Text>
+              ) : exposedCount === 0 && exposure !== null ? (
+                <Text style={styles.emptyNote}>
+                  No modelled exposure at this strength — the surge is below what
+                  this elevation model can resolve, so the water reaches no mapped
+                  asset. Pick a stronger scenario to see the exposure path.
+                </Text>
+              ) : null}
+            </Step>
+
+            {/* Routing and allocation */}
+            <Step index={3} title="Check the evacuation route">
+              <LocalitySearch
+                response={localitiesResponse}
+                selectedId={originId}
+                onSelect={setOriginId}
+                disabled={advisoryBusy}
+              />
+
+              <View style={styles.routeBlock}>
+                <Text
+                  style={[
+                    styles.routeHeadline,
+                    route.reachable && styles.routeHeadlineOk,
+                  ]}
+                >
+                  {route.headline}
+                </Text>
+                {route.detail ? (
+                  <Text style={styles.routeDetail}>{route.detail}</Text>
+                ) : null}
+
+                <View style={styles.allocationStats}>
+                  <MiniStat
+                    label="Localities allocated"
+                    value={
+                      route.evaluatedLocalities === null
+                        ? '—'
+                        : String(route.evaluatedLocalities)
+                    }
+                  />
+                  <MiniStat label="Total travel" value={personKmLabel(route.totalPersonKm)} />
+                  <MiniStat
+                    label="Unmet demand"
+                    value={route.unmetDemand === null ? '—' : route.unmetDemand.toLocaleString('en-US')}
+                  />
+                </View>
+              </View>
+
+              {shelters.isDemo ? (
+                <View style={styles.shelterNotice}>
+                  <Text style={styles.shelterHeading}>{shelters.heading}</Text>
+                  <Text style={styles.shelterBody}>{shelters.body}</Text>
+                </View>
+              ) : null}
+            </Step>
+
+            {/* Step 4 — the advisory */}
+            <Step index={4} title="Get the evacuation advisory">
+              <Pressable
+                onPress={onGenerateAdvisory}
+                disabled={!canGenerate}
+                accessibilityRole="button"
+                accessibilityLabel="Generate the district advisory"
+                style={({ pressed }) => [
+                  styles.generate,
+                  !canGenerate && styles.generateDisabled,
+                  pressed && canGenerate && styles.pressed,
+                ]}
+              >
+                {advisoryBusy ? (
+                  <ActivityIndicator color={theme.colors.background} />
+                ) : (
+                  <Text style={styles.generateLabel}>Generate advisory</Text>
+                )}
+              </Pressable>
+
+              {availability.reason !== null ? (
+                <Text style={styles.generateHint}>{availability.reason}</Text>
+              ) : (
+                <Text style={styles.generateHint}>
+                  One Gemini call. The impact figures above do not depend on it.
+                </Text>
+              )}
+
+              {staleNote !== null ? (
+                <View style={styles.staleNotice}>
+                  <Text style={styles.staleText}>{staleNote}</Text>
+                </View>
+              ) : null}
+
+              {SAMPLE_ADVISORY !== null && advisory?.status !== 'ready' ? (
+                <Pressable
+                  onPress={onLoadCachedAdvisory}
+                  accessibilityRole="button"
+                  style={({ pressed }) => [styles.cachedButton, pressed && styles.pressed]}
+                >
+                  <Text style={styles.cachedLabel}>
+                    Load cached example (not live)
+                  </Text>
+                </Pressable>
+              ) : null}
+
+              <AdvisoryPanel
+                outcome={advisory}
+                shelterStatus={allocation?.shelter_status ?? null}
+                onRetry={onGenerateAdvisory}
+                onClose={() => setAdvisory(null)}
+              />
+            </Step>
+
+            {/* --- disclosures ------------------------------------------- */}
+            <View style={styles.disclosureBlock}>
+              <Text style={styles.disclosureHeading}>What this is and is not</Text>
+              <Disclosure label="Screening estimate, not a forecast">
+                {caseStudy.limitation}
+              </Disclosure>
+              <Disclosure label="The storm track is history, not a prediction">
+                {track?.disclosure ??
+                  'Positions are 3-hourly IBTrACS best-track fixes for the real event.'}
+                {track !== null
+                  ? ` The strongest fix reports ${formatPeak(peakReportedWindKmph(track.waypoints))}; ${countUnreported(track.waypoints)} of ${track.waypoint_count} fixes report no wind at all, and those are shown as unreported rather than as calm.`
+                  : ''}
+              </Disclosure>
+              <Disclosure label="Population figures are estimates">
+                {population.text}
+              </Disclosure>
+              <Disclosure label="Roads intersected, not roads proven impassable">
+                {ROADS_DISCLOSURE}
+              </Disclosure>
+              <Disclosure label="The basemap is derived terrain">
+                Land and water come from the committed SRTM elevation model at
+                the 0 m contour, subsampled to about 150 m per pixel. It is for
+                orientation only, and no figure is measured off it.
+              </Disclosure>
+              <Disclosure label="Study area is scoped, not an administrative boundary">
+                {localitiesResponse?.scoping.disclosure ??
+                  'The study area is a scoping decision, not a district boundary.'}
+              </Disclosure>
+              <Pressable
+                onPress={() => setShowAbout((on) => !on)}
+                accessibilityRole="button"
+                style={styles.aboutToggle}
+              >
+                <Text style={styles.aboutToggleLabel}>
+                  {showAbout ? 'Hide' : 'Show'} data provenance
+                </Text>
+              </Pressable>
+              {showAbout ? (
+                <View style={styles.provenance}>
+                  <ProvenanceRow label="Backend" value={API_BASE_URL || '(not configured)'} />
+                  <ProvenanceRow
+                    label="Surge method"
+                    value={boot.categories.method}
+                  />
+                  <ProvenanceRow
+                    label="Representative wind"
+                    value={boot.categories.representative_wind}
+                  />
+                  <ProvenanceRow label="IMD bands" value={boot.categories.source} />
+                  <ProvenanceRow
+                    label="Track"
+                    value={`${track?.source ?? 'IBTrACS'} · ${track?.wind_units ?? 'knots'}`}
+                  />
+                  <ProvenanceRow
+                    label="Overlay rasters"
+                    value={
+                      overlay !== null
+                        ? `${overlay.width_px}×${overlay.height_px} · ${overlay.flooded_pixels.toLocaleString('en-US')} flooded pixels · ${overlay.png_bytes.toLocaleString('en-US')} B`
+                        : '—'
+                    }
+                  />
+                  <Text style={styles.provenanceNote}>{overlay?.disclosure ?? ''}</Text>
+                </View>
+              ) : null}
+            </View>
+          </View>
+        </View>
+
+        <Text style={styles.footer}>
+          Cyclone Impact & Infrastructure Vulnerability Forecaster · Google Code
+          for Communities Hackathon 2nd Edition, Track 5 · every figure is computed
+          at request time from committed data.
+        </Text>
+      </ScrollView>
+    </View>
+  );
+}
+
+/** The four chips, in order — the shared vocabulary, not a re-derivation. */
+const STRENGTH_CHIP_IDS: ChipId[] = ['remal_observed', 'cat4', 'cat5', 'cat6'];
+
+/** `100 km/h` or `no wind reported`. */
+function formatPeak(peak: number | null): string {
+  return peak === null ? 'no wind at all' : `${Math.round(peak)} km/h`;
+}
+
+function Step({
+  index,
+  title,
+  children,
+}: {
+  index: number;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <View style={styles.step}>
+      <View style={styles.stepHeader}>
+        <View style={styles.stepBadge}>
+          <Text style={styles.stepBadgeLabel}>{index}</Text>
+        </View>
+        <Text style={styles.stepTitle}>{title}</Text>
+      </View>
+      {children}
+    </View>
+  );
+}
+
+function Fact({
+  label,
+  value,
+  note,
+  small = false,
+}: {
+  label: string;
+  value: string;
+  note?: string;
+  small?: boolean;
+}) {
+  return (
+    <View style={styles.fact}>
+      <Text style={styles.factLabel}>{label}</Text>
+      <Text style={[styles.factValue, small && styles.factValueSmall]}>{value}</Text>
+      {note === undefined ? null : <Text style={styles.factNote}>{note}</Text>}
+    </View>
+  );
+}
+
+function Tile({
+  label,
+  count,
+  unit,
+  disclosure,
+}: {
+  label: string;
+  count: string;
+  unit: string | null;
+  disclosure?: string;
+}) {
+  return (
+    <View style={styles.tile}>
+      <Text style={styles.tileLabel}>{label}</Text>
+      <Text style={styles.tileCount}>{count}</Text>
+      {/*
+        `title` is the browser's native tooltip and is what carries the road
+        tile's intersection-vs-impassability caveat to anyone who hovers it.
+        React Native's `Text` has no such prop; it is Web-only.
+      */}
+      {unit === null ? null : (
+        <Text style={styles.tileUnit} {...({ title: disclosure } as WebOnly)}>
+          {unit}
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.miniStat}>
+      <Text style={styles.miniStatValue}>{value}</Text>
+      <Text style={styles.miniStatLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function Badge({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.badge}>
+      <Text style={styles.badgeValue}>{value}</Text>
+      <Text style={styles.badgeLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function Disclosure({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <View style={styles.disclosureItem}>
+      <Text style={styles.disclosureLabel}>{label}</Text>
+      <Text style={styles.disclosureBody}>{children}</Text>
+    </View>
+  );
+}
+
+function ProvenanceRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.provenanceRow}>
+      <Text style={styles.provenanceKey}>{label}</Text>
+      <Text style={styles.provenanceValue}>{value}</Text>
+    </View>
+  );
+}
+
+/**
+ * Boot failure — where a wrong `EXPO_PUBLIC_API_URL` lands.
+ *
+ * Deliberately specific, because the most common cause of a blank Web app is a
+ * backend URL that was never set at build time, and the generic "failed to
+ * fetch" message does not say that.
+ */
+function BootError({ error }: { error: ApiError }) {
+  const isConfig = error.kind === 'config';
+  return (
+    <View style={styles.centred}>
+      <Text style={styles.errorTitle}>
+        {isConfig ? 'Backend not configured' : 'Could not reach the backend'}
+      </Text>
+      <Text style={styles.centredText}>{error.message}</Text>
+      {!isConfig ? (
+        <Text style={styles.centredMuted}>Configured origin: {API_BASE_URL || '(none)'}</Text>
+      ) : null}
+      <Text style={styles.centredMuted}>
+        {isConfig
+          ? 'Set EXPO_PUBLIC_API_URL on the Vercel project and redeploy — the value is compiled into the bundle at build time.'
+          : 'Nothing here is cached. Reload once the backend is reachable.'}
+      </Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: theme.colors.background },
+  scroll: { flex: 1 },
+  page: {
+    maxWidth: 1560,
+    width: '100%',
+    alignSelf: 'center',
+    padding: theme.spacing.md,
+    paddingBottom: theme.spacing.xxl,
+  },
+  centred: {
+    flex: 1,
+    minHeight: 460,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    backgroundColor: theme.colors.background,
+    padding: theme.spacing.md,
+  },
+  centredText: {
+    fontFamily: theme.fonts.body,
+    fontSize: theme.typography.body,
+    color: theme.colors.text,
+    textAlign: 'center',
+    maxWidth: 560,
+  },
+  centredMuted: {
+    fontFamily: theme.fonts.body,
+    fontSize: theme.typography.caption,
+    color: theme.colors.textMuted,
+    textAlign: 'center',
+    maxWidth: 560,
+  },
+  errorTitle: {
+    fontFamily: theme.fonts.heading,
+    fontSize: theme.typography.heading,
+    color: theme.colors.danger,
+  },
+
+  masthead: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: theme.spacing.md,
+    paddingBottom: theme.spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+    marginBottom: theme.spacing.md,
+  },
+  mastheadText: { flex: 1, maxWidth: 760 },
+  eyebrow: {
+    fontFamily: theme.fonts.bodyMedium,
+    fontSize: 11,
+    letterSpacing: 2,
+    textTransform: 'uppercase',
+    color: theme.colors.selectedText,
+  },
+  title: {
+    fontFamily: theme.fonts.heading,
+    fontSize: 38,
+    lineHeight: 44,
+    color: theme.colors.text,
+    marginTop: 6,
+  },
+  subtitle: {
+    fontFamily: theme.fonts.body,
+    fontSize: theme.typography.body,
+    lineHeight: 23,
+    color: theme.colors.textMuted,
+    marginTop: 8,
+  },
+  anchorLine: {
+    fontFamily: theme.fonts.bodyMedium,
+    fontSize: theme.typography.caption,
+    color: theme.colors.text,
+    marginTop: 10,
+  },
+  mastheadBadges: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', maxWidth: 380 },
+  badge: {
+    backgroundColor: theme.colors.card,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.button,
+    paddingHorizontal: 13,
+    paddingVertical: 9,
+    minWidth: 96,
+  },
+  badgeValue: {
+    fontFamily: theme.fonts.heading,
+    fontSize: theme.typography.body,
+    color: theme.colors.text,
+  },
+  badgeLabel: {
+    fontFamily: theme.fonts.body,
+    fontSize: 10,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: theme.colors.textMuted,
+    marginTop: 2,
+  },
+
+  workspace: { flexDirection: 'row', gap: theme.spacing.md, alignItems: 'flex-start' },
+  mapColumn: { flex: 1.45, minWidth: 0 },
+  mapColumnInner: { minHeight: 620 },
+  trackCaption: {
+    fontFamily: theme.fonts.body,
+    fontSize: 11,
+    color: theme.colors.textMuted,
+    marginTop: 8,
+    lineHeight: 16,
+  },
+  controlColumn: { flex: 1, minWidth: 340, gap: theme.spacing.sm },
+
+  step: {
+    backgroundColor: theme.colors.card,
+    borderRadius: theme.radius.card,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    padding: theme.spacing.sm,
+  },
+  stepHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
+  stepBadge: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: theme.colors.selectedFill,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  stepBadgeLabel: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 12,
+    color: theme.colors.primary,
+  },
+  stepTitle: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: theme.typography.body,
+    color: theme.colors.text,
+  },
+
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 },
+  chip: {
+    paddingHorizontal: 13,
+    paddingVertical: 8,
+    borderRadius: theme.radius.chip,
+    backgroundColor: theme.colors.background,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  chipSelected: { backgroundColor: theme.colors.selectedFill, borderColor: theme.colors.primary },
+  chipHovered: { borderColor: theme.colors.selectedText },
+  chipLabel: {
+    fontFamily: theme.fonts.bodyMedium,
+    fontSize: 13,
+    color: theme.colors.textMuted,
+  },
+  chipLabelSelected: { fontFamily: theme.fonts.bodySemibold, color: theme.colors.selectedText },
+  scenarioHeadline: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: theme.typography.body,
+    color: theme.colors.text,
+    marginTop: 12,
+  },
+  figuresLine: {
+    fontFamily: theme.fonts.body,
+    fontSize: theme.typography.caption,
+    color: theme.colors.textMuted,
+    marginTop: 3,
+  },
+  borrowed: {
+    fontFamily: theme.fonts.body,
+    fontSize: 11,
+    lineHeight: 16,
+    color: theme.colors.caution,
+    marginTop: 8,
+  },
+  bandNote: {
+    fontFamily: theme.fonts.body,
+    fontSize: 11,
+    lineHeight: 16,
+    color: theme.colors.textMuted,
+    marginTop: 8,
+  },
+
+  factGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  fact: {
+    flexGrow: 1,
+    flexBasis: 130,
+    backgroundColor: theme.colors.background,
+    borderRadius: theme.radius.button,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    padding: 11,
+  },
+  factLabel: {
+    fontFamily: theme.fonts.body,
+    fontSize: 10,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    color: theme.colors.textMuted,
+  },
+  factValue: {
+    fontFamily: theme.fonts.heading,
+    fontSize: 22,
+    color: theme.colors.text,
+    marginTop: 4,
+  },
+  factValueSmall: { fontSize: 14, lineHeight: 20 },
+  factNote: { fontFamily: theme.fonts.body, fontSize: 10, color: theme.colors.textMuted },
+
+  tiles: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  tile: {
+    flex: 1,
+    backgroundColor: theme.colors.background,
+    borderRadius: theme.radius.button,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    padding: 11,
+  },
+  tileLabel: {
+    fontFamily: theme.fonts.body,
+    fontSize: 11,
+    color: theme.colors.text,
+  },
+  tileCount: {
+    fontFamily: theme.fonts.heading,
+    fontSize: 26,
+    color: theme.colors.text,
+    marginTop: 3,
+  },
+  tileUnit: {
+    fontFamily: theme.fonts.body,
+    fontSize: 10,
+    lineHeight: 14,
+    color: theme.colors.textMuted,
+    marginTop: 2,
+  },
+  loadingNote: {
+    fontFamily: theme.fonts.body,
+    fontSize: theme.typography.caption,
+    color: theme.colors.textMuted,
+    marginTop: 10,
+  },
+  emptyNote: {
+    fontFamily: theme.fonts.body,
+    fontSize: 12,
+    lineHeight: 18,
+    color: theme.colors.caution,
+    marginTop: 10,
+  },
+  errorNote: {
+    fontFamily: theme.fonts.bodyMedium,
+    fontSize: 12,
+    lineHeight: 18,
+    color: theme.colors.danger,
+    marginTop: 10,
+  },
+
+  routeBlock: {
+    marginTop: 12,
+    backgroundColor: theme.colors.background,
+    borderRadius: theme.radius.button,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    padding: 12,
+  },
+  routeHeadline: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: theme.typography.body,
+    color: theme.colors.caution,
+  },
+  routeHeadlineOk: { color: theme.colors.text },
+  routeDetail: {
+    fontFamily: theme.fonts.body,
+    fontSize: 12,
+    lineHeight: 17,
+    color: theme.colors.textMuted,
+    marginTop: 5,
+  },
+  allocationStats: { flexDirection: 'row', gap: 8, marginTop: 12 },
+  miniStat: {
+    flex: 1,
+    backgroundColor: theme.colors.card,
+    borderRadius: 8,
+    padding: 9,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  miniStatValue: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 15,
+    color: theme.colors.text,
+  },
+  miniStatLabel: {
+    fontFamily: theme.fonts.body,
+    fontSize: 10,
+    color: theme.colors.textMuted,
+    marginTop: 2,
+  },
+
+  shelterNotice: {
+    marginTop: 10,
+    backgroundColor: theme.colors.caution,
+    borderRadius: theme.radius.button,
+    padding: 12,
+  },
+  shelterHeading: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 12,
+    color: theme.colors.background,
+  },
+  shelterBody: {
+    fontFamily: theme.fonts.body,
+    fontSize: 11,
+    lineHeight: 16,
+    color: theme.colors.background,
+    marginTop: 3,
+  },
+
+  generate: {
+    marginTop: 4,
+    backgroundColor: theme.colors.primary,
+    borderRadius: theme.radius.button,
+    paddingVertical: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 48,
+  },
+  generateDisabled: { opacity: 0.45 },
+  generateLabel: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: theme.typography.emphasis,
+    color: theme.colors.background,
+  },
+  generateHint: {
+    fontFamily: theme.fonts.body,
+    fontSize: 11,
+    lineHeight: 16,
+    color: theme.colors.textMuted,
+    marginTop: 8,
+  },
+  pressed: { opacity: 0.72 },
+  staleNotice: {
+    marginTop: 10,
+    backgroundColor: theme.colors.caution,
+    borderRadius: theme.radius.button,
+    padding: 11,
+  },
+  staleText: {
+    fontFamily: theme.fonts.bodyMedium,
+    fontSize: 12,
+    lineHeight: 17,
+    color: theme.colors.background,
+  },
+  cachedButton: {
+    marginTop: 8,
+    alignSelf: 'flex-start',
+    backgroundColor: theme.colors.background,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.button,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  cachedLabel: {
+    fontFamily: theme.fonts.bodyMedium,
+    fontSize: 12,
+    color: theme.colors.text,
+  },
+
+  disclosureBlock: {
+    backgroundColor: theme.colors.card,
+    borderRadius: theme.radius.card,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    padding: theme.spacing.sm,
+  },
+  disclosureHeading: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 11,
+    letterSpacing: 1.3,
+    textTransform: 'uppercase',
+    color: theme.colors.selectedText,
+    marginBottom: 10,
+  },
+  disclosureItem: { marginBottom: 10 },
+  disclosureLabel: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 12,
+    color: theme.colors.text,
+  },
+  disclosureBody: {
+    fontFamily: theme.fonts.body,
+    fontSize: 11,
+    lineHeight: 16,
+    color: theme.colors.textMuted,
+    marginTop: 2,
+  },
+  aboutToggle: { alignSelf: 'flex-start', paddingVertical: 6 },
+  aboutToggleLabel: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 12,
+    color: theme.colors.selectedText,
+    textDecorationLine: 'underline',
+  },
+  provenance: {
+    marginTop: 8,
+    backgroundColor: theme.colors.background,
+    borderRadius: theme.radius.button,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    padding: 11,
+    gap: 6,
+  },
+  provenanceRow: { flexDirection: 'row', gap: 10 },
+  provenanceKey: {
+    fontFamily: theme.fonts.bodyMedium,
+    fontSize: 11,
+    color: theme.colors.textMuted,
+    width: 128,
+  },
+  provenanceValue: {
+    flex: 1,
+    fontFamily: theme.fonts.body,
+    fontSize: 11,
+    color: theme.colors.text,
+  },
+  provenanceNote: {
+    fontFamily: theme.fonts.body,
+    fontSize: 10,
+    lineHeight: 15,
+    color: theme.colors.textMuted,
+    marginTop: 4,
+  },
+
+  footer: {
+    fontFamily: theme.fonts.body,
+    fontSize: 11,
+    color: theme.colors.textMuted,
+    textAlign: 'center',
+    marginTop: theme.spacing.md,
+    lineHeight: 17,
+  },
+});

@@ -64,7 +64,31 @@ export const ADVISORY_TIMEOUT_MS = 120_000;
  * the flood propagation and polygonises the result. 45 s covers that with
  * room, and still fails fast enough for a usable error.
  */
-export const READ_TIMEOUT_MS = 45_000;
+export const READ_TIMEOUT_MS = 150_000;
+
+/**
+ * **Raised from 45 s to 150 s on 2026-10-01, and the measurement is why.**
+ *
+ * This was found by running the deployed Web app against the deployed backend
+ * and timing it, not by reasoning about it. `/exposure?category=6` on a cold
+ * Vercel function measured **113.9 s** — the flood propagation over the
+ * 2898x3117 DEM plus the polygonisation — while the same request warm is
+ * **1.4-1.9 s**.
+ *
+ * At the old 45 s the app therefore *aborted its own request* on the very
+ * category the demo leads with, and reported "did not complete" for a request
+ * the backend was about to answer. That is the worst failure shape available:
+ * a correct backend made to look broken by the client's impatience.
+ *
+ * The figure is a bound, not a guess: Vercel's Hobby ceiling is 300 s per
+ * request (MEMORY.md "Next step"), so 150 s leaves headroom under the platform
+ * limit while comfortably exceeding the measured cold start. It is far above
+ * anything warm — warm requests finish in under 2 s and never wait on it.
+ *
+ * `ADVISORY_TIMEOUT_MS` (120 s) is deliberately **not** raised: it is derived
+ * from the Gemini call budget, not from the simulation, and the backend's own
+ * worst case for that path is 60-90 s.
+ */
 
 // ---------------------------------------------------------------------------
 // Errors
