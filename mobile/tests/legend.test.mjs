@@ -87,7 +87,7 @@ test('the flood row names the fill and the stroke, and no other row names a stro
   // The flood layer is the only one drawn as a fill plus a stroke, so it is the
   // only row with a `strokeSource`. A second one would mean a shape in the
   // legend that the map does not draw.
-  assert.equal(byId('flood').fillSource, 'theme.waterFill');
+  assert.equal(byId('flood').fillSource, 'theme.flood');
   assert.equal(byId('flood').strokeSource, 'theme.water');
   for (const row of LEGEND_ROWS.filter((r) => r.id !== 'flood')) {
     assert.equal(row.strokeSource, undefined, `${row.id} should not name a stroke`);
@@ -102,7 +102,7 @@ test('every fill source is a real export path, and every row has one', () => {
   // step: adding a name to the union without adding a `case` fails the type
   // check, adding a `case` without a row fails this.
   const KNOWN = new Set([
-    'theme.waterFill',
+    'theme.flood',
     'theme.water',
     'mapStyles.assetPinColours.hospital',
     'mapStyles.assetPinColours.substation',
@@ -133,7 +133,7 @@ test('no two rows name the same fill source', () => {
   // Two rows resolving to one colour would show the same swatch twice under
   // two names, and the reader has no way to tell them apart. The flood row is
   // included, so this also catches a linear layer accidentally pointed at
-  // `waterFill`.
+  // `flood`.
   const sources = LEGEND_ROWS.map((r) => r.fillSource);
   assert.equal(new Set(sources).size, sources.length, `duplicate swatch sources: ${sources.join(', ')}`);
 });

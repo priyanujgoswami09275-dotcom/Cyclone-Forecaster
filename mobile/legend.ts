@@ -36,7 +36,7 @@ export type LegendSwatchKind = 'flood' | 'pin' | 'dash' | 'path';
  * imports; `MapLegend.tsx` is the one place that resolves them.
  */
 export type SwatchSource =
-  | 'theme.waterFill'
+  | 'theme.flood'
   | 'theme.water'
   | 'mapStyles.assetPinColours.hospital'
   | 'mapStyles.assetPinColours.substation'
@@ -63,7 +63,16 @@ export const LEGEND_ROWS: LegendRow[] = [
     id: 'flood',
     label: 'Flooded area',
     kind: 'flood',
-    fillSource: 'theme.waterFill',
+    // `flood` is the *theme's* flood tint, and it is deliberately not the
+    // raster's own blue. The committed PNGs are painted `#2563eb`
+    // (`render_overlays.RGB`), and the dark design's `flood` is `#84a7d3` —
+    // different values, and the swatch follows the theme because the swatch is
+    // app chrome while the raster is a pre-rendered artefact the theme does not
+    // control. The two are close enough in hue that the key reads correctly
+    // against the layer, which is the only thing a legend has to do. Logged in
+    // MEMORY.md: restyling the raster to `flood` is a Stage B question, and it
+    // would change every committed PNG.
+    fillSource: 'theme.flood',
     strokeSource: 'theme.water',
   },
   {

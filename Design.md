@@ -7,6 +7,10 @@ no logo bar, no announcement banner.
 
 ## Why these choices
 
+- **Superseded 2026-09-30.** The rationale below describes the original light
+  palette and is kept because several of the decisions still hold; the *colors*
+  it justifies were replaced by the dark theme sampled from the human's design.
+  See "Dark theme (2026-09-30)" for the current palette.
 - Terracotta/Burnt Sienna already read as danger — used directly for
   compromised roads and CRITICAL priority, no color invented.
 - Sapphire/Pale Sky already read as water — used directly for the flood
@@ -17,12 +21,64 @@ no logo bar, no announcement banner.
   plain black) — **Cobalt Blue is chosen here** as the one deliberate
   accent for the app's single main action ("Generate Advisory"), keeping
   it distinct from the danger/water/safe system.
-- Fonts: Inter (body/UI) and Roboto Slab (headings) — both real Google
-  Fonts, installable directly via `@expo-google-fonts`, no custom font
-  files needed.
+- Fonts: **Inter only.** The original spec paired Inter (body/UI) with
+  Roboto Slab (headings). The dark design calls for one family, and this
+  app's headings are a weight distinction rather than a typeface one, so
+  the slab face was removed from `theme.fonts` and from the font gate in
+  `App.tsx` on 2026-09-30. Roboto Slab is no longer downloaded at boot.
 - Shadows simplified to React Native's single-shadow model — the source's
   multi-layer box-shadow doesn't exist in RN; one soft shadow value is
-  used everywhere a card needs lift.
+  used everywhere a card needs lift. It is now a **black** shadow at 0.5
+  opacity, because the light theme's blue-tinted shadow is invisible on a
+  near-black surface.
+
+## Dark theme (2026-09-30)
+
+Sampled from the human's supplied design; these values **replace** the table
+below rather than sitting alongside it. `mobile/theme.ts` is the implementation.
+
+| Token | Hex | Use in this app |
+|---|---|---|
+| `background` | `#090909` | Page background — the app is dark, edge to edge |
+| `card` | `#0c0c0b` | Panels, cards, one step above the page |
+| `text` | `#eeedea` | Primary text — a warm off-white, **not** pure `#fff` |
+| `textMuted` | `#bcbbaf` | Secondary text, captions |
+| `border` | `#3d3d3c` | Hairlines and card outlines; visible on `#090909` |
+| `primary` | `#0d52c3` | The single accent — Generate advisory, step badges |
+| `selectedFill` | `#011132` | Selected chip fill — darker than `background`, not a tint of it |
+| `selectedText` | `#5f9dea` | Text of a selected chip |
+| `land` | `#e6ece0` | Basemap land tint in `customMapStyle` |
+| `water` | `#c9e0ec` | Basemap water tint in `customMapStyle` |
+| `flood` | `#84a7d3` | The flood raster's own tint |
+| `danger` | `#a11d00` | Submerged hospitals, cut-off roads, CRITICAL |
+| `caution` | `#fcb42a` | Substations, MEDIUM. **Unchanged** from the light theme |
+| `white` | `#ffffff` | The map's floating buttons and the legend pill, **only** |
+| `onWhite` | `#181d26` | Text/icon colour on that white chrome |
+
+**The one light surface in a dark app, and why.** The map's floating buttons
+and the legend pill are opaque white, with `onWhite` text. They sit *on top of*
+a pale basemap (`land` is `#e6ece0`), and a dark chip on a pale landmass is a
+control nobody can see. The map's chrome is light while the app around it is
+dark; that inversion is deliberate and is why `text` cannot be used on those two
+surfaces.
+
+`land` and `water` are **map tints, not UI surfaces.** They colour the basemap
+and nothing else should reference them.
+
+### Replaced (light theme, 2026-09-29)
+
+Kept for history; do not restore without a reason. `background #faf5e8`,
+`card #ffffff`, `text #181d26` (now `onWhite`), `textMuted #525965`,
+`border #e0e2e6`, `primary #1b61c9`, `water #254fad`, `waterFill #c7e5f2`,
+`danger #aa2d00`, `dangerDark #912e1f`, `safe #0a2e0e`, and the
+`RobotoSlab_700Bold` heading face.
+
+`dangerDark` and `safe` were **not** carried into the dark theme. Neither was
+used by anything the rebuild touches, and leaving unused tokens in the palette
+is how a token file becomes a list of things that used to be true. Both are in
+git history.
+
+## Color tokens (SUPERSEDED — see Dark theme above)
 
 ## Color tokens
 
@@ -43,12 +99,19 @@ no logo bar, no announcement banner.
 
 ## Typography
 
+**Inter only, as of 2026-09-30.** One family, four roles, separated by weight.
+
 | Role | Font | Weight | Size |
 |---|---|---|---|
-| Headings | Roboto Slab | 700 | 20–24px — **22px** used |
+| Headings | Inter | 600 | 20–24px — **22px** used |
 | Body | Inter | 400 | 15–16px — **16px** used |
 | Emphasis / button labels | Inter | 600 | 15–16px — **16px** used |
 | Caption / labels | Inter | 500 | 12–13px — **13px** used |
+
+`theme.fonts.heading` now points at `Inter_600SemiBold` rather than
+`RobotoSlab_700Bold`. Nothing on the map screen needs a slab: the screen's
+headings are the 16px screen title and the 13px uppercase step labels, and both
+read as headings because of weight and case, not typeface.
 
 The ranges above are the design intent; the bold values are the concrete sizes
 implemented in `mobile/theme.ts` (`theme.typography`), chosen as the midpoint
@@ -66,26 +129,145 @@ of each range. Change one and change both.
 
 ## Component specs for the actual screens
 
+### Rebuilt to the dark design, 2026-09-30 (Stage A)
+
+The map screen was rebuilt in two stages. Stage A is below; Stage B (display
+smoothing, advisory modal restyle) is not done. What follows replaces the
+superseded light-theme specs, which are kept in git history.
+
+- **Screen structure, top to bottom**: title + subtitle, the map (flexing, with
+  a 40% minimum height), then the panel. The panel sizes to its content and the
+  map takes the rest, so the map *grows* when the panel shrinks — on a short
+  device or a large system font — rather than the panel eating a fixed
+  percentage. The 40% floor is what stops the map being squeezed to a strip.
+- **Title** "Cyclone Remal impact simulator" at `typography.body` in
+  `fonts.heading`; **subtitle** "What would a storm like this hit today?" at
+  `typography.caption` in `textMuted`.
+- **Step badge** (`PanelStep`): a `radius.chip` circle filled `selectedFill`
+  with the number in `primary`. The badge is *darker* than the page, so it
+  reads as a recessed well and the number is the only `primary` on the panel.
+  Three badges give the panel a spine and make the three steps countable.
+  Deliberately **not** the first-run card's `primary` fill: that card is a
+  transient overlay on a pale map, while these sit on near-black where a bright
+  blue disc would out-shout the Generate button they lead to.
+- **Step titles** "Pick a storm strength", "See what gets hit", "Get the
+  evacuation plan" at `typography.body` in `fonts.bodySemibold`.
+- **Strength chips** (`StrengthChips`): a horizontal scrolling row, because
+  "Super cyclonic" makes four chips wider than a phone and a wrap would change
+  the row's height between selections, shoving the figures line below it. Idle
+  chip is `card` fill with a `border` outline; selected is `selectedFill` fill
+  with a `primary` border and `selectedText` label in `bodySemibold`, idle
+  label `textMuted` in `bodyMedium`.
+- **Figures line** under the chips: `typography.caption`, `bodySemibold`,
+  `text`. Prefixed `≥` only when the backend's `wind_is_band_midpoint` is
+  false, and suffixed "(model)" because the km² is the computation's figure and
+  not measured off the picture above it.
+- **Exposure tiles** (`ExposureTiles`): three equal `card` blocks, outlined in
+  `border`, value at `typography.heading` in `text`, label at `caption` in
+  `text`, unit line at `caption` in `textMuted`. An unresolved count renders
+  `—`, never `0`; a real zero renders `0`. The unit line is suppressed at zero.
+  Road's caption is "cut off by water", not "submerged" — a road is severed by
+  water it need not be standing in.
+- **Generate advisory**: full-width `primary` fill, 12px radius, at
+  `typography.emphasis` in `fonts.bodySemibold`, label in `background` (the
+  near-black that is the only legible colour on `primary` at this weight).
+  Inside the panel as step 3, **not** in a pinned footer — with three steps the
+  panel no longer scrolls past the button, and a button detached from the thing
+  it summarises reads worse than one directly under it.
+- **Origin line**: "From: <locality> · change", `caption`, name in
+  `bodySemibold`/`text`, and "change" in `selectedText` underlined — the same
+  blue a selected chip uses, because it is an action in the chip vocabulary.
+  Opens the existing `LocalityPicker`; no new component and no new dependency.
+- **Map floating controls** (`MapControl`): three 48dp `radius.button` squares
+  stacked at the map's right, `white` fill with `onWhite` icons, the card
+  shadow. The storm-path button gains a 2dp `selectedText` ring while the map is
+  fitted to the track, so the state is on the control and not only in the map.
+  **These are drawn marks, not platform-native icons** — see the vector-icons
+  note in MEMORY.md.
+- **Legend**: `white` fill (it sits on the pale basemap, so a dark pill would
+  be the one control nobody can see), `onWhite` text, 12px radius, bottom-left.
+  The track's swatch is a *solid* bar although the layer is now dashed — see
+  the next section.
+- **About caption** "Screening estimate, not a forecast · About this estimate":
+  `caption` in `textMuted`, with "About this estimate" in `bodySemibold`/
+  `selectedText` and an `accessibilityRole` of `link`. Opens `AboutSheet`.
+- **About sheet** (`AboutSheet`): a bottom-anchored `card` sheet over a 60%
+  black scrim, `radius.card` top corners, capped at 80% height so it scrolls.
+  Three blocks with uppercase `caption`/`textMuted` headings. Backdrop is
+  tappable and `onRequestClose` is wired, or the sheet traps the user on
+  Android.
+
+### The basemap (`customMapStyle`)
+
+New 2026-09-30. Google Maps' documented style array, applied in order with
+later entries winning. **POIs and transit are off entirely** — a cyclone
+exposure map with every restaurant and bus stop on it is unreadable, and those
+markers are the ones most likely to be mistaken for the app's own asset pins.
+Road geometry is `card` and road *labels* off, so the app's own cut-off roads
+are the only road lines a reader has to interpret.
+
+| Feature | Element | Value |
+|---|---|---|
+| (all) | `geometry` | `land` |
+| (all) | `labels.text` | `textMuted` |
+| (all) | `labels.icon` | off |
+| `water` | `geometry` | `water` |
+| `water` | `labels.text` | `textMuted` |
+| `poi` | — | off |
+| `transit` | — | off |
+| `road` | `geometry` | `card` |
+| `road` | `labels.text` | off |
+| `road.highway` | `geometry` | `border` |
+| `administrative` | `geometry.stroke` | `border` |
+| `administrative.land_parcel` | — | off |
+
+**Rotation and pitch stay disabled**, and that is a correctness decision rather
+than a simplification: the flood is a single north-up raster and `<Overlay>`
+takes a static `bearing` instead of tracking the camera, so a rotated map would
+leave the water at the wrong angle to the coastline — a subtle wrongness much
+worse than losing the ability to spin the map.
+
+### Superseded light-theme component specs
+
+Kept for history; the dark rebuild above replaces them.
+
 - **Map screen background**: `background` token behind the map container
 - **Intensity slider**: track in `border`, filled portion + thumb in `primary`
+  — **replaced** by the four strength chips, which is the whole of Stage A's
+  structural change. Five of the seven bands expose no infrastructure, so the
+  slider spent four fifths of its travel on empty results.
 - **Exposure list row** (hospital/substation/road): `card` background,
   small colored dot — `danger` if affected, `textMuted` if not
 - **Priority chip** (CRITICAL/HIGH/MEDIUM/LOW): pill shape, background
-  `danger`/`dangerDark`/`caution`/`safe` respectively, white text
-- **Flood polygon on map**: fill `waterFill` at 50% opacity, stroke `water`
-- **Compromised road**: dashed `Polyline`, color `danger`
-- **Cyclone track (best-track polyline and its waypoint pins)**: `text`.
-  Added 2026-09-29 to close MEMORY.md §36, which recorded that the token table
-  assigned a colour to the flood, the roads, the priority chips, the shelters
-  and the one main action, and said nothing about a storm's own path — so the
-  app was drawing one from an unrecorded choice. `text` (Onyx) is deliberate:
-  the track is a *record of what happened*, so it is drawn in a neutral that
-  reads as neither hazard nor forecast, and the four colours that carry
-  meaning on this map stay distinct from it. A third option was available and
-  not taken — `primary`, as the single deliberate accent — because that token
-  is reserved for "Generate Advisory" above.
-- **Advisory modal**: `card` background, 16px radius, single soft shadow
-- **"Generate Advisory" button**: `primary` fill, white text, 12px radius
+  `danger`/`dangerDark`/`caution`/`safe` respectively, white text — **the two
+  dark-theme tokens it needed did not survive the rebuild.** It now maps
+  CRITICAL/HIGH→`danger`, MEDIUM→`caution`, LOW→`border`, and carries the
+  rank difference in the *label's weight* (`bodySemibold` vs `bodyMedium`)
+  rather than in a second red. Two reds differing only by opacity are
+  indistinguishable on a phone in daylight. Label colour is per-level too:
+  near-black on `danger` and `caution`, but `text` on `border`, where
+  near-black would be a contrast failure. Four distinct fills would be two new
+  tokens plus a Design.md row — the human's call, logged in MEMORY.md.
+- **Flood polygon on map**: fill `waterFill` at 50% opacity, stroke `water` —
+  **now `flood` fill, `water` stroke.** Note the committed PNGs are painted
+  `#2563eb` (`render_overlays.RGB`), which is *not* the `flood` token; the
+  raster is a pre-rendered artefact the theme does not control. Restyling it to
+  `flood` is a Stage B question and would change every committed PNG.
+- **Compromised road**: dashed `Polyline`, color `danger` — **unchanged.** The
+  dash is `[6, 4]` and is not honoured by the Android renderer, so it draws
+  solid there.
+- **Cyclone track**: was `text` (Onyx), now **near-black `background` (#090909)
+  and dashed `[10, 6]`**. The dash is the new part and it is not cosmetic: the
+  track is the one layer that crosses the others — the length of the Bay, across
+  the flood raster near landfall, over the delta where the cut-off roads
+  cluster. Solid, it has to win every crossing. Dashed, the flood and the
+  severed roads stay legible underneath, and "what happened" is distinguished
+  from "what would happen" by texture as well as by colour.
+- **Advisory modal**: `card` background, 16px radius, single soft shadow —
+  **not yet restyled.** That is Stage B.
+- **"Generate Advisory" button**: `primary` fill, white text, 12px radius —
+  label is now "Generate advisory" (sentence case, matching the design) and
+  sits inside the panel.
 - **SMS copy button**: ghost style — white fill, 1px `border`, `text` color
 
 ### Added 2026-09-29 without a prior spec
@@ -96,34 +278,24 @@ rather than left as undocumented implementation. Unlike the track token above,
 these are **implementation choices, not decisions**; MEMORY.md §37 lists them
 as owed a human look.
 
-- **"Show storm path" map control**: a ghost chip at the map's bottom-right —
-  `card` fill, 1px `border`, `text` label, `radius.chip`, with a drawn icon
-  before the label. Placed bottom-right because the flood-layer banner at the
-  top is full-width and its height varies with its text. Renamed from "Full
-  track" 2026-09-30: the old label named the view's contents rather than the
-  action, and the toggle's other label ("Back to Sagar" → "Zoom to Sagar")
-  read as navigation away from a place the reader was never at.
-- **Map legend**: bottom-left of the map, `card` fill, 1px `border`,
-  `radius.button`. Five rows — flooded area, hospital, substation, cut-off
-  road, storm path. **Swatch colours are read from `mapStyles.ts`, not
-  retyped**, so the legend cannot drift from what the map actually draws.
-  Bottom-left because the storm-path control holds bottom-right. Added
-  2026-09-30; tokens only, but see MEMORY.md — a legend is a second surface
-  that has to be kept in sync.
+**Still on screen after the Stage A rebuild:**
+
+- **Map legend**: bottom-left of the map, `white` fill (it sits on the pale
+  basemap), `onWhite` labels, `radius.button`. Five rows — flooded area,
+  hospital, substation, cut-off road, storm path. **Swatch colours are named as
+  strings in `legend.ts` and resolved in `MapLegend.tsx` against the same
+  `mapStyles.ts` constants the map draws from**, so the legend cannot drift from
+  the map. The name/value split exists because `node --test` cannot follow the
+  extensionless imports Metro requires — see that file's header.
+  **One acknowledged mismatch**: the flood row resolves to `theme.colors.flood`
+  (`#84a7d3`) while the committed raster is painted `#2563eb`. The swatch is
+  app chrome and the raster is a pre-rendered artefact the theme does not
+  control; they are close in hue, so the key reads correctly against the layer.
+  Logged in MEMORY.md.
 - **First-open card**: top of the map, `card` fill, `radius.card`, 1px
-  `border`. Three numbered steps in `primary` badges naming the three
-  gestures that make up the app's loop. Dismissible. Added 2026-09-30.
-  **Session-scoped, not persisted** — see MEMORY.md.
-- **Section headings** — "Storm", "Impact", "Where are you": uppercase
-  `textMuted` at `typography.caption`, same treatment `ReadoutPanel` already
-  uses for its "Exposure" label. Deliberately plain: the cards are already the
-  panel's visual structure, and a second heading weight competes with the
-  numbers. Added 2026-09-30.
-- **"What-if" caption** under the intensity slider: `textMuted` at
-  `typography.caption`, one line. Added 2026-09-30.
-- **Pinned "Generate Advisory" footer**: outside the panel's `ScrollView`,
-  `background` fill, 1px `borderTop`. Added 2026-09-30 — the button was the
-  last child of the scroll view and so was below the fold at boot.
+  `border`. Three numbered steps in `primary` badges naming the three gestures
+  that make up the app's loop. Dismissible. **Session-scoped, not persisted** —
+  it returns on every cold start. See MEMORY.md.
 - **Shelter disclosure notice**: `caution` fill, `text` body, `radius.button`.
   Placed above the advisory body rather than in a footer, so it is read before
   the numbers it qualifies. Non-dismissable by design.
@@ -132,12 +304,34 @@ as owed a human look.
   line below it should be read.
 - **Stale-advisory notice**: `caution` fill, `text` body, shown when the
   advisory on screen was generated for a different intensity or origin than
-  the current settings.
+  the current settings. Now inside the panel, directly above the button it
+  warns about.
 - **Failure states**: `danger` heading, `text`/`textMuted` body, violations in
   a `background` block. Only the `validation` state lists violations; every
   other failure shows prose alone.
 
+**Removed by the Stage A rebuild:**
+
+- **"Show storm path" ghost chip** → became one of three white floating buttons
+  (`MapControl`).
+- **"Intensity slider" + "What-if" caption** → replaced by the four strength
+  chips and the figures line. The caption's "this is a what-if" point is now
+  carried by the "Screening estimate, not a forecast" line.
+- **Section headings** "Storm", "Impact", "Where are you" → the three numbered
+  `PanelStep` titles.
+- **Pinned "Generate Advisory" footer** → the button is back inside the panel
+  as step 3, since three steps no longer overflow the panel.
+- **`ReadoutPanel`** → its numbers are the three tiles, its raster note and
+  limitation are in the About sheet, and its three exposure rows are the tiles.
+  The component is no longer rendered; it remains in the tree, unused, pending
+  the human's decision on whether to delete it.
+- **The "Where are you" locality card** → the one-line `OriginLine`.
+
 ## React Native theme object
+
+**SUPERSEDED — the light theme's object.** The current one is `mobile/theme.ts`
+and its table is "Dark theme" above. Kept because the *shape* is still the
+contract: a component reaches for `theme.colors.*` and never for a literal.
 
 ```ts
 export const theme = {
@@ -181,10 +375,15 @@ export const theme = {
 };
 ```
 
+Two changes from the above, both in the dark theme: `shadow.card` is **black at
+0.5 opacity** (a blue-tinted shadow on a near-black surface is invisible, and a
+shadow's job here is to separate a raised card from the page), and
+`fonts.heading` is `Inter_600SemiBold` rather than a slab face.
+
 ## Font setup (Expo)
 
 ```bash
-npx expo install @expo-google-fonts/inter @expo-google-fonts/roboto-slab expo-font
+npx expo install @expo-google-fonts/inter expo-font
 ```
 
 Load with the `useFonts` hook before rendering the app, per the standard
@@ -192,9 +391,12 @@ Expo Google Fonts pattern:
 
 ```ts
 import { useFonts, Inter_400Regular, Inter_500Medium, Inter_600SemiBold } from '@expo-google-fonts/inter';
-import { RobotoSlab_700Bold } from '@expo-google-fonts/roboto-slab';
 
 const [fontsLoaded] = useFonts({
-  Inter_400Regular, Inter_500Medium, Inter_600SemiBold, RobotoSlab_700Bold,
+  Inter_400Regular, Inter_500Medium, Inter_600SemiBold,
 });
 ```
+
+**The Roboto Slab dependency is gone** as of 2026-09-30 — the dark design calls
+for one family, and dropping it means the slab face is no longer downloaded at
+boot.

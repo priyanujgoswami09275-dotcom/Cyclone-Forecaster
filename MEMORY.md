@@ -1544,6 +1544,57 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
      off the edge on every device. Wants a real screen, which is still not
      possible.
 
+44. **Stage A of the dark rebuild is on the phone's screen but has never been on
+   a screen a human looked at, and four of its decisions need a ruling.**
+   Added 2026-09-30. `theme.ts` is now the dark palette, the map screen is
+   rebuilt to the design, and 96 mobile tests plus 331 Python tests are green.
+   Stage B (display smoothing, advisory modal restyle) is **not** started, per
+   the brief's explicit stop.
+   - **`@expo/vector-icons` does not resolve in Expo SDK 57.0.26.** The brief
+     said it "ships with expo"; it is listed in
+     `expo/bundledNativeModules.json` at `^15.0.2` but is **not installed**,
+     and it resolves under none of `@expo/vector-icons`,
+     `@expo/vector-icons/Ionicons`, the package root, or a direct file path.
+     The brief also forbade `npm install`, so `ControlIcon.tsx` still composes
+     its two glyphs from `View`s and `MapControl.tsx` draws the layers mark the
+     same way. **These are not platform-native icons.** Installing the package
+     is the fix and is one command — the human's call, since the brief said
+     not to add dependencies.
+   - **The "From:" line says "Sagar", not "Sagar Island".** The brief asked for
+     "Sagar Island" but `/localities` returns `name: "Sagar"` for the `sagar`
+     id. It shows the backend's own string deliberately: the same name goes into
+     the advisory prompt and into `generated_for.origin.name`, which the
+     stale-guard compares against, so printing a different name here would put
+     two names for one place on one screen. The real fix is renaming it in
+     `backend/locations.py`, which is a backend change this pass did not make.
+   - **The flood legend swatch does not match the raster it keys.** The swatch
+     resolves to `theme.colors.flood` (`#84a7d3`); the committed PNGs are
+     painted `#2563eb` (`render_overlays.RGB` in `render_overlays.py`). Close in
+     hue, so the key reads correctly, and the swatch is app chrome while the
+     raster is a pre-rendered artefact the theme does not control. Restyling the
+     raster to `flood` is a **Stage B** question and would change every
+     committed PNG and the pixel-count tests.
+   - **`PriorityChip` lost resolution, not tokens.** The dark palette supplies
+     one danger and one caution, and the old four-level ramp wanted
+     `dangerDark` and `safe` as well. It now maps CRITICAL/HIGH→`danger`,
+     MEDIUM→`caution`, LOW→`border`, and carries the rank in the **label's
+     weight** rather than in a second red — two reds differing only by opacity
+     are indistinguishable on a phone in daylight. Four distinct fills would be
+     two new tokens in `theme.ts` plus a Design.md row. Not invented unilaterally.
+   - **Cannot be verified without a device**, and the human's phone is the only
+     way: whether the map's 40% floor plus the three-step panel leaves the chips
+     and the Generate button both above the fold on a small screen; whether the
+     white floating controls and the white legend pill read against the pale
+     basemap at their real contrast; whether the chip row scrolls rather than
+     clipping; and whether `lineDashPattern` is honoured on the test device —
+     **it is not honoured by the Google Maps renderer on Android**, so the storm
+     path and the cut-off roads will draw **solid** there while the legend shows
+     them dashed. That is a pre-existing platform limit, not a regression, and
+     it is unverifiable here because there is no Android device or emulator.
+   - **`ReadoutPanel`, `IntensityControl` and `SectionHeading` are now unused.**
+     The rebuild replaced all three. They are left in the tree rather than
+     deleted (standing instruction: delete nothing) and are the human's call.
+
 ## Environment / credentials status
 
 - [x] Google Earth Engine authenticated — done 2026-09-27, DEM fetched and committed
@@ -1604,26 +1655,45 @@ lockfile), `.claude/` (settings + skills).
 
 ## Next step
 
-**Stage B is done. Both halves of the track viewer and the whole advisory flow
-landed 2026-09-29: Stage A (`e660035` backend, `c3f3549` mobile), then
-`dcfba38` (quota as 429), `c404395` (fit-to-track), `cf25a81` (advisory flow).
-The fourth planned commit — a saved-example fallback reading `data/samples/` —
-was **skipped: no such directory exists**, and inventing sample advisories
-would have been fabricating the one artefact in this app that is supposed to
-be real output from a real model. The app now has a complete core loop and
-**has still never run on a device** (§33).**
+**The immediate next step is a phone, and then Stage B.** The dark rebuild's
+Stage A landed 2026-09-30: the map screen is rebuilt to the supplied design,
+the seven-band slider is replaced by four strength chips, provenance is behind
+an "About this estimate" sheet, and 96 mobile tests are green (§44 has the four
+decisions that need a ruling). The brief says **stop and wait for a human to
+look at the phone** — so that is the next action, not another commit.
 
-What the loop does now: adjust intensity → raster flood + exposed infra update
-on the map → Generate Advisory → modal with the summary, block-level
-priorities, post-landfall risks, the SMS draft and a copy button, or a failure
-state that says which of seven distinct things went wrong.
+**Stage B, only after a go-ahead:** display-only smoothing in
+`render_overlays.py` (close small gaps, drop specks, keep 4 depth classes,
+behind a flag, unsmoothed output still reproducible — and note this will change
+the pixel counts the overlay tests pin, so those tests need updating
+deliberately); restyle the advisory modal to the same dark tokens, keeping every
+failure state and the shelter notice above the summary; update `Design.md`,
+`MEMORY.md`, commit. **The model's km² figures are untouched by Stage B** — it
+is a display change only.
 
-**The next real step is a device, not a commit.** Everything above has been
-verified by `tsc --noEmit`, `node --test` and `pytest`, none of which render a
-pixel. The specific things only a device can answer: whether the ghost control
-and the bottom-anchored notices clear the Android status bar and the panel;
-whether `expo-clipboard` resolves on a real handset; and whether
-`react-native-maps` accepts `edgePadding` on this platform version. Command
+**Before Stage B there is a decision waiting: `@expo/vector-icons`.** It does not
+resolve in SDK 57.0.26 despite being listed in `expo/bundledNativeModules.json`,
+so the map's icons are drawn from `View`s and are not platform-native. Installing
+it is one command and the brief forbade it, so it is the human's call (§44).
+
+**The core loop, restated after the rebuild:** pick a strength from four chips →
+the raster flood and the three exposure tiles update on the map → Generate
+advisory → the modal with the summary, block-level priorities, post-landfall
+risks, the SMS draft and a copy button, or one of seven distinct failure states.
+The loop was completed 2026-09-29 (`e660035`, `c3f3549`, `dcfba38`, `c404395`,
+`cf25a81`); a saved-example fallback reading `data/samples/` was **skipped: no
+such directory exists**, and inventing sample advisories would have been
+fabricating the one artefact in this app that is supposed to be real output
+from a real model. The app **has still never run on a device** (§33).
+
+**The next real step after that is still a device, not a commit.** Everything
+above has been verified by `tsc --noEmit`, `node --test` and `pytest`, none of
+which render a pixel. Only a device can answer: whether the rebuilt map plus
+the three-step panel leaves the chips and the Generate button both above the
+fold; whether the white floating controls read against the pale basemap; and
+whether `lineDashPattern` is honoured on the test device — **it is not
+honoured by the Google Maps renderer on Android**, so the storm path and the
+cut-off roads draw solid there while the legend shows them dashed. Command
 sequence is in the session log below.
 
 **Decisions still owed a human, unchanged by this round:** §24 the eight
@@ -1739,6 +1809,108 @@ RUN_LIVE_CAPTURE=1 venv/bin/python -m backend.tools.capture_advisory
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-30 — Claude Code: Stage A of the dark rebuild — the slider is gone, and the provenance moved behind a tap
+
+**Scope.** The map screen rebuilt to the human's dark design. `theme.ts`,
+`Design.md`, `mapStyles.ts`, `MapScreen.tsx` rewritten; six new components
+(`PanelStep`, `StrengthChips`, `ExposureTiles`, `MapControl`, `OriginLine`,
+`AboutSheet`) and three new pure modules (`strengthChips.ts`,
+`exposureTiles.ts`, `trackFacts.ts`). **No backend number, endpoint or model
+changed, and no new dependency.** tsc clean, **96 mobile tests** (up from 57),
+331 Python tests unchanged. **Stage B was not started** — the brief says stop
+and wait. The app has **still never run on a device** (§33); every layout claim
+here is from the code and the typechecker, not from a screen.
+
+**Item 0 first, as the brief asked.** The overlay colour-type fix is committed
+in `3bf47af`: all 8 PNGs are `RGBA` at 1000×930, verified by Pillow in
+`tests/test_overlays.py`, and the flooded-pixel counts still match the committed
+files (cat4 16052, cat5 76327, cat6 119406, remal_observed 14657).
+
+**The chips are mapped from the live API, not typed in.** `resolveChip` asks
+`/categories` for the band and `/overlays` for the raster; the four chip *ids*
+are the app's vocabulary and every number displayed is the API's. The mapping is
+Remal→`remal_observed`, then categories 4, 5, 6, and it is pinned by test
+against the real payload. The brief's own figures ("≥222 km/h, 4.5 m, 2,680
+km²") match the served `cat6` exactly, which is how I knew the mapping was
+right rather than merely plausible.
+
+**Why four chips and not seven bands — the finding, not the brief's.** Measured
+against the live API: **categories 0–3 flood nothing at all and 0–4 expose zero
+infrastructure.** The old slider therefore spent four fifths of its travel on
+positions that render an empty map and a disabled button, which reads as a
+broken app rather than as a resolution limit. Four chips is every position where
+something happens. The default is **Super cyclonic (6)** — a change from the
+old default of 5, and it is what the brief specified.
+
+**`≥` is driven by the payload's own flag, and that is a real correctness
+point.** IMD documents Super Cyclonic Storm as `>=222 kmph` with **no upper
+bound**, so the backend reports `wind_is_band_midpoint: false` and 222 is the
+band's *floor*. Printing "222 km/h" beside a chip labelled "Super cyclonic"
+would state as a measurement the bottom of an open-ended range — the same class
+of error as the knots bug in §31. Category 6 is the only band where the flag is
+false, and `figuresLine` is tested for all three cases: midpoint, open-ended, and
+**flag absent** (treated as *not* a midpoint, since `undefined` means the value
+is not known to be one, and the bare number would assert something the payload
+did not say).
+
+**A fact I got wrong and corrected mid-task, recorded because the process
+matters more than the number.** I wrote a comment in `AboutSheet.tsx` saying
+"Nine of the committed fixes report no wind." I had not counted. The file has
+**5** unreported fixes out of 19, and the comment now says so — and the sheet
+takes the count as a *prop* from `trackFacts.countUnreported` rather than
+stating it, so it tracks the payload instead of a comment. Separately, a test I
+wrote asserted `54 * 1.852` for the track's peak while the fixture said `100.0`;
+the **test** was wrong, not the module — `main.py` rounds to one decimal, so
+`100.0` is what the endpoint actually serves, and the fixture was right.
+
+**The JTWC note is a genuine disagreement in the source data, not a caveat we
+invented.** The committed track's wind column is `usa_wind_kt` — IBTrACS's USA
+column, which is **JTWC's 1-minute** mean — while IMD publishes a **3-minute**
+one. The peak is 54 kt = 100 km/h against IMD's **110–120 km/h** landfall
+figure. A reader who put those side by side, then compared them to the app's own
+`≥222 km/h` chip, would conclude the model is far more extreme than anything
+observed — a comparison two different averaging periods do not support. So the
+About sheet says why they differ and which to quote. `peakReportedWindKmph`
+filters on `wind_reported`, **not** on the value being non-zero: a best-track
+agency genuinely does report 0 kt for a dissipated system, and dropping those
+would understate a track that weakens to nothing. That asymmetry is the whole
+reason the function exists rather than a `Math.max`, and both directions are
+tested.
+
+**Provenance moved from three paragraphs to one line and a sheet.** The track
+caption, the raster note and the limitation were eating the panel. They are now
+"Screening estimate, not a forecast · About this estimate", and the sheet
+carries all three with the limitation **verbatim from the backend** — a
+paraphrase is a place for the two to drift, and that sentence is the model's
+own description of itself.
+
+**Two components lost resolution and I did not paper over it.** `PriorityChip`
+needed four severity fills and the dark palette supplies two; it now carries
+rank in the **label's weight** rather than in a second red (two reds differing
+only by opacity are indistinguishable on a phone in daylight), and its label
+colour is per-level because near-black on `border` is a contrast failure. The
+legend's flood swatch resolves to `flood` (`#84a7d3`) while the committed rasters
+are painted `#2563eb`. Both are in §44 with the fix that is the human's call.
+
+**`waterFill` and `dangerDark`/`safe` are gone and two files still referenced
+them.** `legend.ts`, `MapLegend.tsx` and `legend.test.mjs` all named
+`theme.waterFill`; `PriorityChip` used both dropped tokens. Fixed at the source
+(`legend.ts` now names `theme.flood`) rather than by re-adding the tokens — the
+whole point of the theme file is that it is not a list of things that used to be
+true. The legend test pins the source set **closed**, so it needed the same
+deliberate update; leaving it would have let the test pass vacuously.
+
+**`customMapStyle` could not be `as const`.** The other exports in `mapStyles.ts`
+are, because they are spread onto props. This one is passed as the array itself
+and react-native-maps types it as a mutable `MapStyleElement[]`, so a readonly
+array is a compile error. The file now takes a **type-only** import of
+`MapStyleElement` — erased at compile time, so the style array's shape is
+checked against Google's own types rather than against my memory of them.
+
+**Stopped, per the brief.** Stage B items 7–9 (display smoothing, advisory modal
+restyle, doc updates) are **not** started. §44 lists the four things that need a
+ruling and the four that cannot be checked without the phone.
 
 ### 2026-09-30 — Claude Code: the judge-facing UI pass — six changes, and one of them was a lie about the app
 

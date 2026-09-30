@@ -66,8 +66,8 @@ export function MapLegend() {
  */
 function resolve(source: SwatchSource | undefined | null): string | null {
   switch (source) {
-    case 'theme.waterFill':
-      return theme.colors.waterFill;
+    case 'theme.flood':
+      return theme.colors.flood;
     case 'theme.water':
       return theme.colors.water;
     case 'mapStyles.assetPinColours.hospital':

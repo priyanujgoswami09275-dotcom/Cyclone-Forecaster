@@ -39,15 +39,20 @@ import {
 import { describeAdvisoryError, isAdvisoryStale } from '../advisoryFlow';
 import { SAMPLE_ADVISORY } from '../sampleAdvisory';
 import { theme } from '../theme';
+import { DEFAULT_CHIP, advisoryEnabled, resolveChip, type ChipId } from '../strengthChips';
+import { totalExposed } from '../exposureTiles';
+import { countUnreported, peakReportedWindKmph } from '../trackFacts';
 import { AdvisoryContent, type AdvisoryOutcome } from './AdvisoryContent';
-import { PathIcon, TargetIcon } from './ControlIcon';
+import { AboutSheet } from './AboutSheet';
+import { ExposureTiles } from './ExposureTiles';
 import { FirstRunCard } from './FirstRunCard';
-import { IntensityControl } from './IntensityControl';
 import { LocalityPicker } from './LocalityPicker';
+import { MapControl } from './MapControl';
 import { MapLegend } from './MapLegend';
+import { OriginLine } from './OriginLine';
+import { PanelStep } from './PanelStep';
 import { PrimaryButton } from './PrimaryButton';
-import { ReadoutPanel } from './ReadoutPanel';
-import { SectionHeading } from './SectionHeading';
+import { StrengthChips } from './StrengthChips';
 import {
   SAGAR_REGION,
   OVERLAY_BEARING,
@@ -56,31 +61,42 @@ import {
   assetPinColours,
   compromisedRoadDashPattern,
   compromisedRoadStyle,
+  customMapStyle,
+  trackDashPattern,
   trackLineStyle,
   trackPinColour,
 } from './mapStyles';
 
 /**
- * Stage 2 — the map screen. Two screens total in this app; this is the first,
- * and the advisory modal is the second.
+ * The map screen — the app's only screen, plus the advisory modal.
  *
- * What this screen deliberately does NOT do
- * -----------------------------------------
- * It does not fetch `/surge-zone`. That endpoint is live and correct, and at
- * category 6 it returns 532 polygons, 40,698 rings and 180,038 vertices —
- * 7.0 MB raw, 936 KB gzipped. `react-native-maps` will stutter drawing that,
- * and re-fetching it per slider step is a connection problem before it is a
- * rendering one. The flood is drawn instead from the pre-rendered PNG in
- * `data/overlays/`, placed with its own geographic bounds: 126,552 bytes at
- * category 6, handed to the map engine as a texture sample and never parsed.
+ * Rebuilt 2026-09-30 to the dark design. What changed structurally, and why:
  *
- * The exposure counts beside it come from `/exposure`, which is the real
- * full-resolution computation and knows nothing about the raster. That split
- * is the whole point — the picture is a shortcut, the numbers are not.
+ *   - **The seven-band slider is gone, replaced by four chips.** Five of the
+ *     seven bands expose no infrastructure, so the slider spent most of its
+ *     travel on empty results. See `strengthChips.ts`.
+ *   - **The panel is three numbered steps** — pick a strength, see what gets
+ *     hit, get the plan — which is the app's loop stated as a list the reader
+ *     can count.
+ *   - **The origin is one line**, not a card with a 45-item chip row.
+ *   - **The Generate button moved back inside the panel**, as step 3. It was
+ *     pinned to a footer in the previous pass to keep it above the fold; with
+ *     the panel now only three steps tall there is no fold, and a button that
+ *     sits *under* the thing it summarises reads better than one detached from it.
+ *   - **Provenance moved behind a caption.** The track caption, the raster note
+ *     and the limitation were three paragraphs in the panel; they are now one
+ *     line that opens `AboutSheet`.
  *
- * No auth and no location permission, per the Module E brief. The backend is
- * public and unauthenticated for the demo, and the opening region is fixed to
- * Sagar Island, so nothing here can prompt for a permission dialog.
+ * What deliberately did NOT change: no backend number, no endpoint, no model.
+ * Every figure on this screen still comes from `/categories`, `/overlays`,
+ * `/exposure`, `/localities` and `/track` exactly as before. The chips choose
+ * *which* category to ask for; they do not restate what it says.
+ *
+ * What this screen still does not do: fetch `/surge-zone`. At category 6 that
+ * is 7.0 MB raw / 936 KB gzipped of polygons, which `react-native-maps` stutters
+ * on. The flood is the pre-rendered PNG in `data/overlays/` instead; the counts
+ * beside it come from `/exposure`, which is the real full-resolution
+ * computation. The picture is a shortcut; the numbers are not.
  */
 
 type Boot =
@@ -98,52 +114,24 @@ export function MapScreen() {
   const [boot, setBoot] = useState<Boot>({ status: 'loading' });
 
   const mapRef = useRef<MapView | null>(null);
-  /**
-   * Whether the map is currently showing the whole track, and so whether the
-   * ghost control reads "Show storm path" or "Zoom to Sagar".
-   *
-   * This is the map's *own* state, tracked on purpose: a user who pans away
-   * from the fitted view by hand leaves the label describing the last button
-   * press rather than what is on screen. That is a small lie, and the fix —
-   * inferring position from the camera — is not available here, because
-   * `onRegionChangeComplete` fires for the programmatic fit too and would
-   * immediately reset the label it is meant to keep. The label describes the
-   * control's last action, which is what a toggle is.
-   */
+  /** Whether the map is fitted to the whole track. Drives the control's state. */
   const [fittingTrack, setFittingTrack] = useState(false);
+  /** First-run card, session-scoped — see `FirstRunCard`'s own note. */
+  const [showFirstRun, setShowFirstRun] = useState(true);
+  /** The About sheet, opened from the caption at the foot of the panel. */
+  const [showAbout, setShowAbout] = useState(false);
 
   /**
-   * Whether the three-step first-open card is still showing.
+   * The selected strength, as a chip id.
    *
-   * **Session-scoped, not persisted.** `@react-native-async-storage/async-storage`
-   * is not installed and this pass adds no dependency, so "first open" means
-   * first open of this app session: dismissing the card and cold-starting again
-   * brings it back. For a judged demo that is the *better* behaviour — a judge
-   * who relaunches gets the explanation again rather than a bare map they may
-   * not know how to drive — and for a real user it is wrong. Logged in
-   * MEMORY.md rather than left to be discovered as a bug.
+   * One value rather than the previous `categoryIndex` + `draftIndex` +
+   * `presetId` triple. The slider needed a draft value because a drag produces
+   * a frame's worth of positions and firing a request per frame is not viable;
+   * a chip press is a discrete event, so there is nothing to draft and the
+   * triple collapses to one. `resolveChip` maps this to a category index at
+   * request time, which is the only place that mapping now exists.
    */
-  const [showFirstRun, setShowFirstRun] = useState(true);
-
-  // Committed selection. `categoryIndex` is the value the map and the exposure
-  // request agree on; `draftIndex` is only the thumb position, so a drag
-  // updates the label without firing a request per frame.
-  //
-  // Default 5, which is a finding rather than a preference. Categories 0-4
-  // expose **no infrastructure at all** — measured, not assumed: 0 hospitals,
-  // 0 substations, 0 roads at each, and categories 0-3 do not flood a single
-  // hectare either. Opening at a lower band therefore shows an empty map, an
-  // empty readout and a disabled Generate Advisory, which reads as a broken
-  // app rather than as a resolution limit.
-  //
-  // 5 is chosen over 6 deliberately. 6 is the top of the scale — 2,680 km²,
-  // 251 roads cut off — and opening on it would lead every viewer with the
-  // most extreme scenario the model can express. 5 is the *floor* that works:
-  // the least dramatic defensible opening, with the escalation still visible by
-  // dragging up and the actual case study one tap away on the preset button.
-  const [categoryIndex, setCategoryIndex] = useState(5);
-  const [draftIndex, setDraftIndex] = useState(5);
-  const [presetId, setPresetId] = useState<string | null>(null);
+  const [chipId, setChipId] = useState<ChipId>(DEFAULT_CHIP);
   const [originId, setOriginId] = useState('sagar');
 
   const [exposure, setExposure] = useState<ExposureResponse | null>(null);
@@ -151,24 +139,21 @@ export function MapScreen() {
   const [exposureError, setExposureError] = useState<ApiError | null>(null);
 
   // --- advisory ----------------------------------------------------------
-  // The only state in this app that spends Gemini quota, and the only one
-  // behind an explicit press.
+  // The only state in this app that spends Gemini quota, behind an explicit press.
   const [advisory, setAdvisory] = useState<AdvisoryOutcome | null>(null);
   const [advisoryBusy, setAdvisoryBusy] = useState(false);
 
   /**
    * `/allocation`'s `shelter_status`, for the disclosure notice.
    *
-   * Fetched once, separately from boot, and **not** in boot's `Promise.all`:
-   * this block is a supplementary disclosure, and a failure to obtain it must
-   * not stop the map from opening. It fails toward disclosure — see
-   * `sheltersAreDemoData`, where a null status means "show the warning".
+   * Fetched separately from boot on purpose: a failure to obtain a
+   * supplementary disclosure must not stop the map from opening, and it fails
+   * toward disclosure — a null status means "show the warning".
    */
   const [shelterStatus, setShelterStatus] = useState<Record<string, unknown> | null>(null);
   useEffect(() => {
     let cancelled = false;
-    // Category 0 is the cheapest valid input and the flag does not vary with
-    // it: `shelter_dataset_status()` reads a static file.
+    // Category 0 is the cheapest valid input and the flag does not vary with it.
     getAllocation(0, 'sagar')
       .then((allocation) => {
         if (!cancelled) setShelterStatus(allocation.shelter_status);
@@ -181,20 +166,16 @@ export function MapScreen() {
     };
   }, []);
 
-  // --- boot: the four endpoints the screen cannot start without -----------
+  // --- boot --------------------------------------------------------------
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        // Parallel, not sequential: four cold requests in series is four
-        // round trips before anything paints, and none depends on another.
-        //
-        // `/track` is in the same `all` rather than caught separately on
-        // purpose. It is a historical record, not a live layer, and if the
-        // committed file is missing the endpoint says exactly that ("re-fetch
-        // it with fetch_ibtracs") — a boot error naming the file is a better
-        // failure than a map that silently draws a real cyclone's track with
-        // a hole in it.
+        // Parallel: four cold requests in series is four round trips before
+        // anything paints, and none depends on another. `/track` is in the same
+        // `all` rather than caught separately on purpose — if the committed
+        // file is missing the endpoint says exactly that, and a boot error
+        // naming the file beats a map with a hole in a real cyclone's track.
         const [categories, overlays, localities, track] = await Promise.all([
           getCategories(),
           getOverlays(),
@@ -229,53 +210,63 @@ export function MapScreen() {
     return boot.categories.presets[0] ?? null;
   }, [boot]);
 
-  const activeCategory = categories[categoryIndex] ?? null;
-  const activePreset = preset && presetId === preset.id ? preset : null;
-
   /**
-   * The raster to draw. The preset has its own — it was rendered at exactly
-   * 115 kmph / 1.2 m, which equals no band's midpoint, which is the entire
-   * reason it needs a separate overlay.
+   * What the selected chip points at, resolved against the live payloads.
+   *
+   * This is the single place `chipId` becomes a category index, and the
+   * `remal_observed` case is why it is a function rather than arithmetic: the
+   * preset is not an IMD band, so it has no index of its own and borrows the
+   * nearest one.
    */
-  const overlay: OverlayEntry | null = useMemo(() => {
-    if (activePreset) return overlayIndex.find((o) => o.id === activePreset.id) ?? null;
-    return overlayIndex.find((o) => o.id === `cat${categoryIndex}`) ?? null;
-  }, [overlayIndex, categoryIndex, activePreset]);
+  const resolved = useMemo(
+    () => resolveChip(chipId, categories, overlayIndex),
+    [chipId, categories, overlayIndex],
+  );
+
+  const overlay = resolved.overlay;
 
   /**
    * The absolute URL to draw, or null when there is nothing worth drawing.
    *
-   * Null in three distinct cases, and the component treats all three the same
-   * way by not rendering at all:
-   *
-   *   - **no overlay** — the index is still loading, or this category has no
-   *     entry;
-   *   - **no URL** — `EXPO_PUBLIC_API_URL` is unset, so there is nothing
-   *     absolute to fetch. The banner below the map already says so, which is
-   *     the right place for a build-time misconfiguration to be reported;
-   *   - **no water** — `flooded_pixels === 0`, which is the real state of
-   *     categories 0-3. Those are legitimate images, and they are entirely
-   *     transparent.
-   *
-   * The last case is the one this existed to fix. `<Overlay>` was rendered
-   * unconditionally with `uri: overlay ? overlayImageUrl(overlay) ?? '' : ''`,
-   * so on a category with no flood it was handed an empty string and a set of
-   * bounds — an image fetch that can only fail, for a layer whose every pixel
-   * is alpha 0. Not rendering is both cheaper and truthful: there is no flood
-   * at this intensity, so there is no flood layer.
+   * Null in three distinct cases, all of which mean "do not render an Overlay":
+   * no overlay entry yet; no absolute URL because `EXPO_PUBLIC_API_URL` is
+   * unset; and `flooded_pixels === 0`, which is the real state of the preset
+   * and the low bands. The third is the case this existed to fix — an
+   * `<Overlay>` rendered with an empty `uri` and a bounds tuple is an image
+   * fetch that can only fail, for a layer whose every pixel is alpha 0.
    */
   const overlayUri: string | null = useMemo(() => {
     if (overlay === null) return null;
-    return shouldDrawOverlay(overlay) ? overlayImageUrl(overlay) : null;
+    return shouldDrawOverlay(overlay) ? overlayImageUrl(overlay) ?? null : null;
   }, [overlay]);
 
-  // --- exposure: one request per committed band --------------------------
+  /**
+   * The category index `/exposure` is asked for, and the figures' band name.
+   *
+   * For a band chip this is its own index. For the preset it is the nearest
+   * band to Remal's own 115 kmph — 12 kmph from category 3 and 20 from
+   * category 4, so category 3 — and `borrowedCategory` carries the name so the
+   * panel can disclose that the counts are not the preset's own.
+   */
+  const { requestCategory, borrowedCategory } = useMemo(() => {
+    if (resolved.categoryIndex !== null) {
+      return { requestCategory: resolved.categoryIndex, borrowedCategory: resolved.borrowedCategory };
+    }
+    if (preset === null) return { requestCategory: null, borrowedCategory: null };
+    const nearest = nearestCategory(categories, preset.wind_kmph);
+    return {
+      requestCategory: nearest,
+      borrowedCategory: categories[nearest]?.imd_category ?? null,
+    };
+  }, [resolved, preset, categories]);
+
+  // --- exposure: one request per committed chip --------------------------
   useEffect(() => {
-    if (!categories.length) return undefined;
+    if (requestCategory === null) return undefined;
     let cancelled = false;
     setExposureLoading(true);
     setExposureError(null);
-    getExposure(categoryIndex)
+    getExposure(requestCategory)
       .then((next) => {
         if (cancelled) return;
         setExposure(next);
@@ -290,44 +281,23 @@ export function MapScreen() {
     return () => {
       cancelled = true;
     };
-  }, [categoryIndex, categories.length]);
-
-  const onCommit = useCallback((next: number) => {
-    setCategoryIndex(next);
-    setDraftIndex(next);
-    // Moving the thumb off the preset returns to plain category mode, rather
-    // than leaving a preset active for an intensity it was not rendered at.
-    setPresetId(null);
-  }, []);
-
-  const onPressPreset = useCallback(() => {
-    if (!preset || !categories.length) return;
-    // The preset is not an IMD band, so every API-driven figure has to borrow
-    // the nearest one. 115 kmph is 12 kmph from category 3's 103 and 20 from
-    // category 4's 135, so it borrows category 3 — and the readout says so.
-    const nearest = nearestCategory(categories, preset.wind_kmph);
-    setCategoryIndex(nearest);
-    setDraftIndex(nearest);
-    setPresetId(preset.id);
-  }, [preset, categories]);
-
-  const exposedCount = exposure
-    ? exposure.hospitals.count + exposure.substations.count + exposure.roads_cut_off.count
-    : 0;
+  }, [requestCategory]);
 
   /**
-   * Decision 2: fit the map to the whole track, or come back to Sagar.
+   * On a chip press the previous exposure is dropped immediately.
    *
-   * Not the boot region. The flood overlay and every exposure number live on
-   * Sagar Island, and a boot that zoomed out to the full track would show the
-   * viewer a mostly-empty Bay of Bengal with a coastline-sized flood extent and
-   * no readable assets. Sagar is the subject; the full track is a second look.
-   *
-   * The button is only rendered once `track` has loaded, because fitting to
-   * nothing is a no-op the user cannot undo (it would look like a dead
-   * control). Boot already fails loudly if the track is missing, so there is no
-   * separate "no track" state to render here.
+   * Without this, selecting a chip shows the *previous* chip's counts for the
+   * duration of the fetch, under a heading that already names the new one. It
+   * is the same error the disabled rule prevents on the button, one step
+   * earlier, and the tiles' `—` is what replaces it.
    */
+  const onSelectChip = useCallback((id: ChipId) => {
+    setChipId(id);
+    setExposure(null);
+  }, []);
+
+  // --- map controls ------------------------------------------------------
+
   const onPressFit = useCallback(() => {
     const map = mapRef.current;
     if (!map || !track) return;
@@ -336,39 +306,53 @@ export function MapScreen() {
       setFittingTrack(false);
       return;
     }
-    // `fitToCoordinates` rather than a computed `animateRegion`: it accounts
-    // for the device's own aspect ratio, so the same edge padding frames the
-    // track on a phone and on a tablet.
+    // `fitToCoordinates` over a computed `animateRegion`, because it accounts
+    // for the device's own aspect ratio.
     //
-    // Fitted over the finite coordinates only. `/track` coerces every position
-    // with `float()` and does not range-check it, and `json.loads` accepts a
-    // bare `NaN` — so a corrupt or hand-edited file can put a non-finite
-    // latitude into `path`, and handing one to `fitToCoordinates` asks the
-    // native map for a region it cannot compute. Filtering here costs a
-    // comparison and keeps a bad row from blanking the map. The same values
-    // are still drawn as a `<Polyline>` above; this only governs the camera.
+    // Fitted over the finite coordinates only. `/track` coerces positions with
+    // `float()` and does not range-check, and `json.loads` accepts a bare
+    // `NaN` — so a corrupt file can put a non-finite latitude into `path`, and
+    // handing one to `fitToCoordinates` asks the native map for a region it
+    // cannot compute. The same values are still drawn as a `<Polyline>`; this
+    // only governs the camera.
     const coordinates = track.path.filter(
       (c) => Number.isFinite(c.latitude) && Number.isFinite(c.longitude),
     );
     if (coordinates.length === 0) return;
-    map.fitToCoordinates(coordinates, {
-      edgePadding: TRACK_FIT_PADDING,
-      animated: true,
-    });
+    map.fitToCoordinates(coordinates, { edgePadding: TRACK_FIT_PADDING, animated: true });
     setFittingTrack(true);
   }, [fittingTrack, track]);
 
+  /**
+   * The layers control is a stub, and it says so rather than doing nothing.
+   *
+   * The design asks for a layers button. There is exactly one toggleable layer
+   * in this app (the flood raster) and it is already automatic — the button
+   * would have nothing to toggle. Rather than ship a dead control, it opens the
+   * legend, which is the thing a reader opening "layers" is actually after:
+   * what am I looking at. Logged in MEMORY.md; a real layer switcher is a
+   * Stage B question.
+   */
+  const onPressLayers = useCallback(() => setShowAbout(true), []);
+
+  const onPressRecentre = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.animateToRegion(SAGAR_REGION, TRACK_FIT_DURATION_MS);
+    setFittingTrack(false);
+  }, []);
+
+  // --- advisory ----------------------------------------------------------
   const onGenerateAdvisory = useCallback(() => {
-    // The in-flight lock. Not a spinner decoration: without it a second press
-    // sends a second POST, and the backend's capacity ladder will happily spend
-    // up to six more Gemini calls on it — three for a first draft and three
-    // for a correction pass. A double-tap would be the most expensive possible
-    // way to use this button.
-    if (advisoryBusy) return;
+    // The in-flight lock, not a spinner decoration: a second press sends a
+    // second POST, and the backend's capacity ladder will spend up to six more
+    // Gemini calls on it. A double-tap is the most expensive possible way to
+    // use this button.
+    if (advisoryBusy || requestCategory === null) return;
     setAdvisoryBusy(true);
     setAdvisory({ status: 'loading' });
 
-    postAdvisory(categoryIndex, originId)
+    postAdvisory(requestCategory, originId)
       .then((response) => {
         setAdvisory({ status: 'ready', response, capturedAt: null });
       })
@@ -385,16 +369,13 @@ export function MapScreen() {
       .finally(() => {
         setAdvisoryBusy(false);
       });
-  }, [advisoryBusy, categoryIndex, originId]);
+  }, [advisoryBusy, requestCategory, originId]);
 
   /**
    * Swap a failed live advisory for the bundled capture.
    *
-   * The capture is real output from a real call, stored — but it is an answer
-   * to whatever settings were on screen *when it was taken*, not to the ones
-   * on screen now. The stale guard still runs over it, so a capture loaded at
-   * a different intensity or origin is flagged rather than passed off as
-   * current, and the modal's banner says when it was captured.
+   * Real output from a real call, stored — but an answer to whatever settings
+   * were on screen when it was taken. The stale guard still runs over it.
    */
   const onLoadCachedAdvisory = useCallback(() => {
     if (!SAMPLE_ADVISORY) return;
@@ -420,22 +401,36 @@ export function MapScreen() {
     return <BootError error={boot.error} />;
   }
 
-  const limitation = activePreset
-    ? // The preset's limitation is the same model, and the same string.
-      boot.categories.limitation
-    : activeCategory?.limitation ?? boot.categories.limitation;
+  const counts = {
+    hospitals: exposure?.hospitals.count ?? null,
+    substations: exposure?.substations.count ?? null,
+    roads: exposure?.roads_cut_off.count ?? null,
+  };
+  const exposedCount = totalExposed(counts);
+  const canGenerate = advisoryEnabled(exposedCount, exposureLoading);
+
+  const limitation =
+    resolved.borrowedCategory !== null && categories.length > 0
+      ? categories[requestCategory ?? 0]?.limitation ?? boot.categories.limitation
+      : boot.categories.limitation;
 
   return (
     <View style={styles.screen}>
+      <View style={styles.header}>
+        <Text style={styles.title}>Cyclone Remal impact simulator</Text>
+        <Text style={styles.subtitle}>What would a storm like this hit today?</Text>
+      </View>
+
       <View style={styles.mapWrap}>
         <MapView
           ref={mapRef}
           style={styles.map}
           initialRegion={SAGAR_REGION}
+          customMapStyle={customMapStyle}
           // The flood is a single north-up raster and `<Overlay>` takes a
           // static `bearing` rather than tracking the map, so a rotated map
-          // would leave the water at the wrong angle to the coast. Pinning
-          // this off is a correctness decision, not a simplification.
+          // would leave the water at the wrong angle to the coast. Correctness,
+          // not simplification.
           rotateEnabled={false}
           pitchEnabled={false}
           toolbarEnabled={false}
@@ -443,21 +438,19 @@ export function MapScreen() {
           showsMyLocationButton={false}
         >
           {/*
-            `overlayUri` is the whole condition. When it is null there is no
-            flood to draw, and rendering `<Overlay>` would mean handing the map
-            a bounds tuple for a texture that does not exist — which is how
-            this used to reach an empty `uri` on categories 0-3. See
-            `overlayUri` above.
+            `overlayUri` is the whole condition. Null means no flood to draw,
+            and rendering `<Overlay>` would hand the map a bounds tuple for a
+            texture that does not exist — which is how this used to reach an
+            empty `uri`. See `overlayUri` above.
           */}
           {overlayUri !== null && overlay !== null ? (
             <Overlay
               image={{ uri: overlayUri }}
               /*
                * `bounds` is a two-corner tuple — **right-top, then left-bottom**
-               * — and each corner is `[latitude, longitude]`, i.e. the opposite
+               * — and each corner is `[latitude, longitude]`, the opposite
                * order to the GeoJSON the rest of this app speaks. Passing an
-               * object, or a [lon, lat] pair, silently places the image wrong
-               * or not at all. See `overlayBounds` below.
+               * object, or a [lon, lat] pair, silently places the image wrong.
                */
               bounds={overlayBounds(overlay)}
               bearing={OVERLAY_BEARING}
@@ -465,21 +458,22 @@ export function MapScreen() {
             />
           ) : null}
 
-          {/* The cyclone's own path, under everything the model computed.
-              Real observed history, fetched once at boot and never refetched
-              when the slider moves — it does not vary with the intensity. */}
+          {/* The cyclone's own path, under everything the model computed. Real
+              observed history, fetched once at boot and never refetched when the
+              strength changes — it does not vary with it. */}
           {track ? (
             <Polyline
               coordinates={track.path}
               strokeWidth={3}
+              lineDashPattern={trackDashPattern}
               {...trackLineStyle}
             />
           ) : null}
 
-          {/* One pin per best-track fix; tapping it opens the native callout
-              with the UTC time and the wind. `tracksViewChanges` is left at
-              its default here (unlike AssetMarker) because these are 19 pins
-              that carry a callout, and the callout is the point of them. */}
+          {/* One pin per best-track fix; tapping opens the native callout with
+              the UTC time and the wind. `tracksViewChanges` is left at its
+              default here (unlike AssetMarker) because these 19 pins carry a
+              callout, and the callout is the point of them. */}
           {track?.waypoints.map((waypoint) => (
             <Marker
               key={`wp-${waypoint.sequence}`}
@@ -491,9 +485,9 @@ export function MapScreen() {
           ))}
 
           {/* Roads first, so markers draw on top of them. 251 polylines at
-              category 6 is the heaviest thing on this map; the count beside
-              them always matches what is drawn, because capping the layer
-              would make the picture disagree with the number. */}
+              category 6 is the heaviest thing on this map; the tile count
+              always matches what is drawn, because capping the layer would make
+              the picture disagree with the number. */}
           {exposure?.roads_cut_off.features.flatMap((road, i) =>
             roadPaths(road).map((path, part) => (
               <Polyline
@@ -525,193 +519,149 @@ export function MapScreen() {
         {overlay !== null && overlayImageUrl(overlay) === null ? (
           <View style={styles.mapBanner}>
             <Text style={styles.mapBannerText}>
-              No flood layer: EXPO_PUBLIC_API_URL is not set, so the overlay PNG has no
-              absolute URL to load.
+              No flood layer: EXPO_PUBLIC_API_URL is not set, so the overlay PNG has no absolute
+              URL to load.
             </Text>
           </View>
         ) : null}
 
         {/*
-          The legend, then the first-open card, then the storm-path control —
-          three `position: absolute` siblings claiming the map's edges:
-          legend bottom-left, first-run top, control bottom-right. They never
-          overlap, and all three are inside this wrapper rather than siblings of
-          the map, so the MapView's viewport is unchanged.
-
-          The banner above is the one thing that can collide, and it can: it is
-          also top-anchored and full-width. The banner only renders on a
-          build-time misconfiguration (no `EXPO_PUBLIC_API_URL`), and in that
-          state the map is showing no flood at all — so the first-open card on
-          top of it is a cosmetic overlap in an already-broken state, and
-          hiding the card behind a build error would be the worse trade.
+          The legend is bottom-left, the three controls bottom-right, and the
+          first-run card top — four `position: absolute` siblings claiming the
+          map's edges. They never overlap. The banner above is top-anchored and
+          full-width, and it only renders on a build misconfiguration, where
+          the map shows no flood anyway; a cosmetic overlap in an
+          already-broken state is the better trade.
         */}
         <MapLegend />
 
         {showFirstRun ? <FirstRunCard onDismiss={() => setShowFirstRun(false)} /> : null}
 
-        {/* Ghost control, per decision 2. Bottom-right of the map, not the
-            top: the banner above is full-width and its height varies with the
-            text, so anything anchored to the top would be covered by it
-            whenever both are on screen. The readout panel is a *sibling* of
-            this wrapper, not an overlay, so the map's own bottom edge is free.
-
-            "Full track" and "Back to Sagar" were both replaced on 2026-09-30.
-            Neither old name described the action: "Full track" says what the
-            view *contains* rather than what pressing it *does*, and "Back to
-            Sagar" reads as navigation away from a place the viewer was never
-            at — the control returns to the opening region, and "Zoom to Sagar"
-            says exactly that. Each label now sits beside an icon for the same
-            reason: the control is the only one on this screen, so it has to
-            identify itself rather than rely on the reader having read the
-            README. */}
         {track ? (
-          <Pressable
-            onPress={onPressFit}
-            accessibilityRole="button"
-            accessibilityLabel={
-              fittingTrack ? 'Zoom the map to Sagar Island' : 'Show the full storm path'
-            }
-            style={({ pressed }) => [
-              styles.fitControl,
-              pressed ? styles.fitControlPressed : null,
-            ]}
-          >
-            {fittingTrack ? <TargetIcon /> : <PathIcon />}
-            <Text style={styles.fitControlLabel}>
-              {fittingTrack ? 'Zoom to Sagar' : 'Show storm path'}
-            </Text>
-          </Pressable>
+          <MapControl
+            onPressTrack={onPressFit}
+            trackActive={fittingTrack}
+            onPressLayers={onPressLayers}
+            onPressRecentre={onPressRecentre}
+          />
         ) : null}
       </View>
 
-      <ScrollView
-        style={styles.panel}
-        contentContainerStyle={styles.panelContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {/*
-          Provenance, on screen. The track's numbers are real observed data, so
-          the two things a reader could be misled about are which dataset they
-          came from and whether they are a prediction — the caption answers
-          both in one line, in the same muted caption voice the model's own
-          limitation uses.
-        */}
-        {track ? (
-          <Text style={styles.trackCaption}>
-            {track.name} {track.season} · {track.waypoint_count} best-track fixes · {track.source}.
-            A record of what happened — not a forecast, and not a prediction for any other
-            storm.
-          </Text>
-        ) : null}
+      <View style={styles.panel}>
+        <ScrollView contentContainerStyle={styles.panelContent} showsVerticalScrollIndicator={false}>
+          <PanelStep index={1} title="Pick a storm strength">
+            <StrengthChips
+              selected={chipId}
+              onSelect={onSelectChip}
+              overlay={overlay}
+              windIsBandMidpoint={
+                requestCategory === null
+                  ? undefined
+                  : categories[requestCategory]?.wind_is_band_midpoint
+              }
+              borrowedCategory={chipId === 'remal_observed' ? borrowedCategory : null}
+            />
+          </PanelStep>
 
-        <SectionHeading label="Storm" />
+          <PanelStep index={2} title="See what gets hit">
+            <ExposureTiles counts={counts} loading={exposureLoading} />
+            {exposureError ? (
+              <Text style={styles.errorText}>
+                Exposure could not be loaded: {exposureError.message}
+              </Text>
+            ) : null}
+          </PanelStep>
 
-        <IntensityControl
-          count={categories.length}
-          value={categoryIndex}
-          draftValue={draftIndex}
-          onDraftChange={setDraftIndex}
-          onCommit={onCommit}
-          bandLabel={activePreset ? activePreset.label : activeCategory?.imd_category ?? ''}
-          windKmph={activePreset ? activePreset.wind_kmph : activeCategory?.wind_kmph ?? 0}
-          preset={preset ? { id: preset.id, label: 'Remal (as observed)' } : null}
-          presetActive={!!activePreset}
-          onPressPreset={onPressPreset}
-        />
+          <PanelStep index={3} title="Get the evacuation plan">
+            <PrimaryButton
+              label="Generate advisory"
+              onPress={onGenerateAdvisory}
+              disabled={!canGenerate}
+              busy={advisoryBusy}
+            />
 
-        <SectionHeading label="Impact" />
+            {!canGenerate && !exposureLoading ? (
+              <Text style={styles.disabledHint}>
+                Nothing is exposed at this strength, so there is nothing to plan an evacuation
+                for.
+              </Text>
+            ) : null}
 
-        <ReadoutPanel
-          overlay={overlay}
-          exposure={exposure}
-          loading={exposureLoading}
-          bandNote={activePreset ? undefined : activeCategory?.note}
-          borrowedBandLabel={
-            activePreset && activeCategory ? activeCategory.imd_category : undefined
-          }
-          limitation={limitation}
-        />
+            {/*
+              The stale guard, inside the panel rather than in a footer. The
+              advisory on screen was written for one `${category}:${origin}`
+              pair; if the reader has since changed either, the prose describes
+              a scenario they are no longer looking at. It is still shown — it
+              is real output about a real modelled storm — but never presented
+              as the answer to the current settings.
+            */}
+            {advisory?.status === 'ready' &&
+            isAdvisoryStale(advisory.response, requestCategory ?? 0, originId) ? (
+              <View style={styles.staleNotice}>
+                <Text style={styles.staleText}>
+                  Generated for {advisory.response.generated_for.imd_category} at{' '}
+                  {advisory.response.generated_for.origin.name} — the settings have changed
+                  since. Close and generate again for the current scenario.
+                </Text>
+              </View>
+            ) : null}
 
-        {exposureError ? (
-          <Text style={styles.errorText}>
-            Exposure could not be loaded: {exposureError.message}
-          </Text>
-        ) : null}
+            <View style={styles.originBlock}>
+              <OriginLine
+                localities={localities}
+                selectedId={originId}
+                onSelect={setOriginId}
+              />
+            </View>
 
-        <SectionHeading label="Where are you" />
-
-        <LocalityPicker
-          localities={localities}
-          selectedId={originId}
-          onSelect={setOriginId}
-        />
-      </ScrollView>
-
-      {/*
-        Generate Advisory, pinned outside the ScrollView.
-
-        It was the last child of the panel, which meant it was on screen only
-        when the reader had scrolled to the bottom — and the panel's own
-        contents are taller than its 52% cap, so at boot the button the whole
-        app exists to press was below the fold. Worse, it was the *only* thing
-        that moved when the reader scrolled, so the one fixed action in the app
-        was the one that scrolled away.
-
-        Moving it out of the ScrollView and giving it its own footer pins it to
-        the bottom of the screen at every scroll position. The cost is real and
-        is the reason the panel's `maxHeight` was reduced: the footer now
-        permanently occupies the bottom ~64dp, so the panel is capped at 46%
-        rather than 52% to keep the map — the thing the button summarises — from
-        being squeezed to a strip. The footer also draws a top border, because
-        content scrolls underneath it and without the rule the cutoff is
-        invisible.
-
-        The button stays disabled at 5 of the 7 slider positions and for the
-        preset, because 5 of 7 bands expose no infrastructure at all. That is
-        the honest behaviour, and it is also a demo problem worth saying out
-        loud rather than hiding behind a disabled button: the core loop is
-        currently only reachable at categories 5 and 6.
-      */}
-      <View style={styles.footer}>
-        {/*
-          The stale guard. The advisory on screen is written for one
-          `${category}:${origin}` pair; if the reader has since moved the slider
-          or the picker, the prose is describing a scenario they are no longer
-          looking at. The advisory is still shown — it is real output about a
-          real modelled storm — but never presented as the answer to the current
-          settings.
-
-          It lives *inside* the footer, immediately above the button, and that
-          is a change of position as well as of implementation. It was
-          `position: absolute` at the bottom of the screen, which the footer
-          now occupies — left there it would have rendered on top of the
-          button it is warning about. Directly above the button is also the
-          place it belongs: it is a statement about the advisory, and the
-          button is how you replace it.
-        */}
-        {advisory?.status === 'ready' && isAdvisoryStale(advisory.response, categoryIndex, originId) ? (
-          <View style={styles.staleNotice}>
-            <Text style={styles.staleText}>
-              Generated for {advisory.response.generated_for.imd_category} at{' '}
-              {advisory.response.generated_for.origin.name} — the settings have changed since.
-              Close and generate again for the current scenario.
+            {/*
+              The AI + shelter-placeholder disclosure, kept as strict as it was
+              in `ReadoutPanel`. Two separate claims, and they must both be on
+              screen: the prose is machine-written from one Gemini call, and
+              the shelters it names are placeholders. A reader who takes the
+              shelter names as real would send people to buildings that were
+              never verified to be open, so this is not a footnote.
+            */}
+            <Text style={styles.disclosure}>
+              Written by AI, uses one Gemini call. Shelter data is a placeholder.
             </Text>
-          </View>
-        ) : null}
+          </PanelStep>
 
-        <PrimaryButton
-          label="Generate Advisory"
-          onPress={onGenerateAdvisory}
-          disabled={exposedCount === 0 || exposureLoading}
-          busy={advisoryBusy}
-        />
-        {exposedCount === 0 ? (
-          <Text style={styles.disabledHint}>
-            Disabled: no modelled exposure at this intensity, so there is nothing to
-            evacuate.
+          {/*
+            Provenance, demoted to one line. The track's numbers are real
+            observed data, so the two things a reader could be misled about are
+            which dataset they came from and whether they are a prediction. The
+            caption answers the second in six words and the first is one tap
+            away — the sheet carries the limitation verbatim, the raster
+            disclosure, and the JTWC 1-minute vs IMD 3-minute wind difference.
+          */}
+          <Text style={styles.caption}>
+            Screening estimate, not a forecast ·{' '}
+            <Text
+              style={styles.captionLink}
+              onPress={() => setShowAbout(true)}
+              accessibilityRole="link"
+            >
+              About this estimate
+            </Text>
           </Text>
-        ) : null}
+        </ScrollView>
       </View>
+
+      <AboutSheet
+        visible={showAbout}
+        onClose={() => setShowAbout(false)}
+        limitation={limitation}
+        overlayWidthPx={overlay?.width_px ?? null}
+        depthClasses={overlay?.depth_classes_m.length ?? null}
+        areaKm2={
+          overlay ? Math.round(overlay.final_land_area_km2).toLocaleString('en-US') : null
+        }
+        trackSource={track?.source ?? null}
+        trackLabel={track?.name && track?.season ? `${track.name} ${track.season}` : null}
+        peakTrackWindKmph={track ? peakReportedWindKmph(track.waypoints) : null}
+        unreportedWindCount={track ? countUnreported(track.waypoints) : 0}
+      />
 
       <AdvisoryContent
         outcome={advisory}
@@ -732,12 +682,11 @@ export function MapScreen() {
  * two-corner tuple, right-top first, and each corner is `[latitude,
  * longitude]` — the reverse of the GeoJSON the rest of this app speaks, and
  * the reverse of `<Marker>`'s named `{latitude, longitude}` fields. Passing
- * `{north, south, east, west}` (the intuitive shape, and the one every
- * tutorial uses) is a type error here rather than a silent one, which is the
- * only reason this is easy to get right at all.
+ * `{north, south, east, west}` is a type error here rather than a silent one,
+ * which is the only reason this is easy to get right at all.
  *
- * Falls back to the opening region when the index has not loaded, so the
- * component tree is valid during boot rather than conditionally null.
+ * Falls back to the opening region so the component tree is valid during boot
+ * rather than conditionally null.
  */
 function overlayBounds(overlay: OverlayEntry | null): [[number, number], [number, number]] {
   if (overlay) {
@@ -747,8 +696,14 @@ function overlayBounds(overlay: OverlayEntry | null): [[number, number], [number
     ];
   }
   return [
-    [SAGAR_REGION.latitude + SAGAR_REGION.latitudeDelta / 2, SAGAR_REGION.longitude + SAGAR_REGION.longitudeDelta / 2],
-    [SAGAR_REGION.latitude - SAGAR_REGION.latitudeDelta / 2, SAGAR_REGION.longitude - SAGAR_REGION.longitudeDelta / 2],
+    [
+      SAGAR_REGION.latitude + SAGAR_REGION.latitudeDelta / 2,
+      SAGAR_REGION.longitude + SAGAR_REGION.longitudeDelta / 2,
+    ],
+    [
+      SAGAR_REGION.latitude - SAGAR_REGION.latitudeDelta / 2,
+      SAGAR_REGION.longitude - SAGAR_REGION.longitudeDelta / 2,
+    ],
   ];
 }
 
@@ -756,8 +711,7 @@ function overlayBounds(overlay: OverlayEntry | null): [[number, number], [number
  * One exposed point asset. The geometry is mixed (`Point`, `LineString`,
  * `Polygon`, `MultiPolygon` all occur in the live payload), so the coordinate
  * comes from `markerCoordinate()` rather than from indexing the geometry
- * directly — see the note on `InfraFeature` in `api.ts` for why that indexing
- * was wrong.
+ * directly.
  */
 function AssetMarker({
   feature,
@@ -768,7 +722,7 @@ function AssetMarker({
 }) {
   const coordinate = toLatLng(markerCoordinate(feature));
   // A NaN coordinate renders off-screen and reads as a missing asset, which
-  // would quietly disagree with the count in the readout.
+  // would quietly disagree with the count in the tile.
   if (!coordinate) return null;
   return (
     <Marker
@@ -802,11 +756,11 @@ function BootError({ error }: { error: ApiError }) {
           Configured origin: {API_BASE_URL || '(none)'}
         </Text>
       )}
-      <Pressable onPress={() => {}} style={styles.retryHint} accessible={false}>
+      <View style={styles.retryHint} accessible={false}>
         <Text style={styles.centredText}>
           Fix the URL, then reload the app. Nothing here is cached.
         </Text>
-      </Pressable>
+      </View>
     </View>
   );
 }
@@ -816,8 +770,32 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: theme.colors.background,
   },
+  header: {
+    paddingHorizontal: theme.spacing.sm,
+    paddingTop: theme.spacing.xs,
+    paddingBottom: theme.spacing.xs / 2,
+  },
+  title: {
+    fontFamily: theme.fonts.heading,
+    fontSize: theme.typography.body,
+    color: theme.colors.text,
+  },
+  subtitle: {
+    fontFamily: theme.fonts.body,
+    fontSize: theme.typography.caption,
+    color: theme.colors.textMuted,
+    marginTop: 1,
+  },
   mapWrap: {
+    // `flex: 1` with the panel below it, rather than the panel carrying a
+    // `maxHeight` percentage. The design asks for the map to take at least
+    // 40% of the screen; expressing it as "the panel is as tall as it needs and
+    // the map takes the rest" means the map grows when the panel shrinks, which
+    // is what happens on a short device or a large system font. The floor is
+    // `minHeight` so the panel can never squeeze the map into a strip — a
+    // `flexBasis` with no minimum lets exactly that happen on a small phone.
     flex: 1,
+    minHeight: '40%',
   },
   map: {
     flex: 1,
@@ -834,59 +812,20 @@ const styles = StyleSheet.create({
   mapBannerText: {
     fontFamily: theme.fonts.body,
     fontSize: theme.typography.caption,
-    color: theme.colors.card,
-  },
-  fitControl: {
-    position: 'absolute',
-    bottom: theme.spacing.xs,
-    right: theme.spacing.xs,
-    // `center` rather than the previous default, because the control now holds
-    // an icon and a label side by side and a top-aligned icon beside centred
-    // text reads as two things that do not belong to each other.
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: theme.spacing.xs / 2,
-    paddingHorizontal: theme.spacing.sm,
-    borderRadius: theme.radius.chip,
-    backgroundColor: theme.colors.card,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    ...theme.shadow.card,
-  },
-  fitControlPressed: {
-    // Design.md defines no pressed variant for a ghost control; opacity only,
-    // as on PrimaryButton, rather than inventing a token.
-    opacity: 0.7,
-  },
-  fitControlLabel: {
-    fontFamily: theme.fonts.bodySemibold,
-    fontSize: theme.typography.caption,
     color: theme.colors.text,
-    marginLeft: theme.spacing.xs / 2,
   },
   panel: {
-    // 46%, not the previous 52%: the footer below now permanently occupies the
-    // bottom of the screen, and this cap is what keeps the map from being
-    // squeezed into a strip by the panel plus the footer together.
-    maxHeight: '46%',
+    // The panel is a sibling of the map, not an overlay on it, so the map's
+    // own bottom edge is free for the legend and the controls. It sizes to its
+    // content and the map flexes — see `mapWrap`.
     backgroundColor: theme.colors.background,
     borderTopLeftRadius: theme.radius.card,
     borderTopRightRadius: theme.radius.card,
-  },
-  footer: {
-    // Outside the ScrollView so the button is pinned; the border because the
-    // panel's content scrolls up underneath it and without a rule the cutoff
-    // is invisible.
-    backgroundColor: theme.colors.background,
     borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
-    paddingHorizontal: theme.spacing.sm,
-    paddingTop: theme.spacing.xs,
-    paddingBottom: theme.spacing.sm,
+    borderColor: theme.colors.border,
   },
   panelContent: {
     padding: theme.spacing.sm,
-    paddingTop: theme.spacing.xs,
   },
   centred: {
     flex: 1,
@@ -912,17 +851,7 @@ const styles = StyleSheet.create({
     fontFamily: theme.fonts.body,
     fontSize: theme.typography.caption,
     color: theme.colors.danger,
-    marginTop: theme.spacing.xs,
-    // `marginBottom` because the "Where are you" heading now follows this text
-    // directly, and the heading carries only its own `marginTop` of a single
-    // step — not enough on its own after a multi-line error.
-    marginBottom: theme.spacing.xs,
-  },
-  trackCaption: {
-    fontFamily: theme.fonts.body,
-    fontSize: theme.typography.caption,
-    color: theme.colors.textMuted,
-    marginBottom: theme.spacing.xs,
+    marginTop: theme.spacing.xs / 2,
   },
   disabledHint: {
     fontFamily: theme.fonts.body,
@@ -931,21 +860,37 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: theme.spacing.xs / 2,
   },
+  originBlock: {
+    marginTop: theme.spacing.xs,
+  },
+  disclosure: {
+    fontFamily: theme.fonts.body,
+    fontSize: theme.typography.caption,
+    color: theme.colors.textMuted,
+    marginTop: theme.spacing.xs / 2,
+  },
+  caption: {
+    fontFamily: theme.fonts.body,
+    fontSize: theme.typography.caption,
+    color: theme.colors.textMuted,
+    marginTop: theme.spacing.xs / 2,
+  },
+  captionLink: {
+    fontFamily: theme.fonts.bodySemibold,
+    color: theme.colors.selectedText,
+  },
   retryHint: {
     marginTop: theme.spacing.sm,
   },
   staleNotice: {
-    // No longer absolutely positioned — it is a child of the footer now, so it
-    // sits directly above the button it warns about instead of being painted
-    // over it. `marginBottom` is what separates it from the button.
     backgroundColor: theme.colors.caution,
     borderRadius: theme.radius.button,
     padding: theme.spacing.xs,
-    marginBottom: theme.spacing.xs,
+    marginTop: theme.spacing.xs,
   },
   staleText: {
     fontFamily: theme.fonts.body,
     fontSize: theme.typography.caption,
-    color: theme.colors.text,
+    color: theme.colors.background,
   },
 });

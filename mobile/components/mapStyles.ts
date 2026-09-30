@@ -1,19 +1,117 @@
+import type { MapStyleElement } from 'react-native-maps';
+
 import { theme } from '../theme';
 
 /**
- * Map layer styles — Design.md:
- *   - "Flood polygon on map: fill `waterFill` at 50% opacity, stroke `water`"
- *   - "Compromised road: dashed `Polyline`, color `danger`"
+ * Map layer styles and the basemap's `customMapStyle`.
  *
  * These are plain style/prop objects rather than components, so this file
- * imports nothing from `react-native-maps`. The map screen can spread them
- * onto a `Polygon`/`Polyline` without this module taking a dependency on a
- * native module it does not itself render.
+ * imports **only a type** from `react-native-maps` — no runtime dependency on a
+ * native module this file does not itself render. `import type` is erased at
+ * compile time, so importing it here costs nothing at runtime and keeps
+ * `MapStyleElement[]` as the authority on the style array's shape: adding a
+ * field Google does not document is a compile error rather than something the
+ * renderer quietly ignores.
  */
+
+/**
+ * The basemap, restyled.
+ *
+ * **The map is the only light thing in a dark app**, and that is the whole
+ * point of the design: the chrome is near-black so the flood raster and the
+ * asset pins are the brightest things on screen, which is where a viewer's
+ * eye should go during an evacuation briefing. A dark basemap would put the
+ * flood layer on a dark field and make depth classes much harder to read
+ * against it.
+ *
+ * So: pale land (`land` #e6ece0), pale-blue water (`water` #c9e0ec), and
+ * everything else pushed back. **POIs and transit are off.** A cyclone
+ * exposure map with every restaurant and bus stop on it is unreadable, and
+ * those markers are the ones most likely to be mistaken for the app's own
+ * asset pins — the one confusion this map cannot afford.
+ *
+ * The style array is Google's documented format: an array of `{featureType,
+ * stylers}` entries applied in order, later entries winning. Element types
+ * (`geometry`, `labels.text`, `poi`, `transit`) are Google's own vocabulary —
+ * this array is the one place in the app that speaks it, and a typo in a
+ * `featureType` string is silently ignored by the renderer rather than
+ * throwing, so the entries below are kept to the documented set.
+ *
+ * **Not `as const`.** The other exports in this file are, because they are
+ * spread onto props and a readonly value is fine there. `customMapStyle` is
+ * passed as the array itself, and react-native-maps types the prop as a mutable
+ * `MapStyleElement[]`, so a readonly array is a compile error. The colour values
+ * are still checked — they are `string` from `theme` either way.
+ */
+export const customMapStyle: MapStyleElement[] = [
+  // --- everything, pulled back before anything specific is set -----------
+  {
+    elementType: 'geometry',
+    stylers: [{ color: theme.colors.land }],
+  },
+  {
+    elementType: 'labels.text',
+    stylers: [{ color: theme.colors.textMuted }],
+  },
+  {
+    elementType: 'labels.icon',
+    stylers: [{ visibility: 'off' }],
+  },
+
+  // --- water, which `geometry` alone leaves as the land tint ------------
+  {
+    featureType: 'water',
+    elementType: 'geometry',
+    stylers: [{ color: theme.colors.water }],
+  },
+  {
+    featureType: 'water',
+    elementType: 'labels.text',
+    stylers: [{ color: theme.colors.textMuted }],
+  },
+
+  // --- POIs and transit: off entirely -----------------------------------
+  {
+    featureType: 'poi',
+    stylers: [{ visibility: 'off' }],
+  },
+  {
+    featureType: 'transit',
+    stylers: [{ visibility: 'off' }],
+  },
+
+  // --- roads kept, but quiet: the app draws its own, and the cut-off ----
+  //     ones are the point. A basemap artery in a saturated colour competes
+  //     with a `danger` polyline that means "this road is severed".
+  {
+    featureType: 'road',
+    elementType: 'geometry',
+    stylers: [{ color: theme.colors.card }],
+  },
+  {
+    featureType: 'road',
+    elementType: 'labels.text',
+    stylers: [{ visibility: 'off' }],
+  },
+  {
+    featureType: 'road.highway',
+    elementType: 'geometry',
+    stylers: [{ color: theme.colors.border }],
+  },
+  {
+    featureType: 'administrative',
+    elementType: 'geometry.stroke',
+    stylers: [{ color: theme.colors.border }],
+  },
+  {
+    featureType: 'administrative.land_parcel',
+    stylers: [{ visibility: 'off' }],
+  },
+];
 
 /** Spread onto a react-native-maps `<Polygon>` for the flood extent. */
 export const floodPolygonStyle = {
-  fillColor: theme.colors.waterFill,
+  fillColor: theme.colors.flood,
   fillOpacity: 0.5,
   strokeColor: theme.colors.water,
 } as const;
@@ -24,49 +122,57 @@ export const compromisedRoadStyle = {
 } as const;
 
 /**
- * The `lineDashPattern` prop for a compromised-road `<Polyline>`.
+ * The `lineDashPattern` for a compromised-road `<Polyline>`.
  *
- * Design.md specifies "dashed" without a dash length or gap, so the
- * numbers below are React Native Maps' own documented default-style dash
- * unit, not a design decision from Design.md's token table. Worth a human
- * look if the dash should match the design intent.
+ * Design.md specifies "dashed" without a dash length or gap, so the numbers
+ * below are React Native Maps' own documented default-style dash unit, not a
+ * design decision from Design.md's token table.
  *
- * Platform caveat: `lineDashPattern` is not honoured by the Google Maps
- * renderer on Android, so on Android this renders as a solid danger line.
- * See MEMORY.md "Flagged for review".
+ * Platform caveat, and it is a real one: `lineDashPattern` is **not honoured
+ * by the Google Maps renderer on Android**, so on Android this renders as a
+ * solid danger line. The legend draws its cut-off-road swatch dashed because
+ * that is what the layer is *meant* to be, so on Android the legend and the
+ * map disagree in shape while agreeing in colour. See MEMORY.md "Flagged for
+ * review".
  */
 export const compromisedRoadDashPattern = [6, 4];
 
 /**
- * The historical track's line and pin colour.
+ * The storm path's line and pin colour: **near-black**, which is
+ * `theme.colors.background` (#090909).
  *
- * **Design.md has no token assigned to the track layer** — it specifies the
- * flood polygon, compromised roads, priority chips, shelters and the primary
- * action, and never a cyclone's own path. Rather than invent a hex, this uses
- * `text` (Onyx, `#181d26`): a neutral dark that reads as a record of what
- * happened, and is already spoken for as the app's primary text, so it stays
- * distinct from the three colours that *mean* something here — `water` is
- * flood, `danger` is damage, `caution`/`safe` are severity levels.
+ * The track is a *record of what happened*, drawn over a pale basemap. Near
+ * black is the darkest available value and reads as ink on the pale land, and
+ * it is distinct from the three colours that mean something on this map —
+ * `flood` is water, `danger` is damage, `caution` is a substation.
  *
- * Flagged in MEMORY.md "Flagged for review": a design decision is owed on
- * whether a historical track should be neutral at all.
+ * It is now **dashed** as well as near-black, which the light theme did not do.
+ * The reason is that the track is the one layer that crosses the others: it
+ * runs the length of the Bay, it crosses the flood raster near landfall, and
+ * it passes over the delta where the cut-off roads cluster. A solid near-black
+ * line over all three is a line that has to win every crossing. A dash lets
+ * the flood and the severed roads stay legible underneath it, and it
+ * distinguishes "what happened" from "what would happen" by texture as well as
+ * by colour.
  */
 export const trackLineStyle = {
-  strokeColor: theme.colors.text,
+  strokeColor: theme.colors.background,
 } as const;
 
-export const trackPinColour = theme.colors.text;
+/** The dash for the storm path. Wider than the road dash so the two differ. */
+export const trackDashPattern = [10, 6];
+
+export const trackPinColour = theme.colors.background;
 
 /**
  * Pin colours for the two point-asset classes.
  *
- * Design.md assigns `danger` to "compromised roads, CRITICAL priority chip"
- * and `safe` to "shelter markers". Hospitals and substations are neither, and
- * the tokens are deliberately not stretched to cover them: both are drawn
- * `danger` here because both are *submerged*, which is the same severity as a
- * cut-off road, and the class is distinguished by the callout text and by
- * `caution` on substations rather than by inventing a new colour. Worth a
- * human look — see MEMORY.md "Flagged for review".
+ * Hospitals are `danger` and substations are `caution`. Both were `danger`
+ * under the light theme, which made two different asset classes the same
+ * colour on the map and forced the reader to open a callout to tell them
+ * apart. The dark theme's `caution` is unchanged, so this costs no new token
+ * and the two classes are now distinguishable at a glance — which is what
+ * makes the substation's own legend row worth having.
  */
 export const assetPinColours = {
   hospital: theme.colors.danger,
@@ -82,7 +188,7 @@ export const assetPinColours = {
  * the flood sitting at the wrong angle to the coastline — a subtle wrongness
  * that is much worse than losing the ability to spin the map. The map screen
  * therefore pins `rotateEnabled={false}` and `pitchEnabled={false}` and
- * leaves `bearing` at its default of 0.
+ * leaves `bearing` at its default of 0. **Still true under the dark theme.**
  */
 export const OVERLAY_BEARING = 0;
 
@@ -92,9 +198,7 @@ export const OVERLAY_BEARING = 0;
  * Per the Module E brief: no location permission, so there is no "centre on
  * me" and no permission prompt in a live demo. Sagar Island is where Remal
  * made landfall and it is the anchor for the whole case study, so it is
- * hardcoded rather than derived from the first locality in `/localities`
- * (which happens to be Anantapur, alphabetically first, and is on the
- * northern edge of the study area).
+ * hardcoded rather than derived from the first locality in `/localities`.
  *
  * Centred on 21.68 N, 88.08 E with a ~0.36 deg span — roughly 40 km, wide
  * enough to hold the island, the north-south creek network and the Bay
@@ -126,18 +230,17 @@ export const TRACK_FIT_DURATION_MS = 600;
  * overlay on it, so the MapView's viewport already excludes it and a large
  * bottom padding would waste roughly a third of the visible map.
  *
- * What the bottom padding is for is the "Show storm path" control, which floats
- * at the map's bottom-right. 64dp lifts the southernmost fix — 18.75 N, well
- * south of Odisha — clear of that control instead of letting a pin sit on
- * top of it. The rest keeps the first and last fixes off the bezel.
+ * What the bottom padding is for is the storm-path control, which floats at the
+ * map's right. 64dp lifts the southernmost fix — 18.75 N, well south of
+ * Odisha — clear of that control instead of letting a pin sit on top of it.
  *
- * **The map legend now also floats at the bottom-left**, added 2026-09-30. The
- * padding is symmetric, so the left-hand fix is not deliberately cleared of
- * it — but the legend is far shorter than the control on the right, and a fix
- * that lands on a legend row is obscured rather than unreadable. Left alone
- * because increasing `left` would push the track further from the edge for
- * every device, and this is the kind of thing to settle by looking at a real
- * screen.
+ * **The legend pill is bottom-LEFT and the three controls are on the RIGHT**
+ * (both added/changed 2026-09-30), so the right-hand padding is the one doing
+ * the work here and the left is only balancing it. The padding is left
+ * symmetric because a fix landing on a legend row is obscured rather than
+ * unreadable, and raising `left` would push the whole track further from the
+ * edge on every device. This wants a real screen, which is still not
+ * possible — see MEMORY.md.
  */
 export const TRACK_FIT_PADDING = {
   top: 24,
