@@ -1516,6 +1516,34 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
    (`pytest -k RealImages` → 5 passed, 38 deselected, so they are not
    silently skipping).
 
+43. **The judge-facing UI pass built six things Design.md never specified, and
+   two of them are constraints rather than decisions.** Added 2026-09-30
+   (`1484b57`): a first-open card, a map legend, drawn control icons, a pinned
+   "Generate Advisory" footer, three section headings, and a what-if caption.
+   All use existing tokens, so no colour, font or size was invented — but the
+   *composition* is an implementation choice and is owed a human look, like
+   §37.
+   - **The icons are drawn from `View`s because `@expo/vector-icons` is not
+     installed** and no dependency was to be added. `ControlIcon.tsx` composes
+     a dogleg and a crosshair out of boxes. They read correctly at 16dp but
+     they are **not platform-native icons** and are not a design. If a font is
+     ever added, these should be replaced rather than kept.
+   - **The first-open card is session-scoped, not persisted.** Dismissing it
+     and cold-starting brings it back, because AsyncStorage is not installed.
+     Defensible for a demo, wrong for a user, and a one-line dependency
+     decision away from right.
+   - **The legend is a second surface that has to be kept in sync.** It is
+     built so it *cannot* drift (colours are read from `mapStyles.ts`, never
+     retyped; `mobile/legend.ts` names each source and a test pins the set
+     closed), but that only covers colour. **A layer added to the map without a
+     legend row is not caught by anything** — the "exactly five rows" test pins
+     the count, so it will fail loudly, which is the intended tripwire.
+   - **`TRACK_FIT_PADDING` was not changed** to clear the new bottom-left
+     legend. The padding is symmetric, a fix landing on a legend row is
+     obscured rather than unreadable, and raising `left` would push the track
+     off the edge on every device. Wants a real screen, which is still not
+     possible.
+
 ## Environment / credentials status
 
 - [x] Google Earth Engine authenticated — done 2026-09-27, DEM fetched and committed
@@ -1544,6 +1572,19 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
 - [x] Expo project initialized — `mobile/`, Expo SDK 57.0.25, deps installed, `npx tsc --noEmit` clean
 - [ ] Expo app run on a device/simulator — never launched; theme is typechecked only (spec §10.5)
 - [ ] `expo-clipboard` installed — needed for the SMS copy button, not yet added
+- [ ] **First-run card persistence** — dismisses per app session only; needs
+      `@react-native-async-storage/async-storage` to survive a cold start
+      (deliberately not added; no new dependencies this round)
+- [ ] **Map-control icons are drawn, not a font** — `@expo/vector-icons` is not
+      installed, so `ControlIcon.tsx` composes two glyphs from plain `View`s.
+      Fine at 16dp; revisit if an icon font is ever added
+- [ ] **Uncommitted and not mine** — `mobile/package.json`,
+      `mobile/package-lock.json`, `mobile/tsconfig.json` are modified in the
+      working tree by something outside these tasks (`react`/`react-native`
+      added to deps, `@types/react` and `typescript` **downgraded**, 1269
+      lockfile lines). Left unstaged across several rounds. **Needs a human
+      decision** — the typescript downgrade in particular. Also untracked:
+      `.agents/`.
 
 ## Repo hygiene
 
@@ -1698,6 +1739,115 @@ RUN_LIVE_CAPTURE=1 venv/bin/python -m backend.tools.capture_advisory
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-30 — Claude Code: the judge-facing UI pass — six changes, and one of them was a lie about the app
+
+**Scope.** One commit, `1484b57`, plus this log. Tokens only — **no new
+dependency**, as instructed. Typecheck clean, 57 mobile tests pass, 325 Python
+tests unchanged. The app has **still never run on a device** (§33); nothing here
+was seen on a screen, so every layout claim below is from the code and the
+typechecker.
+
+**1. First-open card, three steps, dismissible.** The three steps are the app's
+whole pitch, and nothing about a map screen advertises that this is a what-if
+instrument — a viewer who lands on one sees a raster and a slider and no reason
+to touch either. Wording follows the control it describes: "choose a cyclone
+strength", because the slider is labelled in IMD bands and a card using a
+different vocabulary sends the reader to the slider not knowing what to look
+for.
+
+**The known limit, stated rather than hidden: it is NOT persisted.**
+`@react-native-async-storage/async-storage` is not installed and this pass adds
+no dependency, so "first open" means *first open of this app session* — dismiss
+it, cold-start, and it is back. For a judged demo that is arguably the better
+behaviour (a judge who relaunches gets the explanation again rather than a bare
+map they may not know how to drive) and for a real user it is wrong. Fixing it
+properly is a one-line dependency decision, not this round's.
+
+**2. "Full track" → "Show storm path", "Back to Sagar" → "Zoom to Sagar",** each
+with an icon. Neither old name described the action. "Full track" says what the
+view *contains* rather than what the button *does*, and "Back to Sagar" reads
+as navigation away from a place the reader was never at — the control returns
+to the opening region, which "Zoom to Sagar" says outright.
+
+**The icons are drawn from plain `View`s, and that is the constraint talking.**
+`@expo/vector-icons` is not installed and no dependency may be added, so a
+glyph is two boxes and a rotated bar. These are **not platform-native icons** —
+they are two shapes that read correctly at 16dp. Said so in `ControlIcon.tsx`
+so nobody later reads them as an oversight and installs a font and re-tunes
+sizes that no token ever specified.
+
+**3. Map legend, five rows: flood, hospital, substation, cut-off road, storm
+path.** Positioned bottom-left, against the storm-path control at bottom-right,
+clear of the first-open card at top. All three are `position: absolute`
+siblings in the same map wrapper, so the MapView viewport is unchanged.
+
+**The legend's colours are read from `mapStyles.ts`, never retyped** — the
+point of the whole component. A legend that hardcodes `#aa2d00` for cut-off
+roads is a second source of truth, and the day someone retunes a token the
+legend becomes a thing on the map that means something the map does not. The
+cut-off road is drawn as three dash segments rather than a striped box because
+it is the one row where shape carries meaning rather than colour, and the
+Android renderer ignores `lineDashPattern` so the map shows it solid there.
+
+**4. "Generate Advisory" pinned to the bottom — this was the real bug in the
+brief.** It was the last child of the panel's `ScrollView`, and the panel's
+contents are taller than its `maxHeight` cap, so **at boot the button the whole
+app exists to press was below the fold.** Worse, it was the only element on
+screen that moved when the reader scrolled, so the one fixed action in the app
+was the one that scrolled away. Moved out into its own footer. The panel cap
+drops **52% → 46%** to stop panel-plus-footer squeezing the map into a strip,
+and the footer draws a top border because content scrolls underneath it.
+
+**The stale-advisory notice had to move with it, and this one is a real
+interaction bug, not a relocation.** It was `position: absolute` at the bottom
+of the screen — which the footer now occupies. Left in place it would have
+**rendered on top of the very button it warns about**, hiding the action the
+notice exists to prompt. It now sits inside the footer, above the button, which
+is also where it belongs: it is a statement about the advisory, and the button
+is how you replace it.
+
+**5. Plain section headings — Storm, Impact, Where are you.** Uppercase
+`textMuted` at `typography.caption`, the same treatment `ReadoutPanel` already
+uses for its own "Exposure" label, so the panel reads as one system. Plain on
+purpose: the cards are already the panel's visual structure, and a second
+heading weight competes with the numbers the panel exists to show.
+
+**6. One-line what-if caption under the slider.** "A what-if, not a forecast."
+Without it the slider reads as a control for something real — the same control
+in a weather app *would* be a forecast, and a judge who has seen a weather app
+will assume that.
+
+**The one piece of new non-trivial logic, and how it is checked.** The legend's
+agreement with the map. **The check is on the data, not on a copy of it** — and
+that distinction is the whole point, given flag 42. An earlier draft put the
+colours inline in `MapLegend.tsx`, where the only way to test them would have
+been to retype them in the test, which is exactly the invalid-PNG shape: a check
+that agrees with whatever it is copied from.
+
+`mobile/legend.ts` therefore **imports nothing at all** and each row *names* the
+constant it must be drawn in (`'mapStyles.assetPinColours.hospital'`);
+`MapLegend.tsx` resolves those names in one `switch` against the real exports.
+Two things follow. The names are pinned closed by a test, and the `SwatchSource`
+union keeps the type and the `switch` in step — adding a name to the union
+without a `case` fails the typecheck, adding a `case` without a row fails the
+test.
+
+**Why `legend.ts` imports nothing is a fact worth keeping:**
+`theme.ts` and `mapStyles.ts` are imported **extensionless** (Metro requires
+this) and **Node's ESM resolver will not follow it** — `import { theme } from
+'./theme'` is `ERR_MODULE_NOT_FOUND` under `node --test`. `allowImportingTsExtensions`
+in `tsconfig.json` would fix it, and was **deliberately not used** because that
+file has uncommitted changes from outside this task and is the config the app
+itself builds with. The name/value split is what leaves the data reachable.
+9 new tests, all confirmed running (not skipped) — 48 → 57.
+
+**One thing left alone on purpose:** `TRACK_FIT_PADDING` still does not
+deliberately clear the new bottom-left legend. The padding is symmetric, a fix
+landing on a legend row is obscured rather than unreadable, and increasing
+`left` would push the track off the edge on every device. This is the kind of
+thing to settle by looking at a real screen, which is still not possible.
+
 
 ### 2026-09-30 — Claude Code: every overlay PNG was invalid, and the test suite said they were fine
 
