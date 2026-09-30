@@ -20,7 +20,7 @@
 
 # Module B — simulation engine
 numpy>=1.26             # installed 2.5.3 — DEM grid, flood frames, LP
-rasterio>=1.3,<2        # installed 1.5.1 — SRTM DEM. Upper bound: rasterio 2.x
+rasterio==1.3.10
                          # is a major version with its own GDAL ABI.
 shapely>=2.0            # installed 2.1.2 — polygon geometry
 scipy>=1.11             # installed 1.18.1 — linprog for the shelter allocation
