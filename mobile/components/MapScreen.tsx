@@ -40,10 +40,14 @@ import { describeAdvisoryError, isAdvisoryStale } from '../advisoryFlow';
 import { SAMPLE_ADVISORY } from '../sampleAdvisory';
 import { theme } from '../theme';
 import { AdvisoryContent, type AdvisoryOutcome } from './AdvisoryContent';
+import { PathIcon, TargetIcon } from './ControlIcon';
+import { FirstRunCard } from './FirstRunCard';
 import { IntensityControl } from './IntensityControl';
 import { LocalityPicker } from './LocalityPicker';
+import { MapLegend } from './MapLegend';
 import { PrimaryButton } from './PrimaryButton';
 import { ReadoutPanel } from './ReadoutPanel';
+import { SectionHeading } from './SectionHeading';
 import {
   SAGAR_REGION,
   OVERLAY_BEARING,
@@ -96,7 +100,7 @@ export function MapScreen() {
   const mapRef = useRef<MapView | null>(null);
   /**
    * Whether the map is currently showing the whole track, and so whether the
-   * ghost control's label reads "Back to Sagar".
+   * ghost control reads "Show storm path" or "Zoom to Sagar".
    *
    * This is the map's *own* state, tracked on purpose: a user who pans away
    * from the fitted view by hand leaves the label describing the last button
@@ -107,6 +111,19 @@ export function MapScreen() {
    * control's last action, which is what a toggle is.
    */
   const [fittingTrack, setFittingTrack] = useState(false);
+
+  /**
+   * Whether the three-step first-open card is still showing.
+   *
+   * **Session-scoped, not persisted.** `@react-native-async-storage/async-storage`
+   * is not installed and this pass adds no dependency, so "first open" means
+   * first open of this app session: dismissing the card and cold-starting again
+   * brings it back. For a judged demo that is the *better* behaviour — a judge
+   * who relaunches gets the explanation again rather than a bare map they may
+   * not know how to drive — and for a real user it is wrong. Logged in
+   * MEMORY.md rather than left to be discovered as a bug.
+   */
+  const [showFirstRun, setShowFirstRun] = useState(true);
 
   // Committed selection. `categoryIndex` is the value the map and the exposure
   // request agree on; `draftIndex` is only the thumb position, so a drag
@@ -514,25 +531,54 @@ export function MapScreen() {
           </View>
         ) : null}
 
+        {/*
+          The legend, then the first-open card, then the storm-path control —
+          three `position: absolute` siblings claiming the map's edges:
+          legend bottom-left, first-run top, control bottom-right. They never
+          overlap, and all three are inside this wrapper rather than siblings of
+          the map, so the MapView's viewport is unchanged.
+
+          The banner above is the one thing that can collide, and it can: it is
+          also top-anchored and full-width. The banner only renders on a
+          build-time misconfiguration (no `EXPO_PUBLIC_API_URL`), and in that
+          state the map is showing no flood at all — so the first-open card on
+          top of it is a cosmetic overlap in an already-broken state, and
+          hiding the card behind a build error would be the worse trade.
+        */}
+        <MapLegend />
+
+        {showFirstRun ? <FirstRunCard onDismiss={() => setShowFirstRun(false)} /> : null}
+
         {/* Ghost control, per decision 2. Bottom-right of the map, not the
             top: the banner above is full-width and its height varies with the
             text, so anything anchored to the top would be covered by it
             whenever both are on screen. The readout panel is a *sibling* of
-            this wrapper, not an overlay, so the map's own bottom edge is free. */}
+            this wrapper, not an overlay, so the map's own bottom edge is free.
+
+            "Full track" and "Back to Sagar" were both replaced on 2026-09-30.
+            Neither old name described the action: "Full track" says what the
+            view *contains* rather than what pressing it *does*, and "Back to
+            Sagar" reads as navigation away from a place the viewer was never
+            at — the control returns to the opening region, and "Zoom to Sagar"
+            says exactly that. Each label now sits beside an icon for the same
+            reason: the control is the only one on this screen, so it has to
+            identify itself rather than rely on the reader having read the
+            README. */}
         {track ? (
           <Pressable
             onPress={onPressFit}
             accessibilityRole="button"
             accessibilityLabel={
-              fittingTrack ? 'Return the map to Sagar Island' : 'Fit the map to the full cyclone track'
+              fittingTrack ? 'Zoom the map to Sagar Island' : 'Show the full storm path'
             }
             style={({ pressed }) => [
               styles.fitControl,
               pressed ? styles.fitControlPressed : null,
             ]}
           >
+            {fittingTrack ? <TargetIcon /> : <PathIcon />}
             <Text style={styles.fitControlLabel}>
-              {fittingTrack ? 'Back to Sagar' : 'Full track'}
+              {fittingTrack ? 'Zoom to Sagar' : 'Show storm path'}
             </Text>
           </Pressable>
         ) : null}
@@ -558,6 +604,8 @@ export function MapScreen() {
           </Text>
         ) : null}
 
+        <SectionHeading label="Storm" />
+
         <IntensityControl
           count={categories.length}
           value={categoryIndex}
@@ -570,6 +618,8 @@ export function MapScreen() {
           presetActive={!!activePreset}
           onPressPreset={onPressPreset}
         />
+
+        <SectionHeading label="Impact" />
 
         <ReadoutPanel
           overlay={overlay}
@@ -588,19 +638,67 @@ export function MapScreen() {
           </Text>
         ) : null}
 
+        <SectionHeading label="Where are you" />
+
         <LocalityPicker
           localities={localities}
           selectedId={originId}
           onSelect={setOriginId}
         />
+      </ScrollView>
 
+      {/*
+        Generate Advisory, pinned outside the ScrollView.
+
+        It was the last child of the panel, which meant it was on screen only
+        when the reader had scrolled to the bottom — and the panel's own
+        contents are taller than its 52% cap, so at boot the button the whole
+        app exists to press was below the fold. Worse, it was the *only* thing
+        that moved when the reader scrolled, so the one fixed action in the app
+        was the one that scrolled away.
+
+        Moving it out of the ScrollView and giving it its own footer pins it to
+        the bottom of the screen at every scroll position. The cost is real and
+        is the reason the panel's `maxHeight` was reduced: the footer now
+        permanently occupies the bottom ~64dp, so the panel is capped at 46%
+        rather than 52% to keep the map — the thing the button summarises — from
+        being squeezed to a strip. The footer also draws a top border, because
+        content scrolls underneath it and without the rule the cutoff is
+        invisible.
+
+        The button stays disabled at 5 of the 7 slider positions and for the
+        preset, because 5 of 7 bands expose no infrastructure at all. That is
+        the honest behaviour, and it is also a demo problem worth saying out
+        loud rather than hiding behind a disabled button: the core loop is
+        currently only reachable at categories 5 and 6.
+      */}
+      <View style={styles.footer}>
         {/*
-          Generate Advisory stays disabled at 5 of the 7 slider positions and
-          for the preset, because 5 of 7 bands expose no infrastructure at
-          all. That is the honest behaviour, and it is also a demo problem
-          worth saying out loud rather than hiding behind a disabled button:
-          the core loop is currently only reachable at categories 5 and 6.
+          The stale guard. The advisory on screen is written for one
+          `${category}:${origin}` pair; if the reader has since moved the slider
+          or the picker, the prose is describing a scenario they are no longer
+          looking at. The advisory is still shown — it is real output about a
+          real modelled storm — but never presented as the answer to the current
+          settings.
+
+          It lives *inside* the footer, immediately above the button, and that
+          is a change of position as well as of implementation. It was
+          `position: absolute` at the bottom of the screen, which the footer
+          now occupies — left there it would have rendered on top of the
+          button it is warning about. Directly above the button is also the
+          place it belongs: it is a statement about the advisory, and the
+          button is how you replace it.
         */}
+        {advisory?.status === 'ready' && isAdvisoryStale(advisory.response, categoryIndex, originId) ? (
+          <View style={styles.staleNotice}>
+            <Text style={styles.staleText}>
+              Generated for {advisory.response.generated_for.imd_category} at{' '}
+              {advisory.response.generated_for.origin.name} — the settings have changed since.
+              Close and generate again for the current scenario.
+            </Text>
+          </View>
+        ) : null}
+
         <PrimaryButton
           label="Generate Advisory"
           onPress={onGenerateAdvisory}
@@ -613,25 +711,7 @@ export function MapScreen() {
             evacuate.
           </Text>
         ) : null}
-      </ScrollView>
-
-      {/*
-        The stale guard. The advisory on screen is written for one
-        `${category}:${origin}` pair; if the reader has since moved the slider
-        or the picker, the prose is describing a scenario they are no longer
-        looking at. The advisory is still shown — it is real output about a
-        real modelled storm — but never presented as the answer to the current
-        settings.
-      */}
-      {advisory?.status === 'ready' && isAdvisoryStale(advisory.response, categoryIndex, originId) ? (
-        <View style={styles.staleNotice}>
-          <Text style={styles.staleText}>
-            Generated for {advisory.response.generated_for.imd_category} at{' '}
-            {advisory.response.generated_for.origin.name} — the settings have changed since.
-            Close and generate again for the current scenario.
-          </Text>
-        </View>
-      ) : null}
+      </View>
 
       <AdvisoryContent
         outcome={advisory}
@@ -760,6 +840,11 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: theme.spacing.xs,
     right: theme.spacing.xs,
+    // `center` rather than the previous default, because the control now holds
+    // an icon and a label side by side and a top-aligned icon beside centred
+    // text reads as two things that do not belong to each other.
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingVertical: theme.spacing.xs / 2,
     paddingHorizontal: theme.spacing.sm,
     borderRadius: theme.radius.chip,
@@ -777,12 +862,27 @@ const styles = StyleSheet.create({
     fontFamily: theme.fonts.bodySemibold,
     fontSize: theme.typography.caption,
     color: theme.colors.text,
+    marginLeft: theme.spacing.xs / 2,
   },
   panel: {
-    maxHeight: '52%',
+    // 46%, not the previous 52%: the footer below now permanently occupies the
+    // bottom of the screen, and this cap is what keeps the map from being
+    // squeezed into a strip by the panel plus the footer together.
+    maxHeight: '46%',
     backgroundColor: theme.colors.background,
     borderTopLeftRadius: theme.radius.card,
     borderTopRightRadius: theme.radius.card,
+  },
+  footer: {
+    // Outside the ScrollView so the button is pinned; the border because the
+    // panel's content scrolls up underneath it and without a rule the cutoff
+    // is invisible.
+    backgroundColor: theme.colors.background,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+    paddingHorizontal: theme.spacing.sm,
+    paddingTop: theme.spacing.xs,
+    paddingBottom: theme.spacing.sm,
   },
   panelContent: {
     padding: theme.spacing.sm,
@@ -813,6 +913,10 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.caption,
     color: theme.colors.danger,
     marginTop: theme.spacing.xs,
+    // `marginBottom` because the "Where are you" heading now follows this text
+    // directly, and the heading carries only its own `marginTop` of a single
+    // step — not enough on its own after a multi-line error.
+    marginBottom: theme.spacing.xs,
   },
   trackCaption: {
     fontFamily: theme.fonts.body,
@@ -831,13 +935,13 @@ const styles = StyleSheet.create({
     marginTop: theme.spacing.sm,
   },
   staleNotice: {
-    position: 'absolute',
-    left: theme.spacing.xs,
-    right: theme.spacing.xs,
-    bottom: theme.spacing.xs,
+    // No longer absolutely positioned — it is a child of the footer now, so it
+    // sits directly above the button it warns about instead of being painted
+    // over it. `marginBottom` is what separates it from the button.
     backgroundColor: theme.colors.caution,
     borderRadius: theme.radius.button,
     padding: theme.spacing.xs,
+    marginBottom: theme.spacing.xs,
   },
   staleText: {
     fontFamily: theme.fonts.body,

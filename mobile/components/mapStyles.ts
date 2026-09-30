@@ -108,10 +108,10 @@ export const SAGAR_REGION = {
 } as const;
 
 /**
- * Animation duration for the "Back to Sagar" move, in ms.
+ * Animation duration for the "Zoom to Sagar" move, in ms.
  *
  * Long enough to read as a move rather than a cut, short enough not to hold up
- * a demo. The "Full track" fit passes `animated: true` to
+ * a demo. The "Show storm path" fit passes `animated: true` to
  * `fitToCoordinates` and so uses the map's own default duration instead —
  * this one is explicit because `animateToRegion` takes a duration argument
  * that has to be a number.
@@ -126,10 +126,18 @@ export const TRACK_FIT_DURATION_MS = 600;
  * overlay on it, so the MapView's viewport already excludes it and a large
  * bottom padding would waste roughly a third of the visible map.
  *
- * What the bottom padding is for is the "Full track" control, which floats at
- * the map's bottom-right. 64dp lifts the southernmost fix — 18.75 N, well
+ * What the bottom padding is for is the "Show storm path" control, which floats
+ * at the map's bottom-right. 64dp lifts the southernmost fix — 18.75 N, well
  * south of Odisha — clear of that control instead of letting a pin sit on
  * top of it. The rest keeps the first and last fixes off the bezel.
+ *
+ * **The map legend now also floats at the bottom-left**, added 2026-09-30. The
+ * padding is symmetric, so the left-hand fix is not deliberately cleared of
+ * it — but the legend is far shorter than the control on the right, and a fix
+ * that lands on a legend row is obscured rather than unreadable. Left alone
+ * because increasing `left` would push the track further from the edge for
+ * every device, and this is the kind of thing to settle by looking at a real
+ * screen.
  */
 export const TRACK_FIT_PADDING = {
   top: 24,

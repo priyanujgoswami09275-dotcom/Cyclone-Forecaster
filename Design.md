@@ -96,10 +96,34 @@ rather than left as undocumented implementation. Unlike the track token above,
 these are **implementation choices, not decisions**; MEMORY.md §37 lists them
 as owed a human look.
 
-- **"Full track" map control**: a ghost chip at the map's bottom-right —
-  `card` fill, 1px `border`, `text` label, `radius.chip`. Placed bottom-right
-  because the flood-layer banner at the top is full-width and its height
-  varies with its text.
+- **"Show storm path" map control**: a ghost chip at the map's bottom-right —
+  `card` fill, 1px `border`, `text` label, `radius.chip`, with a drawn icon
+  before the label. Placed bottom-right because the flood-layer banner at the
+  top is full-width and its height varies with its text. Renamed from "Full
+  track" 2026-09-30: the old label named the view's contents rather than the
+  action, and the toggle's other label ("Back to Sagar" → "Zoom to Sagar")
+  read as navigation away from a place the reader was never at.
+- **Map legend**: bottom-left of the map, `card` fill, 1px `border`,
+  `radius.button`. Five rows — flooded area, hospital, substation, cut-off
+  road, storm path. **Swatch colours are read from `mapStyles.ts`, not
+  retyped**, so the legend cannot drift from what the map actually draws.
+  Bottom-left because the storm-path control holds bottom-right. Added
+  2026-09-30; tokens only, but see MEMORY.md — a legend is a second surface
+  that has to be kept in sync.
+- **First-open card**: top of the map, `card` fill, `radius.card`, 1px
+  `border`. Three numbered steps in `primary` badges naming the three
+  gestures that make up the app's loop. Dismissible. Added 2026-09-30.
+  **Session-scoped, not persisted** — see MEMORY.md.
+- **Section headings** — "Storm", "Impact", "Where are you": uppercase
+  `textMuted` at `typography.caption`, same treatment `ReadoutPanel` already
+  uses for its "Exposure" label. Deliberately plain: the cards are already the
+  panel's visual structure, and a second heading weight competes with the
+  numbers. Added 2026-09-30.
+- **"What-if" caption** under the intensity slider: `textMuted` at
+  `typography.caption`, one line. Added 2026-09-30.
+- **Pinned "Generate Advisory" footer**: outside the panel's `ScrollView`,
+  `background` fill, 1px `borderTop`. Added 2026-09-30 — the button was the
+  last child of the scroll view and so was below the fold at boot.
 - **Shelter disclosure notice**: `caution` fill, `text` body, `radius.button`.
   Placed above the advisory body rather than in a footer, so it is read before
   the numbers it qualifies. Non-dismissable by design.

@@ -123,6 +123,20 @@ export function IntensityControl({
         }}
       />
 
+      {/*
+        The what-if caption, and it is the one line on this screen that says
+        what the whole app is. Without it the slider reads as a control for
+        something real — the same control, in a weather app, would be a
+        forecast. Nothing here forecasts anything: every value on this screen
+        is the model's answer to a hypothetical storm, and only the `remal_
+        observed` overlay is a record of a storm that actually happened. Said
+        once, in the app's own caption voice, directly under the control that
+        provokes the question.
+      */}
+      <Text style={styles.whatIf}>
+        A what-if, not a forecast. Move the slider to ask what a storm at this strength would do.
+      </Text>
+
       <Text style={styles.hint}>
         {presetActive
           ? 'Showing the preset’s own flood raster. Exposure counts are for the nearest IMD band — see the note below.'
@@ -168,6 +182,12 @@ const styles = StyleSheet.create({
     width: '100%',
     height: theme.spacing.lg,
     marginTop: theme.spacing.xs,
+  },
+  whatIf: {
+    fontFamily: theme.fonts.body,
+    fontSize: theme.typography.caption,
+    color: theme.colors.textMuted,
+    marginTop: theme.spacing.xs / 2,
   },
   hint: {
     fontFamily: theme.fonts.body,
