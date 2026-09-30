@@ -251,6 +251,18 @@ means in practice is listed under "Flagged for review" below.
 
 ## Known issues / blockers
 
+- **RESOLVED 2026-09-30 — all eight committed overlay PNGs were invalid, and
+  the test suite passed on them.** `encode_png_rgba` wrote IHDR colour type
+  **9**; the PNG spec defines 0, 2, 3, 4 and 6 only, and Pillow
+  `UnidentifiedImageError`s on every one of the eight files. Invisible for
+  two days because the sole decoder was the encoder's own inverse, taught to
+  accept the bad byte. Fixed in `3bf47af`; Pillow now opens every overlay as
+  an independent second opinion. The regenerated files differ from the
+  committed ones in 5 bytes each — colour type and IHDR CRC — with the IDAT
+  stream bit-identical, so no pixel of model output changed. Flooded pixels:
+  cat0-3 = 0 (a real result, not a failure), cat4 16052, cat5 76327, cat6
+  119406, remal_observed 14657.
+
 - **NEW 2026-09-29 — the track is real data with two properties the UI has to
   respect.** 5 of its 19 fixes have **no reported wind** (IBTrACS leaves
   `USA_WIND` blank as the storm crossed the Bay on 27 May, and
@@ -1485,6 +1497,25 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     builder, so it was changed to the documented syntax. **Do not "tidy" it
     back into an array.** If it grows, add another entry inside the braces.
 
+42. **A self-written decoder cannot check a self-written encoder — this
+   happened here, for two days, and the suite passed the whole time.**
+   `tests/test_overlays.py`'s `decode_png_rgba` is the exact inverse of
+   `backend/tools/render_overlays.py`'s `encode_png_rgba`, and it asserted
+   `colour in (6, 9)` — accepting the encoder's invalid IHDR byte on the
+   strength of a comment that was itself wrong. Both halves came from the
+   same mistake (a nonexistent colour type 9, justified by a `tRNS` claim
+   that has no bearing on colour-type selection), so they agreed with each
+   other and both were wrong. **The lesson generalises past PNGs: in this
+   repo, any check whose logic mirrors the code it checks is not evidence.**
+   The general fix is a second implementation — Pillow here — which is why
+   `pillow` is in `requirements-dev.txt` and not `requirements.txt`. It is
+   *not* in the runtime set because the service never opens a PNG. Two
+   consequences to carry forward: the assertion was tightened to
+   `colour == 6` with the tRNS story removed, and a
+   `TestOverlaysAreRealImages` class now runs 5 independent checks
+   (`pytest -k RealImages` → 5 passed, 38 deselected, so they are not
+   silently skipping).
+
 ## Environment / credentials status
 
 - [x] Google Earth Engine authenticated — done 2026-09-27, DEM fetched and committed
@@ -1667,6 +1698,97 @@ RUN_LIVE_CAPTURE=1 venv/bin/python -m backend.tools.capture_advisory
 ---
 
 ## Session log (newest entry first)
+
+### 2026-09-30 — Claude Code: every overlay PNG was invalid, and the test suite said they were fine
+
+**Scope.** Two commits, `3bf47af` (encoder + regenerated PNGs + Pillow
+tests) and `11641c8` (the mobile render guard). The whole finding in one
+line: **all eight committed overlays in `data/overlays/` were files no
+conforming PNG decoder accepts, and the repo's own test suite passed.**
+
+**The bug.** `encode_png_rgba` in `backend/tools/render_overlays.py` wrote
+IHDR **colour type 9**. The PNG spec defines 0 (grey), 2 (truecolour), 3
+(indexed), 4 (grey+alpha) and 6 (truecolour+alpha). There is no 9. The
+comment above the code claimed 9 was "truecolour + alpha with tRNS" — it
+was not; `tRNS` is a separate ancillary chunk and has nothing to do with
+which of the five colour types is selected. Fixed to 6, and the comment
+replaced with one that says what the byte actually is.
+
+**Why nobody noticed for two days, which is the part worth keeping.** The
+only thing in the repo that ever decoded these files was `decode_png_rgba`
+in `tests/test_overlays.py` — and that function is the *inverse of the
+function that wrote them*. It had been taught to accept the mistake:
+`assert colour in (6, 9)`, justified by the same invented tRNS note. A
+decoder that mirrors its own encoder cannot disagree with it, so the test
+suite was not weak evidence — it was evidence of nothing at all, and it
+reported success for eight unopenable files. The encoder and the decoder
+were written by the same reasoning error, so they agreed with each other
+and both were wrong.
+
+**The fix is a second opinion, not a stricter first one.** `pillow` is now
+a dev dependency and a new `TestOverlaysAreRealImages` class opens every
+overlay with `Image.open(...).load()` (the `load()` forces an actual
+decode), asserting `mode == "RGBA"`, size against `overlays.json`, that
+alpha actually varies, and that dry pixels are `alpha == 0` while wet
+ones are `< 255`. Pillow is a completely independent implementation of
+the format, so it can disagree with `encode_png_rgba` — which is the only
+property that makes a check worth having. It is **deliberately not in
+`requirements.txt`**: the service never opens a PNG, and adding it would
+put Pillow in the Vercel bundle for no runtime reason.
+
+**The regeneration was faithful, and that is checkable.** Each of the eight
+files differs from its committed version in **exactly 5 bytes** — colour
+type at offset 25 and the IHDR CRC at 29–32. The IDAT stream is
+bit-identical, so not one pixel of the model's output moved, and
+`overlays.json` is unchanged. Flooded pixel counts match the previous run
+exactly: **cat4 16052, cat5 76327, cat6 119406, remal_observed 14657**.
+
+**A real finding buried in those numbers: categories 0–3 flood nothing.**
+0, 0, 0, 0. That is a correct model result at those intensities, not a
+rendering failure — but it exposed a second bug (below) that would have
+been invisible if all eight overlays had water in them.
+
+**The mobile half was a separate bug the first one was hiding.**
+`MapScreen.tsx` computed the overlay uri as
+`overlay ? overlayImageUrl(overlay) ?? '' : ''`, which is **always
+truthy** — so `<Overlay>` rendered for every category, handing
+`react-native-maps` an empty `uri` plus a bounds tuple. Harmless-looking
+exactly because half the overlays were blank anyway. The decision now
+lives in `shouldDrawOverlay()` in `api.ts` and returns false for a missing
+entry or a count that is not a positive number; `<Overlay>` renders only
+when the uri is non-null.
+
+**A correction to my own reasoning, kept because the wrong version sounded
+right.** I first wrote `shouldDrawOverlay` as a bare `> 0` guard and
+claimed in the docstring that a malformed count "fails closed". The test
+disagreed: **`'16052' > 0` is `true` in JavaScript** — a numeric string
+coerces and passes. The function was wrong and the docstring was an
+unverified claim. Fixed with an explicit `typeof … === 'number'` check,
+which is load-bearing and commented as such.
+
+**Coverage stated honestly.** The PNG *decision* is now checked by two
+independent decoders. The mobile guard is tested through the extracted
+pure function (6 cases in `mobile/tests/overlay.test.mjs`); the JSX
+conditional consuming it is verified by reading the component, because
+this project has no React renderer. `pytest tests/` → **325 passed, 3
+skipped** (was 320; the 5 new Pillow tests confirmed running, not skipped,
+via `-k RealImages -v`). `node --test 'tests/*.test.mjs'` → **48 pass, 0
+fail** (was 42). `npx tsc --noEmit` → clean.
+
+**Not committed, and not mine.** `mobile/package.json`,
+`mobile/package-lock.json` and `mobile/tsconfig.json` are modified in the
+working tree by something outside this task: `react` and `react-native`
+added to dependencies, `@types/react` `^19.3.0 → ~19.2.4` and
+`typescript` `^7.0.2 → ~6.0.3` **downgraded**, 1269 lockfile lines
+changed. Unrelated to the overlay work and left unstaged, as
+`mobile/tsconfig.json` has been since an earlier round. **Needs a human
+decision** — the typescript downgrade in particular is the kind of change
+that should be deliberate. `?? .agents/` also remains untracked.
+
+**The app has still never run on a device** (§33). Nothing in this session
+was exercised from a handset; the overlays have still never been seen
+rendered by a real map view.
+
 
 ### 2026-09-29 — Claude Code: Vercel docs read, and a payload cap that may break the demo
 
