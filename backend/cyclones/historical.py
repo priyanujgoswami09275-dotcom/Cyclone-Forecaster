@@ -23,39 +23,63 @@ rather than inventing a catalogue when it is not, and
 file is missing.
 
 **Without the archive the test suite fails; it does not skip.** There is no
-`skipif` on any of them, no `tests/conftest.py`, and no pytest config in this
-repo. This is a deliberate trade and the other way round was available:
-`tests/test_overlays.py` has used `pytestmark = pytest.mark.skipif(...)` for a
-missing overlay this whole time. Skipping is wrong here because a green suite
-has to mean *the assertions ran*. A skip is green, so a missing archive would
-read as a passing suite and the failure would surface much later — as a
-catalogue that quietly stopped being regenerated, or as a reviewer's question
-answered by a test that never executed. A `FileNotFoundError` is loud and
-immediate, and it names the file, which is the one thing a person needs to know.
-The cost is that this suite cannot go green on a fresh clone until the archive
-is placed; the benefit is that green is never a lie.
+`skipif` on any test in `tests/test_ibtracs_ni.py`, no `tests/conftest.py`, and
+no pytest ini section or `pyproject.toml` anywhere in this repo. There *is* a
+root `conftest.py`, and it only puts the repo root on `sys.path` — no markers,
+no ini options, nothing that could skip anything. This is a deliberate trade and
+the other way round was available: `tests/test_overlays.py` has used
+`pytestmark = pytest.mark.skipif(...)` for a missing overlay this whole time.
+Skipping is wrong here because a green suite has to mean *the assertions ran*.
+A skip is green, so a missing archive would read as a passing suite and the
+failure would surface much later — as a catalogue that quietly stopped being
+regenerated, or as a reviewer's question answered by a test that never executed.
+A `FileNotFoundError` is loud and immediate, and it names the file, which is
+the one thing a person needs to know. The cost is that this suite cannot go
+green on a fresh clone until the archive is placed; the benefit is that green is
+never a lie.
 
-What is in the file, measured, because the file is not what its name says
+Every measured figure in the paragraphs below is **held against the archive by a
+test in `tests/test_ibtracs_ni.py`**, derived from the file and compared to a
+fixed literal, with a failure message naming the quantity that moved. That is
+the only reason these numbers are trustworthy: this feature has produced six
+wrong hand-counted figures across three review rounds, and a number in a
+docstring that no test derives is a number the suite structurally cannot catch.
+Which test owns which figure is stated at each claim below.
+
+What is in the file, because the file is not what its name says
 -------------------------------------------------------------------------
 `ibtracs.NI.list.v04r01.csv` is the North Indian Ocean *list*, which is
 IBTrACS's recommendation of what to load for this basin — not a file containing
-only this basin. `csv.DictReader` yields 62,860 records (62,861 lines counting
-the header), 174 columns, seasons 1842-2026, and:
+only this basin. It is a large multi-hundred-megabyte-of-text, 174-column CSV
+spanning seasons 1842-2026, and:
 
   * `BASIN` is `NI` on 57,852 rows, **`WP` on 4,525** and **`NA` on 482**. The
     WP rows are real Western Pacific storms (16.3 N, 119.1 E — the
     Philippines); the NA rows are a real Atlantic storm at longitude -63.6 with
-    `SUBBASIN == "CS"`. Neither is the Sundarbans.
+    `SUBBASIN == "CS"`. Neither is the Sundarbans. *Pinned by
+    `test_the_archives_structural_shape_is_what_the_docstrings_say`.*
   * Row index 1 is a **units row**: `LAT` literally reads `degrees_north` and
     `USA_WIND` reads `kts`. Its `BASIN` is a single space, so the basin filter
     drops it — but that is luck, not design, and `_row_storm_id` would also
-    refuse it.
-  * 1,859 NI storms, 610 of them at season >= 1970.
+    refuse it. *Pinned by `test_the_junk_row_is_dropped`.*
+  * 1,859 NI storms, 610 of them at season >= 1970. *Pinned by
+    `test_the_archives_structural_shape_is_what_the_docstrings_say` and
+    `test_since_defaults_to_1970_and_cuts_the_1859_ni_storms_to_610`.*
   * `USA_WIND` is blank on 45,280 of 57,852 NI fixes. `USA_PRES` is populated
     on 6,297 of them (10.9% — the plan this was written from said 48%, and
-    the rule it gave, "None when absent", is the rule that shipped).
+    the rule it gave, "None when absent", is the rule that shipped). *Pinned by
+    the shape test and by
+    `test_pressure_is_none_when_the_file_has_none`.*
   * `NATURE` never goes blank on an NI row, but it does read `NR` ("not
-    reported") on 3,014 of them.
+    reported") on 3,014 of them. *Pinned by the shape test.*
+  * 52,950 of the 57,852 NI fixes are `UNNAMED`, covering 1,713 of the 1,859
+    storms. *Pinned by the shape test.*
+
+Deliberately **not** stated here: the exact record count, the line count, the
+column count and the file size. Each is trivia that moves on a revision — a
+quoted field gaining a newline, NOAA adding a column, any content change at all
+— so asserting them would only train a future reader to bulk-accept this
+section's changes without reading them. They are in the file; get them from it.
 
 So the filter is the feature. Everything else in this module is careful about
 not inventing things; `read_ni_rows` is careful about not *including* things.
@@ -68,12 +92,16 @@ at **index 7**. The plan this module was written from said index 11, which on
 this file is the second-to-last digit — an assertion that compares every
 catalogue id against a digit and fails.
 
-More importantly, the letter is `'N'` on *every* row in the file, WP and NA
-included. `BASIN` and the SID's letter are different fields and they disagree
-for 5,007 rows here. So inferring the basin from a cyclone id would be wrong
-and silently wrong, which is the kind that survives review. `BASIN` is the only
-authority, and `tests/test_ibtracs_ni.py` pins that with a raw-file check that
-does not parse the SID at all.
+More importantly, the letter is `'N'` on *every* row of storm-id shape in the
+file, WP and NA included — the 4,525 WP rows and 482 NA rows all carry it.
+`BASIN` and the SID's letter are different fields, and inferring the basin from a
+cyclone id would be wrong and silently wrong, which is the kind that survives
+review. `BASIN` is the only authority, and
+`test_the_sid_letter_cannot_identify_the_basin` pins that with a raw-file check
+that does not parse the SID at all, while
+`test_storms_that_span_more_than_one_basin` derives the storm counts and shows
+why a SID-based check is vacuous: every WP and NA storm in this file also has NI
+fixes, so "the yielded SIDs are not WP SIDs" is true of a reader that leaks.
 
 The bug this replaces
 ---------------------
@@ -97,7 +125,8 @@ restarting, and every one of those `0.0` reads is indistinguishable from a real
 (The GeoJSON was built from **v04r00**, which held only 19 fixes for Remal
 covering the landfall window; v04r01 has 40. So the file is short two
 dimensions at once — fewer fixes, and blanks where the later revision has real
-winds. `tests/test_ibtracs_ni.py` pins both.)
+winds. *Pinned by `test_remal_contains_every_fix_of_the_committed_track` and
+`test_the_committed_geojson_shows_remal_going_calm_and_the_catalogue_does_not`.*)
 
 Here a blank is `None` and `wind_reported` is `False`, and `0` — a reported
 0 kt, which agencies do publish for a dissipated storm — stays `0.0` with
@@ -123,9 +152,12 @@ What this module refuses to do
   policy about which observations count, and this file has no such policy. So
   an implausible coordinate is carried as written, including 1966 storm
   `1966233N13340`, which runs from 65.2 N up to 83.0 N while filed under
-  `SUBBASIN == "AS"` (Arabian Sea). `tests/test_ibtracs_ni.py` recomputes that
-  from the archive rather than trusting a number written here, and checks the
-  hemispheres rather than a bbox.
+  `SUBBASIN == "AS"` (Arabian Sea).
+  `test_an_implausible_coordinate_is_carried_as_written_not_clamped` derives
+  that span and the rest of the set from the archive and compares them to fixed
+  literals, so the figure above cannot be wrong without the suite saying so.
+  `test_latitude_and_longitude_are_never_substituted` checks the hemispheres
+  rather than a bbox.
 - **It does not filter by name or recency.** `since` is a season floor and
   nothing else. 1,713 of the NI storms are `UNNAMED` and they stay `UNNAMED`;
   the app is a cyclone forecaster, not a cyclone hall of fame, and a catalogue
@@ -149,7 +181,8 @@ The check that the conversion is the right way round: Remal's peak `USA_WIND`
 is 60 kt, and IMD's documented landfall wind was 110-120 kmph — 59-65 kt. A
 peak of 60 *kmph* would be the unit bug `surge.py` documents in its `IMD_BANDS`
 history, in which every wind in the app was about 1.85x too small. 60 kt comes
-out at 111.1 kmph, which is inside IMD's own range for the storm.
+out at 111.1 kmph, which is inside IMD's own range for the storm. *Pinned by
+`test_remal_peak_wind_is_60_kt_and_agrees_with_imd`.*
 """
 
 from __future__ import annotations
@@ -211,11 +244,13 @@ REMAL_CYCLONE_ID = "2024145N14087"
 #: Remal cross-check in the module docstring.
 KNOTS_TO_KMPH = 1.852
 
-#: `csv.field_size_limit`. The default is 131,072 and the plan says some
-#: columns exceed it. **Measured on the placed file, the longest single cell is
-#: 19 characters** (`ISO_TIME`), so on *this* file the raise is a no-op and the
-#: file parses fine at the default. It is set anyway, and raised at import
-#: rather than inside `read_ni_rows`, because:
+#: `csv.field_size_limit`. CPython's default is 131,072 — a fact about the
+#: interpreter, not about the archive, so nothing here pins it. The plan said
+#: some columns exceed it. **Measured on the archive in this working tree, the
+#: longest single cell is 19 characters** (`ISO_TIME`), so on *this* file the
+#: raise is a no-op and the file parses fine at the default. That measurement is
+#: why this comment says "no-op today" rather than claiming a fix. It is set
+#: anyway, and raised at import rather than inside `read_ni_rows`, because:
 #:
 #:   * IBTrACS list files are not all like this one — several carry long
 #:     free-text fields — so the limit belongs to "reading IBTrACS", not to
@@ -409,12 +444,11 @@ def _row_subbasin(row: dict[str, str]) -> str | None:
     """`SUBBASIN` verbatim, or `None` when blank.
 
     `BB` (Bay of Bengal) and `AS` (Arabian Sea) are IBTrACS's split of the
-    basin, and 42,426 of the NI rows are `BB` against 15,426 `AS`. Storing what
-    the source published is the whole point — `base.py` is explicit that
-    `subbasin` is an opaque string the source owns. A blank is `None` rather
-    than `""` because `""` renders as an empty chip and `None` renders as
-    nothing, and which of those is right is a decision made here rather than
-    left to a client.
+    basin, and the NI rows divide between them. Storing what the source
+    published is the whole point — `base.py` is explicit that `subbasin` is an
+    opaque string the source owns. A blank is `None` rather than `""` because
+    `""` renders as an empty chip and `None` renders as nothing, and which of
+    those is right is a decision made here rather than left to a client.
     """
     subbasin = (row.get("SUBBASIN") or "").strip()
     return subbasin or None
@@ -438,8 +472,8 @@ def _row_name(row: dict[str, str]) -> str:
 def _row_nature(row: dict[str, str]) -> str | None:
     """`NATURE` verbatim, or `None` when blank. Never translated.
 
-    IBTrACS's own classification: `TS` (53,431 NI fixes), `NR` (3,014, meaning
-    *not reported*), `DS`, `MX`, `ET`. It is not IMD's scheme, over a different
+    IBTrACS's own classification: `TS`, `NR` (meaning *not reported*),
+    `DS`, `MX`, `ET`. It is not IMD's scheme, over a different
     averaging period, and turning `TS` into "Cyclonic Storm" would hand a caller
     a wind category this column never measured.
 
@@ -585,7 +619,7 @@ def _group_storms(path: Path) -> Iterator[_Storm]:
     is a best track that visits the storm's genesis last, which on a
     north-westward track doubles back on itself. `ISO_TIME` is a fixed-width
     `YYYY-MM-DD HH:MM:SS` throughout this file, so string order is time order
-    and no `datetime` is constructed for 58,000 rows.
+    and no `datetime` is constructed for the tens of thousands of rows.
 
     Storm order out of this function is the file's. `build_catalogue` sorts, and
     sorting here would mean every caller inherited a choice that is really

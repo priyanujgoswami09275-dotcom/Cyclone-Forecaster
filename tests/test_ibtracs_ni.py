@@ -122,62 +122,92 @@ def test_a_non_finite_reading_never_becomes_a_number():
 
 
 # ---------------------------------------------------------------------------
-# 2. The basin filter. The property the whole file is named after.
+# 2. The archive's shape. The figures `historical.py` quotes, held against the
+#    file. Belongs before the basin filter because the filter's own claims are
+#    counts over this shape.
 # ---------------------------------------------------------------------------
 
 
 def test_the_archives_structural_shape_is_what_the_docstrings_say():
-    """Recomputes the shape numbers `historical.py` quotes, so they cannot rot.
+    """Holds the shape figures `historical.py` quotes against the archive.
 
-    This exists because a bare measured figure in a docstring, re-counted by
-    hand, got the implausible-fix count wrong in this feature and a review had
-    to catch it. A number no test derives is a number that goes stale silently.
-    So the structural claims — record count, column count, season span, the
-    non-NI rows the filter exists to remove, the blank winds that make rule 1 of
-    `base.py` matter — are all derived from the file here.
+    The pattern here is **derive, then compare to a literal** — not "recompute
+    instead of writing a literal". That is deliberate: a change detector needs
+    a fixed expectation, and a test that merely agreed with whatever the file
+    said would assert nothing. The literals are all correct; what makes them
+    safe is that the file is the other side of the comparison, so a revision
+    cannot pass unnoticed.
 
-    A future archive revision moves these numbers in this test and in the
-    docstrings in the same edit, or fails here, which is the point.
+    Every assertion names the quantity that moved. A bare `assert 6297 == 6300`
+    tells a reader nothing about what to go and look at.
+
+    **What is deliberately absent:** line count, column count, and file size.
+    Those are file trivia. The line count moves if any quoted field ever
+    contains a newline, the column count moves whenever NOAA adds a column —
+    which is routine and changes nothing about the basin filter — and the size
+    moves with any content change at all. A test that fires on a legitimate
+    revision teaches people to bulk-accept it without reading, which destroys
+    the value of the nine assertions that do matter. Those nine all describe
+    the picture the app draws: how much data there is, how it is divided, and
+    how much of it is incomplete.
     """
     with DEFAULT_IBTRACS_PATH.open(newline="") as fh:
-        reader = csv.DictReader(fh)
-        columns = len(reader.fieldnames)
-        raw = list(reader)
+        raw = list(csv.DictReader(fh))
 
     ni = [r for r in raw if (r.get("BASIN") or "").strip() == NI_BASIN_CODE]
     basins = Counter((r.get("BASIN") or "").strip() for r in raw)
 
-    # The docstring's "62,860 records (62,861 lines counting the header)".
-    assert len(raw) == 62860
-    with DEFAULT_IBTRACS_PATH.open(encoding="utf-8") as fh:
-        assert sum(1 for _ in fh) == 62861
+    assert len(raw) == 62860, (
+        f"archive now has {len(raw)} records, not 62860 — update the record count "
+        f"in historical.py's module docstring and the 'what is in the file' section"
+    )
 
-    assert columns == 174
     # Stripped, so the units row counts as "" — the single space it actually is.
-    assert basins == {"NI": 57852, "WP": 4525, "NA": 482, "": 1}
+    assert basins == {"NI": 57852, "WP": 4525, "NA": 482, "": 1}, (
+        f"basin split changed: {dict(basins)} — historical.py states "
+        f"57,852 NI / 4,525 WP / 482 NA plus one units row, and the WP and NA "
+        f"counts are what the basin filter exists to remove"
+    )
 
     seasons = sorted({int(r["SEASON"]) for r in ni})
-    assert (seasons[0], seasons[-1]) == (1842, 2026)
+    assert (seasons[0], seasons[-1]) == (1842, 2026), (
+        f"NI seasons now span {seasons[0]}-{seasons[-1]}, not 1842-2026 — the "
+        f"'since' default of 1970 and the 1,713 UNNAMED-storm figure are both "
+        f"quoted relative to this span"
+    )
 
-    # "USA_WIND is blank on 45,280 of 57,852 NI fixes" — the count that makes
-    # rule 1 of base.py a real rule rather than a hypothetical one.
+    # The count that makes rule 1 of base.py a real rule and not a hypothetical.
     blank_wind = sum(1 for r in ni if not (r["USA_WIND"] or "").strip())
-    assert (blank_wind, len(ni)) == (45280, 57852)
+    assert (blank_wind, len(ni)) == (45280, 57852), (
+        f"blank USA_WIND is now {blank_wind} of {len(ni)} NI fixes, not 45,280 "
+        f"of 57,852 — update the module docstring and IBTRACS_LIMITATION's "
+        f"'a missing wind is not a calm wind' clause if this moved"
+    )
 
-    # "NATURE ... NR on 3,014 of them" — the values that must survive verbatim.
-    assert sum(1 for r in ni if (r["NATURE"] or "").strip() == "NR") == 3014
+    assert sum(1 for r in ni if (r["NATURE"] or "").strip() == "NR") == 3014, (
+        "NATURE=NR count changed from 3,014 — update the docstring, and check "
+        "whether the NATURE test's allowed-vocabulary set still matches"
+    )
 
-    # "52,950 of the 57,852 NI fixes are UNNAMED, covering 1,713 of the 1,859
-    # storms" — the placeholder that must not be prettified.
     unnamed_fixes = sum(1 for r in ni if (r["NAME"] or "").strip() == "UNNAMED")
     unnamed_storms = {r["SID"] for r in ni if (r["NAME"] or "").strip() == "UNNAMED"}
-    assert unnamed_fixes == 52950
-    assert len(unnamed_storms) == 1713
-    assert len({r["SID"] for r in ni}) == 1859
+    all_storms = {r["SID"] for r in ni}
+    assert unnamed_fixes == 52950, (
+        f"UNNAMED fixes now {unnamed_fixes}, not 52,950 — update the docstring"
+    )
+    assert len(unnamed_storms) == 1713, (
+        f"UNNAMED storms now {len(unnamed_storms)}, not 1,713 — update the "
+        f"docstring, which uses it to justify keeping unnamed storms"
+    )
+    assert len(all_storms) == 1859, (
+        f"NI storm count now {len(all_storms)}, not 1,859 — the docstring and "
+        f"test_since_defaults_to_1970 both quote 1,859 and 610"
+    )
 
-    # "It reads a 27 MB CSV" — the only number here that is a rounding of
-    # another, and the one most likely to drift on a new revision.
-    assert round(DEFAULT_IBTRACS_PATH.stat().st_size / 1024 / 1024) == 27
+
+# ---------------------------------------------------------------------------
+# 3. The basin filter. The property the whole file is named after.
+# ---------------------------------------------------------------------------
 
 
 def test_only_north_indian_ocean_rows_are_read():
@@ -211,27 +241,30 @@ def test_every_ni_row_in_the_file_is_yielded_and_nothing_else():
 def test_a_wp_row_in_the_source_is_never_yielded():
     """A direct check on the reader, independent of what the catalogue built.
 
-    92 of the 1,859 SIDs in this file have fixes in more than one basin, and 57
-    of those are at season >= 1970. They are real cross-basin cyclones: Vamei
-    (2001) formed at 1.9 N, Bualoi (2025) ran from the Philippines into the Bay
-    of Bengal, and IBTrACS files the Indian Ocean leg under `BASIN == "NI"` with
-    `SUBBASIN == "BB"`. Keeping that leg is why this file contains those rows at
-    all, and dropping the whole storm would delete 57 genuine Bay of Bengal
-    tracks from the catalogue.
+    The 91 multi-basin SIDs and their composition are **derived below, not
+    asserted from prose** — see `test_storms_that_span_more_than_one_basin`, which
+    owns those figures. The shape of the problem: some storms in this file have
+    fixes filed under more than one `BASIN`, and the Indian Ocean leg of a
+    cross-basin cyclone is kept while the other legs are dropped. They are real
+    cyclones: Vamei (2001) formed at 1.9 N, Bualoi (2025) ran from the
+    Philippines into the Bay of Bengal, and IBTrACS files the Indian Ocean leg
+    under `BASIN == "NI"` with `SUBBASIN == "BB"`. Keeping that leg is why this
+    file contains those rows at all, and dropping the whole storm would delete
+    genuine Bay of Bengal tracks from the catalogue.
 
     **Which is why the leak has to be checked per row, by row identity, and why
     the first version of this test could not fail.** It compared yielded SIDs
-    against the SIDs on WP rows — but all 87 WP SIDs also have NI rows, so a
-    reader that yielded NI *and* WP rows left every one of those assertions
-    satisfied. The review caught that by writing exactly that reader and watching
-    the test pass.
+    against the SIDs on WP rows — but every WP SID in this file also has NI rows
+    (derived below), so a reader that yielded NI *and* WP rows left every one of
+    those assertions satisfied. The review caught that by writing exactly that
+    reader and watching the test pass.
 
     `(SID, ISO_TIME)` is used as the row identity instead, and the guard below
-    is what makes it sound: the pair is unique across all 62,860 records in this
-    file, so a WP row's key cannot coincide with an NI row's. That is a fact
-    about the archive rather than an assumption, and it is asserted here rather
-    than trusted, because if IBTrACS ever emitted two rows at one timestamp the
-    test would need a different key and would say so.
+    is what makes it sound: the pair is unique across every record in this file,
+    so a WP row's key cannot coincide with an NI row's. That is a fact about the
+    archive rather than an assumption, and it is asserted here rather than
+    trusted, because if IBTrACS ever emitted two rows at one timestamp the test
+    would need a different key and would say so.
     """
     with DEFAULT_IBTRACS_PATH.open(newline="") as fh:
         raw = list(csv.DictReader(fh))
@@ -241,12 +274,23 @@ def test_a_wp_row_in_the_source_is_never_yielded():
     def key(row: dict[str, str]) -> tuple[str, str]:
         return row["SID"], row["ISO_TIME"]
 
-    assert len({key(r) for r in raw}) == len(raw), "(SID, ISO_TIME) is not a row key"
+    assert len({key(r) for r in raw}) == len(raw), (
+        "(SID, ISO_TIME) is no longer a unique row key in this archive — a WP "
+        "row's key could now coincide with an NI row's, so the disjointness "
+        "assertion below would compare the wrong things"
+    )
 
     ni = {r["SID"] for r in raw if (r.get("BASIN") or "").strip() == NI_BASIN_CODE}
     mixed = {r["SID"] for r in wp} & ni
-    assert len(mixed) == 87, "measured: 87 SIDs have both WP and NI fixes"
-    assert not ({r["SID"] for r in wp} - ni), "every SID here has some NI fix"
+    assert len(mixed) == 87, (
+        f"{len(mixed)} SIDs now have both WP and NI fixes, not 87 — this figure "
+        f"is what makes the per-row check below necessary rather than optional"
+    )
+    assert not ({r["SID"] for r in wp} - ni), (
+        "a WP storm with no NI fixes would make the SID-based leak check "
+        "meaningful again; the row-identity check below is still correct, but "
+        "the test above would need rethinking"
+    )
 
     yielded = list(read_ni_rows())
     # The two code-sensitive assertions. Either one alone fails for a reader
@@ -254,6 +298,67 @@ def test_a_wp_row_in_the_source_is_never_yielded():
     # storm is not in the catalogue window at all.
     assert not any(r["BASIN"] == "WP" for r in yielded)
     assert not ({key(r) for r in yielded} & {key(r) for r in wp})
+
+
+def test_storms_that_span_more_than_one_basin():
+    """Owns the multi-basin figures, derived from the archive rather than prose.
+
+    This exists because a hand-counted "92 of the 1,859 SIDs" sat in a
+    neighbouring docstring and was wrong — 91. A number no test derives is a
+    number that goes stale silently, and the suite structurally cannot catch
+    that in a docstring, which is how six wrong figures got through three
+    rounds. So the figures live here, next to the code that computes them.
+
+    Derived, then compared to a literal: that is the change-detector pattern,
+    and the literals are correct. What makes them safe is that the file is on
+    the other side of the comparison.
+
+    The property that makes the per-row leak check necessary is the last
+    assertion: **every** WP and NA storm in this file also has NI fixes, so
+    "the yielded SIDs are not WP SIDs" is vacuous. A storm id identifies a
+    storm across basins; `BASIN` is a per-fix attribute.
+    """
+    basins_by_storm: dict[str, set[str]] = {}
+    for row in _raw_rows():
+        basins_by_storm.setdefault(row["SID"], set()).add(
+            (row.get("BASIN") or "").strip()
+        )
+
+    ni_storms = {s for s, b in basins_by_storm.items() if NI_BASIN_CODE in b}
+    wp_storms = {s for s, b in basins_by_storm.items() if "WP" in b}
+    na_storms = {s for s, b in basins_by_storm.items() if "NA" in b}
+    multi = {s for s, b in basins_by_storm.items() if len(b - {""}) > 1}
+
+    assert len(ni_storms) == 1859, "NI storm count moved; the shape test covers it too"
+    assert len(wp_storms) == 87, f"WP storm count is now {len(wp_storms)}, not 87"
+    assert len(na_storms) == 4, f"NA storm count is now {len(na_storms)}, not 4"
+    assert len(multi) == 91, (
+        f"{len(multi)} storms span more than one basin, not 91 — the WP/NA "
+        f"figures above and this one are derived from the same pass, so if the "
+        f"archive changed, all three moved together"
+    )
+    assert not (wp_storms & na_storms), "a storm in both WP and NA changes the arithmetic"
+    assert multi == wp_storms | na_storms, (
+        "multi-basin storms are no longer exactly the WP and NA storms — "
+        "something else in the file now spans basins"
+    )
+    assert len({s for s, b in basins_by_storm.items() if b == {""}}) == 1, (
+        "the units row is the only storm id with no basin; if that is no longer "
+        "true, the blank SID needs handling beyond the BASIN filter"
+    )
+
+    # The vacuity, stated as the property it is.
+    assert wp_storms <= ni_storms, "a WP storm with no NI fixes would restore the SID check"
+    assert na_storms <= ni_storms, "an NA storm with no NI fixes would restore the SID check"
+
+    # How many of the multi-basin storms land in the shipped catalogue, which is
+    # the number that decides how much real data a storm-level filter would cost.
+    in_catalogue = multi & {c["cyclone_id"] for c in build_catalogue()["cyclones"]}
+    assert len(in_catalogue) == 57, (
+        f"{len(in_catalogue)} multi-basin storms are in the shipped catalogue, "
+        f"not 57 — dropping storm-level would delete that many Bay of Bengal "
+        f"tracks, so re-derive that argument before changing the filter"
+    )
 
 
 def test_an_na_storm_in_the_caribbean_is_never_yielded():
@@ -391,7 +496,7 @@ def test_the_sid_letter_cannot_identify_the_basin():
 
 
 # ---------------------------------------------------------------------------
-# 3. Remal — the one storm this app is a case study of.
+# 4. Remal — the one storm this app is a case study of.
 # ---------------------------------------------------------------------------
 
 
@@ -563,7 +668,7 @@ def test_nature_nr_means_not_reported_and_is_still_carried_verbatim():
 
 
 # ---------------------------------------------------------------------------
-# 4. No fabricated data. Every value is the file's, or it is None.
+# 5. No fabricated data. Every value is the file's, or it is None.
 # ---------------------------------------------------------------------------
 
 
@@ -598,9 +703,12 @@ def test_pressure_is_none_when_the_file_has_none():
     interpolated or default pressure would be the fabrication this project has
     been wrong about before.
 
-    The ratio is **recomputed from the raw file** rather than asserted as a
-    literal, so a future archive revision moves the number in this docstring and
-    this test in the same edit instead of the docstring quietly going stale.
+    Both figures are **derived from the file below and then compared to the
+    literals here** — a change detector, not an open-ended recomputation. That
+    distinction matters: a test that merely agreed with whatever the file said
+    would assert nothing, and calling that "recomputed" is the wording that
+    laundered an earlier wrong count in this feature. The file is on the other
+    side of the comparison, which is what makes the literals safe.
     """
     raw = list(read_ni_rows())
     source_pres = [
@@ -608,21 +716,34 @@ def test_pressure_is_none_when_the_file_has_none():
         for r in raw
         if (r["USA_PRES"] or "").strip() not in ("", "-1", "-999", "-9999")
     ]
-    assert source_pres, "IBTrACS does report some pressures"
-    assert round(100 * len(source_pres) / len(raw), 1) == 10.9, "the docstring's 10.9%"
+    assert len(source_pres) == 6297, (
+        f"USA_PRES is now populated on {len(source_pres)} of {len(raw)} NI fixes, "
+        f"not 6,297 of 57,852 — update both figures in this docstring"
+    )
+    assert round(100 * len(source_pres) / len(raw), 1) == 10.9, (
+        f"the fill rate is now {100 * len(source_pres) / len(raw):.1f}%, not 10.9%"
+    )
 
-    with_pres = [
+    # `since=0` on both sides. The point of this test is that the parser carries
+    # every pressure the file has, so the two populations have to be the same
+    # one. Comparing the default post-1970 catalogue against all 58k NI rows
+    # only works today because no pre-1970 fix happens to carry a pressure — a
+    # revision that added one would fail here for a reason that has nothing to
+    # do with the rule the test is named for.
+    all_pres = [
         w
-        for c in build_catalogue()["cyclones"]
+        for c in build_catalogue(since=0)["cyclones"]
         for w in c["waypoints"]
         if w["pressure_hpa"] is not None
     ]
+    assert len(all_pres) == len(source_pres), (
+        f"the catalogue carries {len(all_pres)} pressures but the file has "
+        f"{len(source_pres)} — a parse rule is dropping or inventing them"
+    )
+    assert all(850.0 <= w["pressure_hpa"] <= 1080.0 for w in all_pres)
     # Every fix that has a pressure also has a wind: both come from the US
-    # agency columns, and where one is missing the other is too. Measured: zero
-    # rows in the whole file have `USA_PRES` without `USA_WIND`.
-    assert len(with_pres) == len(source_pres)
-    assert all(850.0 <= w["pressure_hpa"] <= 1080.0 for w in with_pres)
-    assert all(w["wind_kmph"] is not None for w in with_pres)
+    # agency columns, and where one is missing the other is too.
+    assert all(w["wind_kmph"] is not None for w in all_pres)
 
 
 def test_remals_pressure_dips_where_its_wind_peaks():
@@ -695,33 +816,38 @@ def test_an_implausible_coordinate_is_carried_as_written_not_clamped():
     proves it from the archive rather than trusting that sentence.
 
     `SUBBASIN == "AS"` is IBTrACS's Arabian Sea, which does not extend much
-    past 25 N. Six NI storms in this file reach past 32 N, the northernmost at
-    83.0. The rule is that this module carries them, because deciding an
-    observation is implausible is a policy it does not have — so the assertion
-    is that the catalogue holds the implausible latitude **unchanged**, and the
-    figures are recomputed from the file rather than written as literals.
+    past 25 N. The rule is that this module carries an implausible latitude,
+    because deciding an observation is implausible is a policy it does not
+    have — so the assertion is that the catalogue holds it **unchanged**.
 
-    That recomputation is the durable part. A bare measured number in a
-    docstring, re-counted by hand, got a fix count wrong once in this feature
-    and a review had to catch it; a number no test derives is a number that goes
-    stale silently. These are derived, so a new archive revision moves them
-    here and in the docstring in the same edit.
+    Everything numeric here is **derived from the file and then compared to a
+    literal**. That is the change-detector pattern, and the distinction from
+    "recomputed" is not pedantry: describing a literal comparison as a
+    recomputation is the wording that laundered a wrong count in this feature,
+    because it implies the test cannot go stale when it plainly can.
     """
     rows = list(read_ni_rows())
 
-    # 32 N, not something tighter or looser. The Arabian Sea does not extend
-    # much past 25 N, so anything past 32 is not a borderline judgement call but
-    # an archive artefact, and 32 is the same upper bound
-    # `test_no_published_waypoint_lies_outside_the_north_indian_ocean` already
-    # uses — which is why every storm this finds is pre-1970 and that test still
-    # passes over the whole 1,859. At a looser 40 N the two sets are identical
-    # (measured), so the choice is not load-bearing on where it sits.
+    # The 32 N threshold, and what it is for. The Arabian Sea does not extend
+    # much past 25 N, so anything past 32 is an archive artefact rather than a
+    # borderline judgement call. The set is stable across 32.0-33.0 N and
+    # shrinks to five at 33.5 and to four at 40.0, because the 1882 and 1886
+    # storms top out at 33.5 and 34.3 N — so the threshold is a choice in
+    # (32, 33.5] and this test pins which storms that choice selects.
+    #
+    # It is *not* related to the 32.0 upper bound in
+    # `test_no_published_waypoint_lies_outside_the_north_indian_ocean`, which
+    # never sees these storms: it iterates the default post-1970 catalogue and
+    # all six of these are pre-1970.
     affected = {
         r["SID"]
         for r in rows
         if (r["SUBBASIN"] or "").strip() == "AS" and float(r["LAT"]) > 32.0
     }
-    assert len(affected) == 6, "measured: six NI storms reach past 32 N"
+    assert len(affected) == 6, (
+        f"{len(affected)} NI storms now reach past 32 N, not six — the set of "
+        f"affected storms changed, so re-derive the figures below"
+    )
 
     # Extremes over every fix of each affected storm, not just the implausible
     # ones — a storm that reaches 83 N also has ordinary fixes, and the claim
@@ -732,18 +858,26 @@ def test_an_implausible_coordinate_is_carried_as_written_not_clamped():
             by_storm.setdefault(row["SID"], []).append(float(row["LAT"]))
     extremes = {sid: (min(lats), max(lats)) for sid, lats in by_storm.items()}
 
-    # Both storms the module docstring names are here, with the figures it
-    # quotes, and two more reach 69.5 N.
-    assert extremes["1966233N13340"] == (65.2, 83.0)
-    assert extremes["1951272N20274"] == (80.8, 81.0)
-    assert {"1932244N19296", "1961249N14342"} <= set(extremes)
-    assert all(max_lat > 32.0 for _, max_lat in extremes.values())
-    # Four of the six are storms that ran north out of the Arabian Sea and back;
-    # the other two never left it and are the outright artefacts, both pinned
-    # above. Sorted so the list reads as a shape rather than a set.
-    assert sorted(max_lat for _, max_lat in extremes.values()) == [
-        33.5, 34.3, 69.5, 72.2, 81.0, 83.0,
-    ]
+    # Both storms the module docstring names, with the figures it quotes.
+    assert extremes["1966233N13340"] == (65.2, 83.0), (
+        f"1966 storm's span is now {extremes.get('1966233N13340')}, not 65.2-83.0"
+    )
+    assert extremes["1951272N20274"] == (80.8, 81.0), (
+        f"1951 storm's span is now {extremes.get('1951272N20274')}, not 80.8-81.0"
+    )
+
+    # The full set, by span. Two of the six have a fix below 35 N, so they begin
+    # in the Arabian Sea and then run north past 32; the other four never have a
+    # fix below 65 N, so they were never in the Arabian Sea at all and are the
+    # outright artefacts. Asserted from the measurement rather than narrated —
+    # an earlier version of this test claimed four "ran north and back", which
+    # was backwards.
+    assert len({sid for sid, (lo, _) in extremes.items() if lo < 35.0}) == 2, (
+        f"more or fewer than two of the six begin below 35 N — spans: "
+        f"{sorted(extremes.values())}"
+    )
+    assert sorted(lo for lo, _ in extremes.values()) == [19.5, 19.5, 65.2, 69.5, 69.5, 80.8]
+    assert sorted(hi for _, hi in extremes.values()) == [33.5, 34.3, 69.5, 72.2, 81.0, 83.0]
 
     # The rule itself: every latitude survives exactly as filed, not clamped by
     # the one range check in `_row_waypoint`.
@@ -752,18 +886,27 @@ def test_an_implausible_coordinate_is_carried_as_written_not_clamped():
         for c in build_catalogue(since=0)["cyclones"]
         if c["cyclone_id"] in affected
     }
-    assert set(published) == set(affected), "every such storm is published"
+    assert set(published) == set(affected), (
+        f"in the catalogue but not affected: {set(published) - affected}; "
+        f"affected but absent: {affected - set(published)}"
+    )
     for storm_id, waypoints in published.items():
         assert min(w["latitude"] for w in waypoints) == extremes[storm_id][0]
         assert max(w["latitude"] for w in waypoints) == extremes[storm_id][1]
         # No fix was dropped from any of them on the way in.
-        assert len(waypoints) == len(by_storm[storm_id])
+        assert len(waypoints) == len(by_storm[storm_id]), (
+            f"{storm_id}: catalogue has {len(waypoints)} waypoints, file has "
+            f"{len(by_storm[storm_id])} fixes"
+        )
 
     # It is the default season window, not the parse, that keeps these out of the
     # shipped catalogue — which is what the module docstring says. All six are
     # pre-1970, so `since=0` is needed to see them at all.
     default_ids = {c["cyclone_id"] for c in build_catalogue()["cyclones"]}
-    assert not (affected & default_ids), "all six storms are pre-1970"
+    assert not (affected & default_ids), (
+        f"{sorted(affected & default_ids)} are now inside the default season "
+        f"window, so an implausible latitude could reach the shipped catalogue"
+    )
 
 
 def test_the_unnamed_placeholder_is_preserved_as_the_file_wrote_it():
@@ -780,7 +923,7 @@ def test_the_unnamed_placeholder_is_preserved_as_the_file_wrote_it():
 
 
 # ---------------------------------------------------------------------------
-# 5. The limitation string. A best track is not a forecast.
+# 6. The limitation string. A best track is not a forecast.
 # ---------------------------------------------------------------------------
 
 
@@ -811,7 +954,7 @@ def test_every_record_carries_the_required_caveats():
 
 
 # ---------------------------------------------------------------------------
-# 6. Determinism — the property a committed artefact depends on.
+# 7. Determinism — the property a committed artefact depends on.
 # ---------------------------------------------------------------------------
 
 
@@ -918,7 +1061,7 @@ def test_data_through_is_the_last_fix_not_the_read_time():
 
 
 # ---------------------------------------------------------------------------
-# 7. `since` — a catalogue filter, and nothing else.
+# 8. `since` — a catalogue filter, and nothing else.
 # ---------------------------------------------------------------------------
 
 
@@ -958,7 +1101,7 @@ def test_the_catalogue_is_season_sorted_so_the_list_is_stable():
 
 
 # ---------------------------------------------------------------------------
-# 8. `IbtracsSource` — the Protocol implementation.
+# 9. `IbtracsSource` — the Protocol implementation.
 # ---------------------------------------------------------------------------
 
 
@@ -1045,7 +1188,7 @@ def test_source_records_are_the_catalogue(source: IbtracsSource):
 
 
 # ---------------------------------------------------------------------------
-# 9. Rules that cannot be tested against the real file.
+# 10. Rules that cannot be tested against the real file.
 # ---------------------------------------------------------------------------
 #
 # The archive is clean: no NI fix is missing a coordinate and no NI
@@ -1215,7 +1358,7 @@ def test_an_unnamed_storm_keeps_the_files_placeholder(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# 10. The CLI. Deterministic bytes, no network.
+# 11. The CLI. Deterministic bytes, no network.
 # ---------------------------------------------------------------------------
 
 

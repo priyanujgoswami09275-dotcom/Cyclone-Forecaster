@@ -36,12 +36,13 @@ cost that carries (the archive is untracked, so whoever places it sets the
 mtime and `generated_at` differs per machine; `--generated-at` pins it).
 
 **The basin filter is not optional.** The input is the North Indian Ocean
-*list*, which also contains 4,525 Western Pacific and 482 North Atlantic rows.
-`--basin` exists on this CLI only so that the default is visible in `--help`
-and cannot be quietly widened; the only value that works is `NI`, and anything
-else exits non-zero. A flag that accepted `WP` would be a way for the next
-person to publish a Philippine cyclone in a Sundarbans flood map, and a flag
-that silently ignored an unsupported value would be worse.
+*list*, and it also contains Western Pacific and North Atlantic rows —
+`test_the_archives_structural_shape_is_what_the_docstrings_say` holds those
+counts against the file. `--basin` exists on this CLI only so that the default
+is visible in `--help` and cannot be quietly widened; the only value that works
+is `NI`, and anything else exits non-zero. A flag that accepted `WP` would be a
+way for the next person to publish a Philippine cyclone in a Sundarbans flood
+map, and a flag that silently ignored an unsupported value would be worse.
 
 The count and the path are printed on success, because a build step that says
 nothing is a build step nobody checks.
