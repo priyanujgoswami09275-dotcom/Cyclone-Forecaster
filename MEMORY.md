@@ -62,8 +62,8 @@ step" before starting any work.
 |---|---|---|
 | A. Data pipeline & surge ML model | Done | All 6 deliverables. DEM resolved (real GEE SRTM, tagged + committed). Stretch item (more RSMC points) still open. |
 | B. Simulation engine (flood propagation, routing, shelter allocation) | In progress | Engine complete and tested on real data. Only the shelter *dataset* is missing — no real locations/capacities exist to use (see blockers). |
-| C. Backend / API (FastAPI) | Done | `backend/main.py` + `backend/locations.py`. All contract endpoints live and curl-verified. `/advisory` is live (Module D below). **Display overlay layer added 2026-09-28** — `backend/tools/render_overlays.py` + `data/overlays/` + `GET /overlays`; display-only, §32. **`GET /track` added 2026-09-29** — the case study's real IBTrACS track; an endpoint, not a mount, because a blank `USA_WIND` must not read as calm. |
-| D. AI advisory layer (Gemini) | Done | `backend/ai/advisory.py` + the `POST /advisory` handler. Schema, prompt, call, an honesty validator, district-scoped localities, a capacity-retry wrapper, and `load_dotenv()` key loading. 70 tests. **Three live advisories produced**; all three rounds of defects are now closed (§20–§25). Two operational notes, not code gaps: the free tier is 20 calls/day (§26) and eight border-cluster localities still need a boundary dataset (§24). |
+| C. Backend / API (FastAPI) | Done | `backend/main.py` + `backend/locations.py`. All contract endpoints live and curl-verified. `/advisory` is live (Module D below). **Display overlay layer added 2026-09-28** — `backend/tools/render_overlays.py` + `data/overlays/` + `GET /overlays`; display-only, §32. **`GET /track` added 2026-09-29** — the case study's real IBTrACS track; an endpoint, not a mount, because a blank `USA_WIND` must not read as calm. **Dynamic Cyclone System Tasks 7–8 landed 2026-10-02** (`e404e80`, `b853406`, `0f576d2`, `3dcb661`): `GET /cyclones`, `GET /cyclones/{id}/track`, `GET /scenarios`, `GET /live-cyclone`, `GET /comparison`, `POST /risk-analyst` — provenance merged at the top level of every response, timestamps RFC 3339 on the wire and IBTrACS's spelling at rest (`0f576d2`), and the Gemini error taxonomy shared with `/advisory` rather than a copy. `tests/test_new_endpoints.py` 33 tests. |
+| D. AI advisory layer (Gemini) | Done | `backend/ai/advisory.py` + the `POST /advisory` handler. Schema, prompt, call, an honesty validator, district-scoped localities, a capacity-retry wrapper, and `load_dotenv()` key loading. **Three live advisories produced**; all three rounds of defects are now closed (§20–§25). **`POST /risk-analyst` added 2026-10-02** (`3dcb661`, Task 8): `RiskAnalysis`/`RiskFinding` with a required `evidence_kind` (four kinds, `general_knowledge` included), four labelled prompt blocks, pinned `ADVISORY_MODEL` with no fallback and no rotation. The capacity ladder was extracted into `_with_capacity_retry` so both endpoints share one loop — `tests/test_risk_analyst.py` asserts its counter appears exactly once in `backend/main.py`. **Live rendering NOT VERIFIED for either endpoint**: every test monkeypatches the generator. Verified test counts: `test_module_d.py` 72, `test_capture_advisory.py` 34, `test_risk_analyst.py` 30, `test_advisory_quota.py` 15. Two operational notes, not code gaps: the free tier is 20 calls/day (§26) and eight border-cluster localities still need a boundary dataset (§24). |
 | E. Mobile app (Expo / React Native) | In progress | Design system + `theme.typography` + `api.ts` (Stage 1) all landed 2026-09-28. **Stage 2, the map screen, landed 2026-09-28** (`1f23721`). **Stage 3 landed 2026-09-29** (`cf25a81`, `dcfba38`). **Stage A of the dark rebuild landed 2026-09-30.** **The Web build was rebuilt 2026-10-01** (`b8090a0`): `MapScreen.web.tsx` is now the judge-facing product rather than a compatibility fallback, with a DEM-derived SVG map in place of a Google Maps iframe, all four chips wired to the real API, a searchable 45-locality picker, and the advisory rendered as a document. **Live at `cyclone-forecaster-ui.vercel.app` and verified in a real browser.** The native app is untouched and still uses `react-native-maps`. **Still never run on a physical phone.** |
 | E2. Web app (judge-facing) | Done, one round | `b8090a0`. Platform-specific build, no mapping library, no native map module. Owns `mapProjection.ts`, `basemap.ts`, `webBasemap.ts`, `webViewModel.ts`, `WebImpactMap.tsx`, `AdvisoryPanel.tsx`, `LocalitySearch.tsx`. Reuses `api.ts`/`strengthChips.ts`/`exposureTiles.ts`/`trackFacts.ts`/`legend.ts`/`advisoryFlow.ts`/`theme.ts` verbatim so it cannot disagree with the native screen. Verified against production in Chrome: four chips, real exposure changes, origin search, no console errors, no overflow at 420–1600 px. |
 | F. Deployment | Done | **Both projects are live on Vercel** and were verified through the MCP on 2026-10-01. Backend `cyclone-forecaster` → `cyclone-forecaster-chi.vercel.app` (FastAPI, `dpl_DjhJU7bk3MbgvGnoWGdBE44xR5vm`). Web `cyclone-forecaster-ui` → `cyclone-forecaster-ui.vercel.app` (`dpl_84AgfTBUMAuokBP1RdX9TjJExVkd`). `EXPO_PUBLIC_API_URL` is set on the UI project only. `render.yaml` is retained and still correct. |
@@ -1822,6 +1822,52 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     archive. Deriving a real landfall target needs a landfall window IBTrACS does
     not provide.
 
+53. **NEW 2026-10-02 — three Task 7–8 defects that no test would have caught,
+    because all three fail *silently*.** Each was found by reading the uncommitted
+    work against the plan text, not by the suite, which was green at 613 before
+    any of them were fixed.
+
+    1. **`/risk-analyst` bypassed the shared Gemini error taxonomy.** The plan
+       says the endpoint must reuse the capacity ladder and `ApiError` taxonomy
+       *verbatim*. It called `generate_risk_analysis` directly. Measured against
+       the live endpoint with a stubbed generator: a spent quota returned a bare
+       non-JSON `500 Internal Server Error`, a busy model the same `500`, while
+       `/advisory` returned **429** with its disclosure and **503** with
+       `Retry-After`. A client could not distinguish "the model is busy" from
+       "this service is broken". The loop was extracted into
+       `_with_capacity_retry` rather than copied — `tests/test_risk_analyst.py`
+       now asserts the counter `for attempt in range(1, CAPACITY_MAX_ATTEMPTS + 1)`
+       appears **exactly once** in `backend/main.py`, so a second copy fails the
+       suite. After the fix: quota 429 (advisory's message byte-identical),
+       capacity 503 + `Retry-After: 60`, other 502.
+
+    2. **A dictionary key that did not exist.** The endpoint read
+       `facts.get("shelter_name")`, but `_origin_facts` returns the shelter as an
+       object under the key `shelter` — `_origin_context` reads it as
+       `facts["shelter"].name`. `.get()` returned `None` for every request
+       without raising, so the prompt told the model the assigned shelter was
+       unknown. **A fabricated absence is the same failure as a fabricated
+       figure:** with that block empty, the model is free to name a shelter,
+       because nothing in the input constrained it. No test passed an `origin`
+       at all, which is why 613 passing tests said nothing about it. The test
+       now exists, and reverting the fix makes it fail at the shelter assertion
+       (verified by doing exactly that).
+
+    3. **A docstring that claimed a test which did not exist.**
+       `baseline_estimate()`'s docstring asserted that `test_risk_analyst.py`
+       "proves that equality field by field instead of asking a reader to take
+       it on trust". `baseline_estimate` appeared in **zero** test files. This is
+       the same defect §51 describes — prose describing a system that is not
+       there — arriving one layer down, inside a code comment rather than a
+       README. The test now exists and passes.
+
+    **The general lesson: `.get()` on a key you are not sure of, and a docstring
+    that narrates a guarantee, are the two places a project's honesty erodes
+    without a single test going red.** Both read as documentation to a reviewer
+    and as `None` to the runtime. Where a shape matters, index the key and let
+    it raise; where a claim matters, write the test in the same commit as the
+    claim.
+
 
 ## Environment / credentials status
 
@@ -1897,7 +1943,37 @@ lockfile), `.claude/` (settings + skills).
 
 ## Next step
 
-**The Web app is live and verified. The next step is a phone, and then Stage B.**
+**On `feature/dynamic-cyclone-system`: Tasks 9 and 10 — wire the Dynamic
+Cyclone System into the existing Expo/React Native and web experience.**
+
+Backend Tasks 1–8 are committed (`78b343d` … `3dcb661`); `venv/bin/python
+-m pytest -q` → **618 passed, 3 skipped**. **No frontend file has been touched
+on this branch.** Task 9 creates `mobile/cycloneModel.ts` and
+`mobile/apiCyclones.ts` (types plus `liveStateLabel`, `freshnessNote`,
+`comparisonDeltas`, `mlEstimateLabel`) and adds optional `cycloneId` /
+`scenarioId` to `api.ts`'s existing getters, defaulting to `undefined` so every
+current call site is unchanged. Task 10 adds `CyclonePicker`,
+`ScenarioComparePanel`, `RiskAnalystPanel` and wires both map screens — the
+scenario chips must become a **superset** of today's, with `cat4`/`cat5`/`cat6`
+still present and still the default, not a replacement.
+
+**The rule that matters on that branch:** an unavailable live feed must never
+read as an active storm. `liveStateLabel` returns "Live feed unavailable" and
+nothing that implies a watch; `liveBannerText` must not contain a storm name;
+and a historical storm is never substituted for live data. When NI ATCF is
+unreachable the UI shows `live_unavailable` with the backend's own reason — it
+does not fall back to Remal.
+
+**Also unverified on this branch: live Gemini success rendering, for
+`POST /risk-analyst` as much as `POST /advisory`.** Every test monkeypatches the
+generator; the error paths were exercised against the real endpoint with a
+stubbed generator, which proves routing and taxonomy and nothing about what the
+model returns. Do not read passing tests as the analysis rendering.
+
+---
+
+**Previously next (main-branch work, still open): the Web app is live and
+verified. The next step is a phone, and then Stage B.**
 
 `b8090a0` (2026-10-01) rebuilt the Web experience into the real product and
 deployed it. Verified in a real browser against production: four chips driving
@@ -2086,6 +2162,104 @@ RUN_LIVE_CAPTURE=1 venv/bin/python -m backend.tools.capture_advisory
 ---
 
 ## Session log (newest entry first)
+
+### 2026-10-02 — OpenCode: Dynamic Cyclone System — Tasks 7 and 8
+
+**Scope.** Branch `feature/dynamic-cyclone-system`, Tasks 7–8 of 11. This entry
+covers the track-regeneration tests, the Task 7 API surface, the `iso_time`
+decision, and the AI Risk Analyst. **Tasks 9–11 not started.**
+
+**Task 7 — two commits.** `e404e80` regenerates `data/remal_track.geojson` from
+the same `v04r01` parse that builds the catalogue, and rewrites five tests from
+*containment* to *equality*: containment was the weaker property that let two
+Remals through, 11.1 kmph apart. Bay bounds widened to lat 10–26 because
+v04r01's first fix is 13.6°N; provenance now reads `IBTrACS v04r01`; the two
+unreported zero-wind fixes at `2024-05-28 03:00/06:00` are the post-dissipation
+tail. `b853406` adds `GET /cyclones`, `GET /cyclones/{id}/track`,
+`GET /scenarios`, `GET /live-cyclone`, `GET /comparison`, with provenance
+merged at the **top level** of every response (not nested — the plan's
+specification) so the scenario's disclosure is `scenario_limitation` and cannot
+overwrite the surge disclosure CLAUDE.md requires.
+
+**The `iso_time` decision — `0f576d2`.** One field, two legal spellings, decided
+by layer. *At rest* `YYYY-MM-DD HH:MM:SS`, no `Z` — IBTrACS's own `ISO_TIME`,
+which `atcf._timestamp_to_iso` deliberately matches rather than inventing a
+third format. *On the wire* RFC 3339, converted in exactly one place
+(`cyclones.base.iso_time_to_rfc3339`). Three things contradicted it:
+`base.py`'s docstring described the **wire** spelling as the field's own (it
+disagreed with every producer of the field); `/live-cyclone` served the at-rest
+spelling for `first_timestamp`/`last_timestamp`/`data_through` while serving
+`checked_at` as RFC 3339 **in the same object**; and `_iso_z` and
+`_parse_track_timestamp` each held their own `strptime`. Reproduced before the
+fix — `checked_at: 2026-10-01T00:00:00Z` beside
+`last_timestamp: 2026-10-01 00:00:00`.
+
+**A flaky test this branch itself created — `e9b02a8`.**
+`test_the_gzipped_body_decompresses_to_the_same_json` fetches `/surge-zone`
+twice and asserts byte equality. `b853406` merged `_provenance()` into every
+response and added `generated_at`, stamped with `timespec="seconds"` at build
+time; `git show b94a575:backend/main.py` has **0 occurrences** of it, and the
+test file was never touched. Two requests straddling a second boundary then
+differ in that one field. Reproduced by sleeping 1.6 s between calls: only
+`generated_at` changed. The clock is frozen rather than the field dropped,
+because excluding a key would narrow the assertion the test's name makes.
+
+**Task 8 — `3dcb661`, and three defects found by reading it against the plan.**
+The suite was green at 613 before any of them were fixed; none was caught by a
+test. Full account in "Flagged for review" §53. Summary: the endpoint bypassed
+the shared Gemini error taxonomy (bare non-JSON `500` where `/advisory` returns
+429/503/502 — now the same, with the retry loop extracted rather than copied);
+`facts.get("shelter_name")` read a key `_origin_facts` has never had, so
+`origin_facts["shelter"]` was `None` for every request and the prompt told the
+model the shelter was unknown; and `baseline_estimate()`'s docstring claimed a
+test that referenced it nowhere.
+
+**What Task 8 actually is.** `POST /risk-analyst`, body
+`{"category", "cyclone_id", "scenario_id", "origin"}`, reached only by a
+deliberate press. Fed `exposure()` and `compare_cyclones()` — the same dicts the
+client can fetch — so the prose and the map cannot disagree. Four prompt blocks
+(`COMPUTED FIGURES`, `MODEL ESTIMATE`, `COMPARISON`, `HISTORICAL CONTEXT`),
+because one unlabelled stream is how a reader comes to treat an ML estimate, a
+computed figure and a historical fact as the same species of statement.
+`RiskFinding.evidence_kind` includes `general_knowledge`, so a model must admit
+which parts are not figures this service computed. The deterministic law
+`1.2 x (wind/115)^2` is named authoritative for surge; the ML figure carries its
+own failed gate verdict and is labelled "not the surge figure, not a
+prediction". No fallback model, no rotation — pinned to `ADVISORY_MODEL`, and an
+AST walk over string literals proves no second model literal exists (the
+`gemini-3.7-flash` in the 3.7→3.8 history comment is prose and must stay).
+
+**Verified — every command actually run:**
+
+| Command | Result |
+|---|---|
+| `venv/bin/python -m pytest -q` | **618 passed, 3 skipped** |
+| same, at commit `e9b02a8` in a detached worktree | **588 passed, 3 skipped** |
+| `venv/bin/python -m pytest tests/test_risk_analyst.py -q` | **30 passed** |
+| `tests/test_new_endpoints.py` / `test_ibtracs_ni.py` / `test_track.py` | **33 / 62 / 23** |
+| `GET /exposure?category=6` | **12 hospitals, 22 substations, 251 roads, surge 4.4719 m, 2680.22 km²** |
+| `git diff --quiet HEAD -- data/cyclones/catalogue.json` | **byte-identical** |
+| `cd mobile && node --test 'tests/*.test.mjs'` | **291 pass, 0 fail** |
+| `cd mobile && npx tsc --noEmit` | **exit 0** |
+
+Catalogue: **610 cyclones**, Remal **40 fixes**. `__pycache__` cleared before
+every run.
+
+**NOT VERIFIED.**
+
+- **Live Gemini rendering — for `/risk-analyst` as much as `/advisory`.** No live
+  request was made this session; every endpoint test monkeypatches
+  `generate_risk_analysis` or `_generate_content`. The error paths were
+  exercised against the real endpoint with a *stubbed generator*, which proves
+  the routing and the taxonomy and proves nothing about what the model returns.
+  Do not read 30 passing tests as the analysis rendering.
+- **Tasks 9, 10, 11** — not started. No frontend file has been touched on this
+  branch.
+- The standalone worktree run needed `ibtracs.NI.list.v04r01.csv` copied in with
+  `cp -p`; a plain `cp` reset its mtime and failed two catalogue tests, since
+  `fetched_at` derives from that mtime. That was a verification-method error,
+  not a code defect, but a fresh clone without the CSV cannot run 62 of the
+  IBTrACS tests.
 
 ### 2026-10-01 — OpenCode: Dynamic Cyclone System — Task 6, and a gate that failed
 
