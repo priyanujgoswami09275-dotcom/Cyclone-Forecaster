@@ -195,10 +195,16 @@ def synthetic_allocation_result(monkeypatch):
     validator had no reason to complain about, and the tests passed or failed
     for reasons unrelated to what they were written to check.
 
-    Patching `main.allocation_for_category` fixes it at the seam the handler
+    Patching `main.allocation_for_scenario` fixes it at the seam the handler
     actually calls, so everything downstream — prompt building, validation,
     the correction pass, the coverage label — runs for real against a
     non-empty allocation.
+
+    **Renamed from `allocation_for_category` on 2026-10-01.** Every scenario
+    cache is now keyed on `(cyclone_id, scenario_id)` rather than a bare
+    category, so the helper this fixture patches takes a `ScenarioContext`. The
+    seam is the same seam; only its name and its argument moved. What is under
+    test is unchanged: a real allocation flowing through the real handler.
     """
     result = {
         "assignment": _synthetic_allocation()["allocation"],
@@ -208,7 +214,7 @@ def synthetic_allocation_result(monkeypatch):
         "message": "optimal assignment found (HI-GHS linear program)",
         "status": main.shelter_dataset_status(),
     }
-    monkeypatch.setattr(main, "allocation_for_category", lambda category: result)
+    monkeypatch.setattr(main, "allocation_for_scenario", lambda ctx: result)
     return result
 
 

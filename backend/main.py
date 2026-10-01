@@ -44,6 +44,7 @@ from dataclasses import replace
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
 import networkx as nx
 from dotenv import load_dotenv
@@ -76,6 +77,15 @@ from .ai.advisory import (
     plan_coverage,
     validate_advisory,
 )
+from .cyclones.base import CycloneRecord, LiveStatus, live_unavailable_reason
+from .cyclones.live import AtcfLiveSource
+from .cyclones.registry import registry
+from .cyclones.scenarios import (
+    DEFAULT_CYCLONE_ID,
+    ScenarioContext,
+    resolve_scenario,
+    scenarios_for,
+)
 from .locations import (
     Locality,
     all_localities,
@@ -105,6 +115,7 @@ from .simulation.surge import (
     SURGE_LIMITATION,
     SURGE_METHOD,
     predict_surge,
+    surge_for_wind,
 )
 
 # `IMD_BANDS` is weak-to-strong, which is the direction the slider runs
@@ -277,31 +288,117 @@ def category_band(index: int) -> tuple[str, float, float | None, float]:
     )
 
 
-@lru_cache(maxsize=7)
-def surge_for_category(index: int):
-    return predict_surge(category_band(index)[3])
+def _context(
+    category: int | None = None,
+    cyclone_id: str | None = None,
+    scenario_id: str | None = None,
+) -> ScenarioContext:
+    """Turn the optional query parameters into the pair everything is keyed on.
+
+    **Precedence: `scenario_id` beats `category`.** Both name a strength and
+    only one can win, so the more specific one does; when both are present the
+    response says which was used, via `_provenance`.
+
+    `category` is not ignored. It is what every existing client sends, and
+    `?category=3` has to keep meaning category 3 — an earlier draft of this
+    function dropped it, which made every category return the default scenario's
+    flood extent. That is the kind of silent wrongness this module exists to
+    prevent, and it is why `tests/test_module_c.py` caught it.
+
+    `cyclone_id` alone falling back to Remal is deliberate and disclosed: an
+    absent parameter means "the default cyclone", which is what every existing
+    client sends. An id that is *present but unknown* is an error, never a
+    silent substitution.
+    """
+    if cyclone_id is not None and registry().get(cyclone_id) is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown cyclone_id {cyclone_id!r}. The catalogue holds "
+                f"{len(registry().historical())} North Indian Ocean storms; "
+                f"call GET /cyclones for the list."
+            ),
+        )
+    if scenario_id is not None:
+        chosen = scenario_id
+    elif category is not None:
+        chosen = f"cat{category}"
+    else:
+        chosen = "cat6"
+
+    ctx = ScenarioContext(
+        cyclone_id=cyclone_id or DEFAULT_CYCLONE_ID,
+        scenario_id=chosen,
+    )
+    try:
+        ctx.resolve(registry().get(ctx.cyclone_id))
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ctx
 
 
-@lru_cache(maxsize=7)
-def flood_for_category(index: int) -> FloodResult:
-    """Flood extent for a category. Cached: ~6 s of raster work per call."""
-    return run_flood_model(category_band(index)[3])
+def _provenance(ctx: ScenarioContext) -> dict:
+    """What every response says about what it computed and how.
+
+    Present on every endpoint so a client never has to guess whether a number
+    is a category default, a chosen scenario, or another storm's.
+    """
+    scenario = ctx.resolve(registry().get(ctx.cyclone_id))
+    return {
+        "cyclone_id": ctx.cyclone_id,
+        "scenario_id": ctx.scenario_id,
+        "wind_kmph": scenario.wind_kmph,
+        "imd_category": scenario.imd_category,
+        "wind_is_band_midpoint": scenario.wind_is_band_midpoint,
+        "scenario_kind": scenario.kind,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "limitation": scenario.limitation,
+    }
+
+
+@lru_cache(maxsize=64)
+def surge_for_scenario(ctx: ScenarioContext):
+    """The deterministic surge figure for one (cyclone, scenario) pair.
+
+    Keyed on the **pair**, not the category. Two cyclones at the same strength
+    resolve to the same wind, so a category-keyed cache hands the second one the
+    first one's numbers — a wrong answer with nothing to indicate a mix-up. The
+    ML storm-peak estimate is deliberately absent: it is a second, separately
+    labelled figure and must never reach this calculation.
+    """
+    return predict_surge(ctx.wind_kmph(registry().get(ctx.cyclone_id)))
+
+
+@lru_cache(maxsize=64)
+def flood_for_scenario(ctx: ScenarioContext) -> FloodResult:
+    """Flood extent for one (cyclone, scenario) pair. ~6 s of raster work."""
+    return run_flood_model(ctx.wind_kmph(registry().get(ctx.cyclone_id)))
 
 
 def _flood_shape(result: FloodResult):
     return shape(result.frames[-1].geometry)
 
 
-def _category_header(index: int) -> dict:
+def _category_header(index: int, ctx: ScenarioContext) -> dict:
     """The category context every endpoint's response opens with.
 
     Every response states the `method` that produced the surge number, the
     `anchor` it was scaled from, and a `limitation` string. A response that
     carried a bare `surge_m` let a client present a screening estimate as if
     it were a site-specific forecast; these three fields are what stop that.
+
+    Takes the context as well as the index, because the band alone no longer
+    identifies the answer: the same band under a different cyclone is a
+    different scenario, and the response has to say which it computed.
     """
     label, lower, upper, wind = category_band(index)
-    surge = surge_for_category(index)
+    # This header describes a *band*, so it states that band's own wind and the
+    # surge that wind produces. The scenario the caller actually asked for
+    # rides alongside in `_provenance`, so a client showing an `observed`
+    # scenario is never handed the band's number in its place.
+    # `surge_for_wind` is the bare number; the header also needs the method,
+    # the anchor and the limitation, which live on the full result.
+    surge = predict_surge(wind)
     band = IMD_BANDS[index]
     return {
         "category": index,
@@ -380,7 +477,17 @@ def health() -> dict:
 
 
 @app.get("/categories")
-def categories() -> dict:
+def categories(
+    cyclone_id: Annotated[
+        str | None, Query(description="IBTrACS SID. Absent means the default case study.")
+    ] = None,
+    scenario_id: Annotated[
+        str | None, Query(description="`cat0`-`cat6`, or `observed`.")
+    ] = None,
+) -> dict:
+    # This endpoint reports every band, so it has no single category to honour;
+    # the scenario here only names what the *default* view is.
+    ctx = _context(None, cyclone_id, scenario_id)
     """The seven IMD bands the slider steps through, plus the case study.
 
     `presets` is the important addition. The seven bands are a classification
@@ -413,12 +520,16 @@ def categories() -> dict:
         "limitation": SURGE_LIMITATION,
         "categories": [
             {
-                **_category_header(index),
+                **_category_header(index, ctx),
+                # Each band's OWN surge, not the requested scenario's. This row
+                # describes the band, so reading it from `ctx` would repeat the
+                # same number seven times and silently empty the dead-zone note
+                # that categories 0-3 exist to carry.
                 "note": (
                     "this band produces less surge than the DEM's 1 m vertical "
                     "resolution can represent, so the flood model returns no "
                     "inundation for it"
-                    if 0 < surge_for_category(index).surge_m < 1.0
+                    if 0 < surge_for_wind(category_band(index)[3]) < 1.0
                     else ""
                 ),
             }
@@ -687,13 +798,21 @@ def list_localities() -> dict:
 
 @app.get("/surge-zone")
 def surge_zone(
-    category: int = Query(..., ge=0, le=6, description="IMD category index 0-6"),
+    category: Annotated[int, Query(ge=0, le=6, description="IMD category index 0-6")],
+    cyclone_id: Annotated[
+        str | None, Query(description="IBTrACS SID. Absent means the default case study.")
+    ] = None,
+    scenario_id: Annotated[
+        str | None, Query(description="`cat0`-`cat6`, or `observed`. Wins over `category`.")
+    ] = None,
 ) -> dict:
+    ctx = _context(category, cyclone_id, scenario_id)
     """Flood polygon at a category's representative intensity."""
-    result = flood_for_category(category)
+    result = flood_for_scenario(ctx)
     payload = result.to_feature_collection()
     return {
-        **_category_header(category),
+        **_category_header(category, ctx),
+        "provenance": _provenance(ctx),
         # `final_land_area_km2` is the modelled extent; `drawn_area_km2` is
         # what the returned polygon actually shows, after sub-0.5 km2 DEM
         # speckle is dropped for rendering. They differ at high surge, and
@@ -719,14 +838,22 @@ def surge_zone(
 
 @app.get("/exposure")
 def exposure(
-    category: int = Query(..., ge=0, le=6, description="IMD category index 0-6"),
+    category: Annotated[int, Query(ge=0, le=6, description="IMD category index 0-6")],
+    cyclone_id: Annotated[
+        str | None, Query(description="IBTrACS SID. Absent means the default case study.")
+    ] = None,
+    scenario_id: Annotated[
+        str | None, Query(description="`cat0`-`cat6`, or `observed`. Wins over `category`.")
+    ] = None,
 ) -> dict:
+    ctx = _context(category, cyclone_id, scenario_id)
     """Which hospitals, substations and roads the flood reaches."""
-    flood = flood_for_category(category)
+    flood = flood_for_scenario(ctx)
     result = compute_exposure(flood.frames[-1].geometry)
     payload = result.to_dict()
     return {
-        **_category_header(category),
+        **_category_header(category, ctx),
+        "provenance": _provenance(ctx),
         "final_land_area_km2": payload_counts_land(flood),
         "hospitals": payload["hospitals"],
         "substations": payload["substations"],
@@ -745,9 +872,16 @@ def payload_counts_land(flood: FloodResult) -> float:
 
 @app.get("/routes")
 def routes(
-    category: int = Query(..., ge=0, le=6, description="IMD category index 0-6"),
+    category: Annotated[int, Query(ge=0, le=6, description="IMD category index 0-6")],
     origin: str = Query(..., description="Locality id from /localities"),
+    cyclone_id: Annotated[
+        str | None, Query(description="IBTrACS SID. Absent means the default case study.")
+    ] = None,
+    scenario_id: Annotated[
+        str | None, Query(description="`cat0`-`cat6`, or `observed`. Wins over `category`.")
+    ] = None,
 ) -> dict:
+    ctx = _context(category, cyclone_id, scenario_id)
     """A flood-free route from a locality to its assigned shelter.
 
     Unreachable is a real answer here — a high surge severs the delta — so it
@@ -762,9 +896,9 @@ def routes(
             ),
         )
 
-    flood = flood_for_category(category)
-    allocation = allocation_for_category(category)
-    shelter, assigned = _shelter_for(locality, allocation, shelters_for_category(category))
+    flood = flood_for_scenario(ctx)
+    allocation = allocation_for_scenario(ctx)
+    shelter, assigned = _shelter_for(locality, allocation, shelters_for_scenario(ctx))
 
     route = safe_route(
         build_road_graph(),
@@ -775,12 +909,13 @@ def routes(
     if not route.reachable:
         route = _diagnose_unreachable(route, locality, shelter, flood)
     return {
-        **_category_header(category),
+        **_category_header(category, ctx),
+        "provenance": _provenance(ctx),
         "origin": locality.to_dict(),
         "shelter": shelter.to_dict(),
         "shelter_assignment_basis": assigned,
         "shelter_status": shelter_dataset_status(),
-        "capacity_basis": _capacity_basis(category),
+        "capacity_basis": _capacity_basis(ctx),
         **route.to_dict(),
         "definitions": {
             "route": (
@@ -795,16 +930,24 @@ def routes(
 
 @app.get("/allocation")
 def allocation(
-    category: int = Query(..., ge=0, le=6, description="IMD category index 0-6"),
+    category: Annotated[int, Query(ge=0, le=6, description="IMD category index 0-6")],
+    cyclone_id: Annotated[
+        str | None, Query(description="IBTrACS SID. Absent means the default case study.")
+    ] = None,
+    scenario_id: Annotated[
+        str | None, Query(description="`cat0`-`cat6`, or `observed`. Wins over `category`.")
+    ] = None,
 ) -> dict:
+    ctx = _context(category, cyclone_id, scenario_id)
     """Capacity-aware shelter assignment per locality (transportation LP)."""
-    flood = flood_for_category(category)
-    populations = populations_for_category(category)
+    flood = flood_for_scenario(ctx)
+    populations = populations_for_scenario(ctx)
     # Same cached result /routes reads, so the two endpoints cannot drift
     # apart on which shelters exist or who is assigned where.
-    result = allocation_for_category(category)
+    result = allocation_for_scenario(ctx)
     return {
-        **_category_header(category),
+        **_category_header(category, ctx),
+        "provenance": _provenance(ctx),
         "final_land_area_km2": payload_counts_land(flood),
         "localities_evaluated": len(populations),
         "allocation": result["assignment"],
@@ -813,7 +956,7 @@ def allocation(
         "total_person_km": result.get("total_person_km"),
         "message": result["message"],
         "shelter_status": result["status"],
-        "capacity_basis": _capacity_basis(category),
+        "capacity_basis": _capacity_basis(ctx),
         "population_method": population_methodology(),
         "is_estimate": True,
     }
@@ -884,19 +1027,19 @@ def _diagnose_unreachable(route, locality, shelter, flood):
     return replace(route, reason=reason)
 
 
-def _capacity_basis(category: int) -> dict:
+def _capacity_basis(ctx: ScenarioContext) -> dict:
     """How the shelter capacities in this response were arrived at.
 
     The single most misreadable number in the API: a client that renders
     "Shelter C: 41,765 capacity" without this block is presenting a derived
     placeholder as a surveyed facility.
     """
-    shelters = shelters_for_category(category)
+    shelters = shelters_for_scenario(ctx)
     return {
         "shelters_are_real": any(not s.is_demo_data for s in shelters),
         "total_capacity_people": sum(s.capacity_people for s in shelters),
         "estimated_demand_people": sum(
-            n.population for n in populations_for_category(category)
+            n.population for n in populations_for_scenario(ctx)
         ),
         "headroom_factor": CAPACITY_HEADROOM,
         "rule": (
@@ -1060,9 +1203,16 @@ def _generate_with_capacity_retry(*args, **kwargs) -> tuple[DistrictAdvisory, in
 
 @app.post("/advisory")
 def advisory(
-    category: int = Query(..., ge=0, le=6, description="IMD category index 0-6"),
+    category: Annotated[int, Query(ge=0, le=6, description="IMD category index 0-6")],
     origin: str = Query(..., description="Locality id from /localities"),
+    cyclone_id: Annotated[
+        str | None, Query(description="IBTrACS SID. Absent means the default case study.")
+    ] = None,
+    scenario_id: Annotated[
+        str | None, Query(description="`cat0`-`cat6`, or `observed`. Wins over `category`.")
+    ] = None,
 ) -> dict:
+    ctx = _context(category, cyclone_id, scenario_id)
     """Synthesise a district advisory from the simulation outputs (Module D).
 
     The only endpoint in this service that reaches the network, and only ever
@@ -1109,7 +1259,7 @@ def advisory(
     exposure_payload = exposure(category)
     allocation_payload = allocation(category)
 
-    facts = _origin_facts(category, locality)
+    facts = _origin_facts(ctx, locality)
     context = _origin_context(facts)
 
     try:
@@ -1255,8 +1405,8 @@ def advisory(
 # --------------------------------------------------------------------------
 
 
-@lru_cache(maxsize=7)
-def populations_for_category(category: int) -> tuple[DemandNode, ...]:
+@lru_cache(maxsize=64)
+def populations_for_scenario(ctx: ScenarioContext) -> tuple[DemandNode, ...]:
     """Evacuation demand per locality at this category's flood extent.
 
     Each locality is passed only the buildings inside its own search radius
@@ -1266,7 +1416,7 @@ def populations_for_category(category: int) -> tuple[DemandNode, ...]:
     """
     from .simulation.population import estimate_populations
 
-    flood = flood_for_category(category)
+    flood = flood_for_scenario(ctx)
     cell_km2 = load_dem().cell_area_km2()
     flood_geom = _flood_shape(flood)
 
@@ -1294,8 +1444,8 @@ def populations_for_category(category: int) -> tuple[DemandNode, ...]:
     return tuple(nodes)
 
 
-@lru_cache(maxsize=7)
-def shelters_for_category(category: int) -> tuple[Shelter, ...]:
+@lru_cache(maxsize=64)
+def shelters_for_scenario(ctx: ScenarioContext) -> tuple[Shelter, ...]:
     """The shelter set the LP allocates against at this category.
 
     Real shelters when `data/shelters.json` has any (it does not — see
@@ -1320,7 +1470,7 @@ def shelters_for_category(category: int) -> tuple[Shelter, ...]:
     if real:
         return tuple(real)
 
-    nodes = populations_for_category(category)
+    nodes = populations_for_scenario(ctx)
     total_demand = sum(node.population for node in nodes)
     base = demo_shelters()
     if total_demand <= 0:
@@ -1351,12 +1501,20 @@ def shelters_for_category(category: int) -> tuple[Shelter, ...]:
     return tuple(scaled)
 
 
-@lru_cache(maxsize=7)
-def allocation_for_category(category: int) -> dict:
-    return allocate_shelters(populations_for_category(category), list(shelters_for_category(category)))
+@lru_cache(maxsize=64)
+def allocation_for_scenario(ctx: ScenarioContext) -> dict:
+    """Shelter assignment for one (cyclone, scenario) pair.
+
+    Keyed on the pair for the same reason the flood is: the populations and the
+    shelter capacities both come from the flood extent, so a category-keyed entry
+    is only ever correct for the storm that produced it.
+    """
+    return allocate_shelters(
+        populations_for_scenario(ctx), list(shelters_for_scenario(ctx))
+    )
 
 
-def _origin_facts(category: int, locality: Locality) -> dict:
+def _origin_facts(ctx: ScenarioContext, locality: Locality) -> dict:
     """Code-derived facts about the requesting origin, used by `/advisory`.
 
     `/advisory` takes an origin so the advisory is written for where the person
@@ -1369,10 +1527,10 @@ def _origin_facts(category: int, locality: Locality) -> dict:
     `EvacuationPriority` entry when the model leaves it out (see
     `_ensure_origin_in_plan`).
     """
-    flood = flood_for_category(category)
-    allocation_result = allocation_for_category(category)
+    flood = flood_for_scenario(ctx)
+    allocation_result = allocation_for_scenario(ctx)
     shelter, basis = _shelter_for(
-        locality, allocation_result, shelters_for_category(category)
+        locality, allocation_result, shelters_for_scenario(ctx)
     )
     route = safe_route(
         build_road_graph(),
