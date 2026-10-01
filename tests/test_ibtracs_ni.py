@@ -1,11 +1,15 @@
 """Tests for IBTrACS ingestion — the historical cyclone source, filtered to NI.
 
-`ibtracs.NI.list.v04r01.csv` is committed to the repo and read offline. It holds
-62,861 rows and 174 columns, and it is *not* a clean North-Indian-Ocean file
-despite the name: it carries 4,525 `BASIN == "WP"` rows and 482 `BASIN == "NA"`
-rows, including a genuine Atlantic storm at longitude -63.6. So the one property
-this file has to have is the filter, and most of the tests below are different
-ways of asking the same question — can a non-NI row reach a record?
+`ibtracs.NI.list.v04r01.csv` is a required local input in the working tree,
+read offline. **It is not in git** — 27 MB, untracked, not ignored — so
+`git status` reports it as `??` and every test here that needs it is a test
+that cannot run without it. `csv.DictReader` yields 62,860 records (62,861 lines
+counting the header) across 174 columns, and the file is *not* a clean
+North-Indian-Ocean file despite the name: it carries 4,525 `BASIN == "WP"` rows
+and 482 `BASIN == "NA"` rows, including a genuine Atlantic storm at longitude
+-63.6. So the one property this file has to have is the filter, and most of the
+tests below are different ways of asking the same question — can a non-NI row
+reach a record?
 
 Three ways this file can lie on a judge's screen, in order of how bad each looks:
 
@@ -45,8 +49,10 @@ from __future__ import annotations
 import asyncio
 import csv
 import json
+import os
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -150,33 +156,49 @@ def test_every_ni_row_in_the_file_is_yielded_and_nothing_else():
 def test_a_wp_row_in_the_source_is_never_yielded():
     """A direct check on the reader, independent of what the catalogue built.
 
-    **The comparison is per row, not per storm, and it has to be.** 92 of the
-    1,859 SIDs in this file have fixes in more than one basin, and 57 of those
-    are at season >= 1970. They are real cross-basin cyclones: Vamei (2001)
-    formed at 1.9 N, Bualoi (2025) ran from the Philippines into the Bay of
-    Bengal, and IBTrACS files the Indian Ocean leg under `BASIN == "NI"` with
-    `SUBBASIN == "BB"`. Keeping that leg is the reason this file contains those
-    rows at all, and dropping the whole storm would delete 57 genuine Bay of
-    Bengal tracks from the catalogue.
+    92 of the 1,859 SIDs in this file have fixes in more than one basin, and 57
+    of those are at season >= 1970. They are real cross-basin cyclones: Vamei
+    (2001) formed at 1.9 N, Bualoi (2025) ran from the Philippines into the Bay
+    of Bengal, and IBTrACS files the Indian Ocean leg under `BASIN == "NI"` with
+    `SUBBASIN == "BB"`. Keeping that leg is why this file contains those rows at
+    all, and dropping the whole storm would delete 57 genuine Bay of Bengal
+    tracks from the catalogue.
 
-    So the correct claim is "no WP *row* is yielded", which is what this
-    asserts. Written as "no WP *storm id* is yielded" — which is how the plan
-    put it — it is a claim that is false about the real archive, and the fix for
-    that failure would have been to throw away 57 real cyclones.
+    **Which is why the leak has to be checked per row, by row identity, and why
+    the first version of this test could not fail.** It compared yielded SIDs
+    against the SIDs on WP rows — but all 87 WP SIDs also have NI rows, so a
+    reader that yielded NI *and* WP rows left every one of those assertions
+    satisfied. The review caught that by writing exactly that reader and watching
+    the test pass.
+
+    `(SID, ISO_TIME)` is used as the row identity instead, and the guard below
+    is what makes it sound: the pair is unique across all 62,860 records in this
+    file, so a WP row's key cannot coincide with an NI row's. That is a fact
+    about the archive rather than an assumption, and it is asserted here rather
+    than trusted, because if IBTrACS ever emitted two rows at one timestamp the
+    test would need a different key and would say so.
     """
     with DEFAULT_IBTRACS_PATH.open(newline="") as fh:
         raw = list(csv.DictReader(fh))
     wp = [r for r in raw if r.get("BASIN") == "WP"]
     assert wp, "the source file must actually contain WP rows for this to test anything"
-    ni = {r["SID"] for r in raw if (r.get("BASIN") or "").strip() == NI_BASIN_CODE}
 
+    def key(row: dict[str, str]) -> tuple[str, str]:
+        return row["SID"], row["ISO_TIME"]
+
+    assert len({key(r) for r in raw}) == len(raw), "(SID, ISO_TIME) is not a row key"
+
+    ni = {r["SID"] for r in raw if (r.get("BASIN") or "").strip() == NI_BASIN_CODE}
     mixed = {r["SID"] for r in wp} & ni
     assert len(mixed) == 87, "measured: 87 SIDs have both WP and NI fixes"
-    # The WP half of a mixed storm is gone; the NI half is kept.
     assert not ({r["SID"] for r in wp} - ni), "every SID here has some NI fix"
-    for sid in mixed:
-        assert {r["BASIN"] for r in raw if r["SID"] == sid} == {"WP", "NI"}
-    assert not ({r["SID"] for r in read_ni_rows()} - ni)
+
+    yielded = list(read_ni_rows())
+    # The two code-sensitive assertions. Either one alone fails for a reader
+    # that leaks; the second also fails for a reader that leaks a WP row whose
+    # storm is not in the catalogue window at all.
+    assert not any(r["BASIN"] == "WP" for r in yielded)
+    assert not ({key(r) for r in yielded} & {key(r) for r in wp})
 
 
 def test_an_na_storm_in_the_caribbean_is_never_yielded():
@@ -225,22 +247,49 @@ def test_no_published_waypoint_lies_outside_the_north_indian_ocean():
 def test_every_catalogue_id_came_from_a_row_that_says_ni():
     """The leak check that does not depend on parsing the SID grammar.
 
-    Read the raw file, collect the SIDs on `BASIN == "NI"` rows, and require
-    every catalogue id to be one of them. This is the assertion that would still
-    hold if IBTrACS changed its SID format tomorrow.
+    Two levels, and the second is the one that can fail. The first — every
+    catalogue id is the `SID` of some `BASIN == "NI"` row — would not have
+    caught a leaked WP row, because all 87 WP SIDs in this file also have NI rows
+    and so appear in that set regardless. The review found this by writing a
+    reader that leaks and watching the subset assertion hold.
 
-    It is a subset test and not a disjointness test, because 57 real Bay of
-    Bengal cyclones share a SID with a Western Pacific phase — see
-    `test_a_wp_row_in_the_source_is_never_yielded` for why the disjoint form
-    would have been a false alarm.
+    So every *waypoint* is traced back to the specific row it came from, by
+    `(SID, ISO_TIME)`, and required to be an NI row and not a WP or NA one. That
+    is per-fix provenance rather than per-storm, and it is what actually
+    establishes that nothing from another basin reached a record. The
+    uniqueness of that key across the file is asserted rather than assumed.
     """
     raw = _raw_rows()
-    ni_sids = {r["SID"] for r in raw if (r.get("BASIN") or "").strip() == NI_BASIN_CODE}
-    assert " " not in ni_sids, "sanity: the units row has a blank SID"
 
-    ids = {c["cyclone_id"] for c in build_catalogue()["cyclones"]}
+    def key(sid: str, iso_time: str) -> tuple[str, str]:
+        return sid, iso_time
+
+    assert len({key(r["SID"], r["ISO_TIME"]) for r in raw}) == len(raw)
+
+    ni_rows = {
+        key(r["SID"], r["ISO_TIME"])
+        for r in raw
+        if (r.get("BASIN") or "").strip() == NI_BASIN_CODE
+    }
+    foreign_rows = {
+        key(r["SID"], r["ISO_TIME"])
+        for r in raw
+        if (r.get("BASIN") or "").strip() != NI_BASIN_CODE
+    }
+    assert foreign_rows, "the file must contain non-NI rows for this to test anything"
+    assert " " in {r["SID"] for r in raw}, "sanity: the units row's SID is a space"
+    assert " " not in {sid for sid, _ in ni_rows}, "sanity: the units row is not an NI row"
+
+    cat = build_catalogue()
+    ids = {c["cyclone_id"] for c in cat["cyclones"]}
     assert ids
-    assert ids <= ni_sids
+    assert ids <= {sid for sid, _ in ni_rows}
+
+    for cyclone in cat["cyclones"]:
+        for waypoint in cyclone["waypoints"]:
+            waypoint_key = key(cyclone["cyclone_id"], waypoint["iso_time"])
+            assert waypoint_key in ni_rows, (cyclone["cyclone_id"], waypoint["iso_time"])
+            assert waypoint_key not in foreign_rows
 
 
 def test_two_basins_never_collide_into_one_id():
@@ -634,7 +683,7 @@ def test_catalogue_is_deterministic():
 
 def test_the_catalogue_carries_no_timestamp_that_moves_between_runs():
     """`build_catalogue` is deliberately **not** memoised, so this is a real
-    second parse of 62,861 rows rather than the same dict handed back twice.
+    second parse of 62,860 records rather than the same dict handed back twice.
     """
     a = build_catalogue()
     b = build_catalogue()
@@ -652,33 +701,66 @@ def test_generated_from_is_repo_relative():
     assert "Users" not in cat["generated_from"]
 
 
-def test_generated_at_is_derived_from_the_input_not_the_clock():
-    """`generated_at` is the source file's mtime, and here is why.
+def test_generated_at_is_derived_from_the_input_not_the_clock(tmp_path: Path):
+    """`generated_at` is the input file's mtime, and this is the test that says so.
 
-    The obvious implementation is `datetime.now(UTC)` and it is wrong twice
-    over for a *committed artefact*:
+    The first version of this test asserted only the *shape* of the value —
+    `endswith("Z")`, four leading digits, later than 2000, equal to the
+    record's `fetched_at` — and all four hold under
+    `datetime.now(UTC)`. The test that names the determinism constraint did not
+    test it. A shape check is worth keeping and is not worth anything on its own.
 
-    - Every regeneration would differ, so `git diff` could no longer tell a
-      data change from a re-run, and the determinism test above would be
-      checking something the writer had already guaranteed — worse than not
-      checking it.
-    - It would be a fabricated fact. `CycloneRecord.fetched_at` means "when
-      this process read the data", and no read from a source happened: the file
-      was committed to the repo. The mtime of a committed input is the only
-      timestamp here that is a fact about the data rather than about the
-      machine.
-
-    The cost is stated rather than hidden: git does not preserve mtimes, so a
-    fresh clone has a different one and a regeneration shows a one-line diff in
-    `generated_at`. `--generated-at` pins it when a release wants a fixed
-    value. `CycloneRecord.data_through` carries the time a user actually needs
-    — the last fix in the file — and that one is exact.
+    So the decisive assertion is against a file whose mtime this test sets
+    itself. `os.utime` puts the input's timestamp at 2001-02-03T04:05:06Z, and
+    a wall clock cannot produce that under any circumstances, so this fails for
+    a `datetime.now()` implementation on any run, at any time of day, forever.
+    Nothing here depends on when the suite happens to run.
     """
+    subset = _write_csv(
+        tmp_path / "subset.csv",
+        ["2024001N10000,2024,NI,BB,TESTA,2024-01-01 00:00:00,TS,10.0,90.0,20,1000\n"],
+    )
+    os.utime(subset, (981173106, 981173106))  # 2001-02-03T04:05:06Z
+    cat = build_catalogue(path=subset, since=0)
+    assert cat["generated_at"] == "2001-02-03T04:05:06Z"
+    assert cat["cyclones"][0]["fetched_at"] == "2001-02-03T04:05:06Z"
+    # And it tracks the input: a day later on the same file, a day later out.
+    os.utime(subset, (981173106 + 86_400, 981173106 + 86_400))
+    assert build_catalogue(path=subset, since=0)["generated_at"] == "2001-02-04T04:05:06Z"
+
+
+def test_generated_at_matches_the_placed_input_and_a_pin_overrides_it():
+    """The same rule against the real file, plus the escape hatch.
+
+    The expected value is computed from `DEFAULT_IBTRACS_PATH`'s mtime here
+    rather than hard-coded, because the input is a local file whose mtime
+    differs per machine — hard-coding it would make this fail on every clone
+    that is not the one that generated the catalogue. What is pinned is the
+    *relation*, which is the rule.
+
+    `--generated-at` / the `fetched_at` argument then wins outright, which is
+    what lets a release commit a catalogue whose timestamp does not move even
+    when the input's mtime does.
+    """
+    expected = datetime.fromtimestamp(
+        DEFAULT_IBTRACS_PATH.stat().st_mtime, tz=UTC
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
     cat = build_catalogue()
-    assert cat["generated_at"].endswith("Z")
-    assert cat["generated_at"][:4].isdigit()
-    assert cat["generated_at"] > "2000-01-01T00:00:00Z"
+    assert cat["generated_at"] == expected
     assert cat["generated_at"] == _remal(cat)["fetched_at"]
+    assert all(c["fetched_at"] == expected for c in cat["cyclones"])
+
+    pinned = "2026-10-01T00:00:00Z"
+    pinned_cat = build_catalogue(fetched_at=pinned)
+    assert pinned_cat["generated_at"] == pinned
+    assert all(c["fetched_at"] == pinned for c in pinned_cat["cyclones"])
+    # The pin is the only thing that changed: every other field is identical,
+    # which is what makes it a pin and not a re-read.
+    without = [{k: v for k, v in c.items() if k != "fetched_at"} for c in cat["cyclones"]]
+    with_pin = [
+        {k: v for k, v in c.items() if k != "fetched_at"} for c in pinned_cat["cyclones"]
+    ]
+    assert with_pin == without
 
 
 def test_data_through_is_the_last_fix_not_the_read_time():

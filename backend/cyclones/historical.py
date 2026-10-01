@@ -7,15 +7,28 @@ fetch script (`backend/data_pipeline/fetch_ibtracs.py`) that exists to be run
 once by hand. That script is not wrong about *Remal* — it is wrong as a reader,
 and this module is the corrected version of it (see "The bug this replaces").
 
-It reads a committed 27 MB CSV and takes no network action, which is the point:
-a demo on conference wifi must not depend on NOAA being up, and a judge's
-question about the 1999 cyclone must have the same answer as one about 2024.
+It reads a 27 MB CSV that lives in the working tree and takes no network
+action, which is the point: a demo on conference wifi must not depend on NOAA
+being up, and a judge's question about the 1999 cyclone must have the same
+answer as one about 2024.
+
+**The input is not in git.** `ibtracs.NI.list.v04r01.csv` is a required local
+file that has been placed at the repo root; it is 27 MB, it is untracked, and it
+is deliberately not in `.gitignore` either, so `git status` shows it as `??`
+and whoever owns this repository decides separately whether to commit it or to
+document a fetch step. Nothing in this module assumes which. It assumes only
+that the file is there: `read_ni_rows` and `build_catalogue` both fail loudly
+rather than inventing a catalogue when it is not, and
+`backend/data_pipeline/ingest_ibtracs_ni.py` says in its error message which
+file is missing. A test that needs the archive skips rather than failing if it
+is absent — except where the assertion is *about* the archive.
 
 What is in the file, measured, because the file is not what its name says
 -------------------------------------------------------------------------
 `ibtracs.NI.list.v04r01.csv` is the North Indian Ocean *list*, which is
 IBTrACS's recommendation of what to load for this basin — not a file containing
-only this basin. It has 62,861 rows, 174 columns, seasons 1842-2026, and:
+only this basin. `csv.DictReader` yields 62,860 records (62,861 lines counting
+the header), 174 columns, seasons 1842-2026, and:
 
   * `BASIN` is `NI` on 57,852 rows, **`WP` on 4,525** and **`NA` on 482**. The
     WP rows are real Western Pacific storms (16.3 N, 119.1 E — the
@@ -59,10 +72,20 @@ The bug this replaces
 `row.get("USA_WIND")` is a space, not an empty string — IBTrACS pads its
 missing cells — and a space is truthy, so this branch survives. The `else 0.0`
 then fires on genuinely empty cells, and either way the file it writes says
-Remal was calm at two of its forty fixes. `data/remal_track.geojson` still
-carries `usa_wind_kt: 0.0` at those two points and `tests/test_track.py` exists
-to document it. Two of those `0.0` reads are indistinguishable from a real
+Remal went calm in mid-ocean.
+
+**`data/remal_track.geojson` carries `usa_wind_kt: 0.0` at five of its
+nineteen fixes** — 2024-05-27 at 03:00, 06:00, 09:00, 12:00 and 15:00, twelve
+consecutive hours. IBTrACS **v04r01**, which this module reads, reports
+**48, 45, 40, 35 and 33 kt** at those five exact timestamps. So the committed
+track draws a real cyclone dead in the Bay of Bengal for half a day and then
+restarting, and every one of those `0.0` reads is indistinguishable from a real
 0 kt observation, which for a storm at sea is a claim about the weather.
+
+(The GeoJSON was built from **v04r00**, which held only 19 fixes for Remal
+covering the landfall window; v04r01 has 40. So the file is short two
+dimensions at once — fewer fixes, and blanks where the later revision has real
+winds. `tests/test_ibtracs_ni.py` pins both.)
 
 Here a blank is `None` and `wind_reported` is `False`, and `0` — a reported
 0 kt, which agencies do publish for a dissipated storm — stays `0.0` with
@@ -86,7 +109,8 @@ What this module refuses to do
 - **It does not range-check.** `base.py` is explicit that validation belongs in
   the parser, where the message can name the line — but a range check is also a
   policy about which observations count, and this file has no such policy. So
-  an implausible coordinate in a 1973 fix is carried as written, and
+  an implausible coordinate is carried as written, including 1966 storm
+  `1966233N13340`'s run of fixes from 80.5 N to 83.0 N, and
   `tests/test_ibtracs_ni.py` checks the hemispheres rather than a bbox.
 - **It does not filter by name or recency.** `since` is a season floor and
   nothing else. 1,713 of the NI storms are `UNNAMED` and they stay `UNNAMED`;
@@ -131,10 +155,16 @@ from .base import CycloneRecord, CycloneWaypoint, peak_wind_kmph
 #: `REPO_ROOT` too.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: The committed archive. v04r01 rather than the v04r00 named in CLAUDE.md:
-#: same dataset, newer revision, and the file is what is actually in the repo.
-#: It is read offline — nothing in this module opens a socket — so a demo does
-#: not depend on NOAA being reachable.
+#: The archive this module reads. **It is not in git.** It is a required local
+#: input placed at the repo root, 27 MB, untracked and not ignored, so
+#: `git status` reports it as `??`. Whether it should be committed or a fetch
+#: step should be documented is the repository owner's call, not this module's.
+#: All this constant asserts is the expected location.
+#:
+#: v04r01 rather than the v04r00 named in CLAUDE.md: same dataset, newer
+#: revision, and the revision that is actually present in this working tree. It
+#: is read offline — nothing here opens a socket — so a demo does not depend on
+#: NOAA being reachable.
 DEFAULT_IBTRACS_PATH = REPO_ROOT / "ibtracs.NI.list.v04r01.csv"
 
 #: `CycloneRecord.source` for every record this module builds. It names the
@@ -150,16 +180,21 @@ IBTRACS_SOURCE_ID = "ibtracs_v04r01_ni"
 #: this module that has to be exactly right.
 NI_BASIN_CODE = "NI"
 
-#: IBTrACS `SID` of Cyclone Remal (2024 season number 145, basin N, formed at
-#: 14.0 N 87.0 E). The case study this whole repository is built around, so it
-#: is a named constant rather than a string typed at three call sites — and
-#: `data/remal_track.geojson`, which `/track` serves, is the same storm.
+#: IBTrACS `SID` of Cyclone Remal: 2024 season number 145, basin N, with
+#: `14087` encoding the genesis point as 14.0 N 87.0 E. The *first fix in the
+#: file* is 13.6 N 86.6 E at 2024-05-23 12:00 — the encoding is rounded to whole
+#: degrees, so it is not a position to read anything off. This is the case study
+#: the whole repository is built around, so it is a named constant rather than a
+#: string typed at three call sites — and `data/remal_track.geojson`, which
+#: `/track` serves, is the same storm.
 REMAL_CYCLONE_ID = "2024145N14087"
 
-#: One knot in km/h. Published, exact by definition, and the same factor
-#: `surge.py` and `fetch_ibtracs.py` refer to. The direction of this
-#: multiplication is load-bearing: see the Remal cross-check in the module
-#: docstring.
+#: One knot in km/h. Published, exact by definition, and the factor `surge.py`
+#: already refers to in its own unit comment. `fetch_ibtracs.py` is deliberately
+#: **not** on that list: it contains no conversion at all and writes knots under
+#: a `wind_units: "knots"` property, which is the confusion this constant exists
+#: to end. The direction of the multiplication here is load-bearing — see the
+#: Remal cross-check in the module docstring.
 KNOTS_TO_KMPH = 1.852
 
 #: `csv.field_size_limit`. The default is 131,072 and the plan says some
@@ -286,11 +321,12 @@ def ibtracs_number(value: str | None) -> float | None:
 
 
 def read_ni_rows(path: Path = DEFAULT_IBTRACS_PATH) -> Iterator[dict[str, str]]:
-    """Stream the committed CSV, yielding only rows whose `BASIN` is `NI`.
+    """Stream the archive, yielding only rows whose `BASIN` is `NI`.
 
-    A generator, not a list, for a 27 MB / 62,861-row file: a caller that wants
-    one storm should not have to hold every Bay of Bengal cyclone in memory to
-    find it. `build_catalogue` does materialise, because it has to group.
+    A generator, not a list, for a 27 MB / 62,860-record file: a caller that
+    wants one storm should not have to hold every Bay of Bengal cyclone in
+    memory to find it. `build_catalogue` does materialise, because it has to
+    group.
 
     The filter is `.strip()`-ed, which is what drops row 1 — the units row,
     whose `BASIN` is a single space and whose `LAT` reads `degrees_north`. That
@@ -299,11 +335,11 @@ def read_ni_rows(path: Path = DEFAULT_IBTRACS_PATH) -> Iterator[dict[str, str]]:
     survived would produce a record named "degrees_north" at latitude NaN, and
     the two guards have different failure modes.
 
-    Cells are **not** stripped or parsed here. This function's whole job is the
-    basin, and a row that has been quietly tidied is a row whose raw spelling
-    no longer matches the file — which is exactly what makes the two NDAs above
-    worth checking. Parsing is `ibtracs_number`'s job and it happens once, in
-    `build_catalogue`.
+    Cells are **not** stripped or parsed here, beyond the `BASIN` comparison that
+    is this function's entire job. A row that has been quietly tidied is a row
+    whose raw spelling no longer matches the file, so a test that checks what the
+    reader yields has something honest to check against. All numeric parsing is
+    `ibtracs_number`'s job, and it happens once, in `build_catalogue`.
     """
     _raise_field_size_limit()
     with Path(path).open(newline="", encoding="utf-8") as handle:
@@ -449,9 +485,12 @@ def _row_waypoint(row: dict[str, str]) -> CycloneWaypoint | None:
         # The one range check here, and it exists because a coordinate outside
         # the globe is a parse bug in every reading: a hemispheric swap, a
         # concatenated field. It is a rejection, not a repair — nothing is
-        # clamped, and no value is corrected. (A merely *implausible* fix, like
-        # the 1973 row that puts a Bay of Bengal storm at 83 N, is carried as
-        # written: which observations to disbelieve is not this module's call.)
+        # clamped, and no value is corrected. (A merely *implausible* fix is
+        # carried as written: 1966 storm `1966233N13340` holds 27 fixes from
+        # 80.5 N up to 83.0 N, and 1951's `1951272N20274` reaches 81.0 N, both
+        # filed under `SUBBASIN == "AS"`. Both are pre-1970 and so outside the
+        # catalogue's default window, but they are in the 1,859. Which
+        # observations to disbelieve is not this module's call.)
         return None
     wind_knots = ibtracs_number(row.get("USA_WIND"))
     # `reported` being true already implies `wind_knots is not None`, so the
@@ -472,24 +511,28 @@ def _source_read_time(path: Path) -> str:
     """When this input was placed on this machine, as UTC — the read time.
 
     `CycloneRecord.fetched_at` means "when this process read the data", and the
-    obvious implementation is `datetime.now(UTC)`. For a *committed artefact*
-    that is wrong twice over:
+    obvious implementation is `datetime.now(UTC)`. For an artefact that gets
+    committed and diffed, that is wrong twice over:
 
     - Every regeneration of `data/cyclones/catalogue.json` would differ, so
       `git diff` could no longer distinguish a data change from a re-run, and
       the determinism test in `tests/test_ibtracs_ni.py` would be checking
       something the writer had already guaranteed.
-    - It would be a fabricated fact. Nothing was fetched. The file was
-      committed to this repository, and the mtime of a committed input is the
-      only timestamp here that is a fact about the data rather than about the
-      machine that happened to read it.
+    - It would be a fabricated fact. This module fetches nothing; the archive
+      was placed in the working tree by whoever set the workspace up. The mtime
+      of that file is the only timestamp available that is a fact about the
+      input rather than about the machine that happened to read it — the
+      strongest form of that claim, and it does not depend on the file being in
+      git, which it is not.
 
-    The cost is stated rather than hidden: git does not preserve mtimes, so a
-    fresh clone has a different one and regenerating the catalogue shows a
-    one-line diff in `generated_at`. `--generated-at` pins it when a release
-    wants a fixed value. The timestamp a user actually needs —
-    `CycloneRecord.data_through`, the last fix in the file — is exact and comes
-    from IBTrACS.
+    The cost is stated rather than hidden, and it is a different cost from the
+    one a committed input would carry. The archive is untracked, so a fresh
+    clone does not have it at all; whoever places it sets its mtime, and
+    `generated_at` will therefore differ per machine. Regenerating the
+    catalogue after moving the input shows a one-line diff in `generated_at`.
+    `--generated-at` pins it when a release wants a fixed value. The timestamp a
+    user actually needs — `CycloneRecord.data_through`, the last fix in the file
+    — is exact, comes from IBTrACS, and is unaffected by any of this.
 
     Second precision, `Z`-suffixed, matching `live_unavailable_reason`'s
     documented format. Not pinned to a constant like `LIVE_UNAVAILABLE_REASON`:
@@ -573,8 +616,9 @@ def build_records(
     A storm all of whose fixes were dropped is **not** published. A record with
     an empty track is a cyclone the app claims exists and cannot draw, and
     `CycloneRecord.waypoints` being empty is a legal value that no honest
-    ingestion should produce. (Measured: this never fires on the committed file
-    — all 57,852 NI fixes have both coordinates and a numeric year — so the
+    ingestion should produce. (Measured: this never fires on the archive in the
+    working tree — all 57,852 NI fixes have both coordinates and a numeric year
+    — so the
     rule is covered by synthetic tests in `tests/test_ibtracs_ni.py` rather than
     left unexercised.)
 
@@ -665,7 +709,7 @@ def _describe_source(path: Path) -> str:
 
 
 class IbtracsSource:
-    """`CycloneSource` over the committed NI file. The historical implementation.
+    """`CycloneSource` over the local NI archive. The historical implementation.
 
     Satisfies `backend.cyclones.base.CycloneSource` structurally: an
     `identifier` and an `async def fetch`. `fetch` is `async` because the other

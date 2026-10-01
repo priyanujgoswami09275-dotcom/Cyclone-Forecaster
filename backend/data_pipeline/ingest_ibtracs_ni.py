@@ -1,22 +1,29 @@
-"""Build `data/cyclones/catalogue.json` from the committed IBTrACS archive.
+"""Build `data/cyclones/catalogue.json` from the local IBTrACS archive.
 
     python -m backend.data_pipeline.ingest_ibtracs_ni --out data/cyclones/catalogue.json
 
 This is the only thing in the repository that turns the raw 27 MB best-track
 file into something the API can serve, and it is a build step, not a service.
-It is checked in because the alternative is worse: the app would either parse
-27 MB of CSV on the first request after a cold start, or ship without a
-historical cyclone list at all.
+The *output* is checked in because the alternative is worse: the app would
+either parse 27 MB of CSV on the first request after a cold start, or ship
+without a historical cyclone list at all.
+
+**The input is not checked in.** `ibtracs.NI.list.v04r01.csv` is a required local
+file placed at the repo root: 27 MB, untracked, and deliberately not in
+`.gitignore`, so `git status` shows it as `??`. Whether it should be committed
+or whether a fetch step should be documented is the repository owner's decision,
+and this script does not presume the answer. It presumes only that the file is
+present, and names what is missing and where it comes from if it is not.
 
 Three properties this script exists to guarantee, in the order they were nearly
 got wrong:
 
-**No network.** The input is committed. `fetch_ibtracs.py`, its predecessor,
-downloads from NOAA — which is right for populating the repo once and wrong for
-regenerating a checked-in artefact, because a build that can fail on someone
-else's uptime is a build whose output nobody can reproduce. This one reads a
-file and, if that file is missing, says so and exits non-zero rather than
-quietly writing a catalogue of nothing.
+**No network.** `fetch_ibtracs.py`, this script's predecessor, downloads from
+NOAA. That is right for putting the archive in the working tree once and wrong
+for regenerating a checked-in artefact, because a build that can fail on
+someone else's uptime is a build whose output nobody can reproduce. This one
+reads a file, and if the file is missing it says so and exits non-zero rather
+than quietly writing a catalogue of nothing.
 
 **Deterministic bytes.** The output is committed, so a diff in it has to mean
 something. Every source of run-to-run variation is pinned: no wall-clock
@@ -24,9 +31,9 @@ timestamp, no set iteration order (records are sorted by season and id, and
 `json.dump` is called with `sort_keys=True`), no unsorted dict comprehension
 output, and the float formatting is fixed by `round(..., 1)` inside the parser
 rather than by luck. `generated_at` is the *input file's mtime* — see
-`backend.cyclones/historical.py::_source_read_time` for why, and for the one
-cost that carries (git does not preserve mtimes, so a fresh clone's
-regeneration shows a one-line diff in `generated_at`; `--generated-at` pins it).
+`backend/cyclones/historical.py::_source_read_time` for why, and for the one
+cost that carries (the archive is untracked, so whoever places it sets the
+mtime and `generated_at` differs per machine; `--generated-at` pins it).
 
 **The basin filter is not optional.** The input is the North Indian Ocean
 *list*, which also contains 4,525 Western Pacific and 482 North Atlantic rows.
@@ -70,6 +77,19 @@ DEFAULT_OUT_PATH = REPO_ROOT / "data" / "cyclones" / "catalogue.json"
 #: choice at all. See the module docstring.
 SUPPORTED_BASIN = NI_BASIN_CODE
 
+#: Where the archive comes from, for the `--help` text and the error message.
+#: **The exact URL is not asserted here.** This environment has no network, so
+#: nothing in this repository can confirm that a v04r01 path resolves, and a
+#: download link that has not been checked is worse than a named source: it
+#: looks authoritative and 404s. What is stated is what is true — the dataset,
+#: the revision, the basin, and the fact that
+#: `backend/data_pipeline/fetch_ibtracs.py` already carries a NOAA base path for
+#: the v04r00 revision of the same list, which the same directory serves.
+ARCHIVE_SOURCE_NOTE = (
+    "NOAA IBTrACS v04r01, North Indian Ocean list; see IBTRACS_URL in "
+    "backend/data_pipeline/fetch_ibtracs.py for the v04r00 base path"
+)
+
 
 def build_parser() -> argparse.ArgumentParser:
     """The CLI surface. Three optional flags and no positional arguments.
@@ -81,8 +101,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m backend.data_pipeline.ingest_ibtracs_ni",
         description=(
-            "Stream the committed IBTrACS CSV and write the NI cyclone catalogue. "
-            "Takes no network action; the input is a file in this repository."
+            "Stream the local IBTrACS CSV and write the NI cyclone catalogue. "
+            "Takes no network action; the input is a 27 MB file that must already "
+            "be present in the working tree (it is not in git)."
         ),
     )
     parser.add_argument(
@@ -92,7 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_IBTRACS_PATH,
         help=(
             f"IBTrACS CSV to read (default: {DEFAULT_IBTRACS_PATH.name}, "
-            f"committed at the repo root)"
+            f"expected at the repo root; untracked, see {ARCHIVE_SOURCE_NOTE})"
         ),
     )
     parser.add_argument(
@@ -145,11 +166,23 @@ def main(argv: list[str] | None = None) -> int:
 
     source_path: Path = args.source
     if not source_path.is_file():
+        # Names what is missing, where it is expected, and where it comes from.
+        # It does *not* say the archive is committed: it is not. A message that
+        # claimed otherwise would send whoever hits this looking through git
+        # history for a file that was never in it.
         print(
             f"error: IBTrACS input not found: {source_path}\n"
-            f"       The archive is committed at the repo root as "
-            f"{DEFAULT_IBTRACS_PATH.name}. This script does not download it — "
-            f"see its module docstring.",
+            f"\n"
+            f"  Expected a 27 MB CSV at the repo root named "
+            f"{DEFAULT_IBTRACS_PATH.name}.\n"
+            f"  It is a required local input and it is NOT in git — it is "
+            f"untracked, and\n"
+            f"  deliberately not in .gitignore, so 'git status' reports it as "
+            f"'??'.\n"
+            f"  Source: {ARCHIVE_SOURCE_NOTE}.\n"
+            f"\n"
+            f"  This script does not download it. Place the file and re-run, or "
+            f"point --in at a copy.",
             file=sys.stderr,
         )
         return 1
