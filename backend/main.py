@@ -77,7 +77,12 @@ from .ai.advisory import (
     plan_coverage,
     validate_advisory,
 )
-from .cyclones.base import CycloneRecord, LiveStatus, live_unavailable_reason
+from .cyclones.base import (
+    CycloneRecord,
+    LiveStatus,
+    iso_time_to_rfc3339,
+    live_unavailable_reason,
+)
 from .cyclones.live import AtcfLiveSource
 from .cyclones.registry import CATALOGUE_LIMITATION, registry
 from .cyclones.scenarios import (
@@ -706,38 +711,35 @@ class TrackDataError(ValueError):
 def _iso_z(text: str) -> str:
     """`2024-05-23 12:00:00` -> `2024-05-23T12:00:00Z`, or raise.
 
-    The two track endpoints must emit the same timestamp format. `/track`
-    converts because it reads a file; `track_payload` reads the catalogue, whose
-    `iso_time` is the archive's own space-separated spelling. A client consuming
-    both should not have to accept two formats for the same field.
+    Delegates to `cyclones.base.iso_time_to_rfc3339`, which is the only place
+    the wire spelling is decided. `/track` reads a file and `track_payload`
+    reads the catalogue, whose `iso_time` is IBTrACS's own space-separated
+    spelling — and `/live-cyclone` converts with the same function — so no two
+    endpoints can come apart. This wrapper exists only to raise this module's
+    error type, which `tests/test_track.py` names.
     """
     try:
-        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        )
+        return iso_time_to_rfc3339(text)
     except ValueError as exc:
-        raise TrackDataError(
-            f"iso_time {text!r} is not '%Y-%m-%d %H:%M:%S'"
-        ) from exc
+        raise TrackDataError(str(exc)) from exc
 
 
 def _parse_track_timestamp(raw: object, waypoint_index: int) -> str:
     """`iso_time` -> RFC 3339, or raise.
 
-    IBTrACS writes `2024-05-25 12:00:00`: no timezone marker, no offset. It is
-    UTC, and this endpoint says so in a `timezone` field rather than silently
-    attaching one — a client that needs an offset gets a truthful field
-    instead of a guess baked into a string.
+    The same conversion as `_iso_z`, with the waypoint's position in the file
+    attached: a bare "invalid timestamp" sends you hunting through forty fixes
+    for the one that broke. IBTrACS writes `2024-05-25 12:00:00` — no timezone
+    marker, no offset. It is UTC, and the response says so in a `timezone` field
+    rather than silently attaching one, so a client that needs an offset gets a
+    truthful field instead of a guess baked into a string.
+
+    Both halves of the message are asserted by `test_a_bad_timestamp_names_the_waypoint`.
     """
-    text = str(raw).strip()
     try:
-        parsed = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+        return iso_time_to_rfc3339(raw)
     except ValueError as exc:
-        raise TrackDataError(
-            f"waypoint {waypoint_index}: ISO_TIME {text!r} is not "
-            "'%Y-%m-%d %H:%M:%S'"
-        ) from exc
-    return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
+        raise TrackDataError(f"waypoint {waypoint_index}: {exc}") from exc
 
 
 def load_track() -> dict:

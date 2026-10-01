@@ -9,12 +9,14 @@ figure, and those are three different things that happen to share a shape.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from backend.cyclones.base import LiveStatus
+from backend.cyclones.live import AtcfLiveSource
 from backend.cyclones.registry import registry
 from backend.cyclones.scenarios import DEFAULT_CYCLONE_ID, scenarios_for
 from backend.main import app
@@ -467,6 +469,136 @@ def test_the_surge_law_is_untouched_by_the_ml_layer():
 
     assert surge_for_wind(115) == pytest.approx(1.2)
     assert surge_for_wind(230) == pytest.approx(4.8)
+
+
+# --------------------------------------------------------------------------
+# The iso_time rule: one canonical spelling per layer
+# --------------------------------------------------------------------------
+#
+# `CycloneWaypoint.iso_time` is ONE field with TWO legal spellings, and the
+# layer decides which. At rest it is IBTrACS's own `ISO_TIME`
+# (`YYYY-MM-DD HH:MM:SS`, no `Z`) so every source, the catalogue and the
+# committed GeoJSON compare as strings; on the wire it is RFC 3339
+# (`...Z`) and converted only at the boundary, by
+# `cyclones.base.iso_time_to_rfc3339`.
+#
+# `base.py`'s docstring used to describe the *wire* spelling as though it were
+# the field's own, and `/live-cyclone` served the at-rest spelling for
+# `first_timestamp`, `last_timestamp` and `data_through` while serving
+# `checked_at` as RFC 3339 in the same object — and disagreeing with `/track`
+# over a shared field name. That is the defect these two tests pin.
+
+AT_REST_ISO = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+RFC3339 = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+#: One real ATCF fix. Its at-rest `iso_time` is `2025-06-22 18:00:00`, which is
+#: exactly what must NOT reach a client.
+IO_FIX = "IO, 01, 2025062218, 01, TEST, 0, 152N, 845E, 45, 990, TS,"
+
+
+def test_at_rest_iso_time_is_the_ibtracs_spelling_in_both_storage_files():
+    """Every stored timestamp, in both committed files, matches one pattern.
+
+    Checked across the whole catalogue rather than a sample: a single endpoint
+    reading one storm is how a second spelling survives review, and the two
+    files have already disagreed about this case study once.
+    """
+    catalogue = json.loads(
+        (REPO_ROOT / "data" / "cyclones" / "catalogue.json").read_text()
+    )
+    assert catalogue["cyclones"], "nothing loaded — the test would pass vacuously"
+    stored = 0
+    for cyclone in catalogue["cyclones"]:
+        for waypoint in cyclone["waypoints"]:
+            assert AT_REST_ISO.match(waypoint["iso_time"]), (
+                cyclone["cyclone_id"],
+                waypoint["iso_time"],
+            )
+            stored += 1
+    assert stored >= len(catalogue["cyclones"]), "a cyclone with no waypoints"
+
+    track = json.loads((REPO_ROOT / "data" / "remal_track.geojson").read_text())
+    points = 0
+    for feature in track["features"]:
+        if feature["geometry"]["type"] != "Point":
+            continue
+        assert AT_REST_ISO.match(feature["properties"]["iso_time"]), (
+            feature["properties"]["iso_time"],
+        )
+        points += 1
+    assert points == 40, "the committed track no longer holds 40 fixes"
+
+
+def test_every_timestamp_a_client_sees_is_rfc3339():
+    """/track and /cyclones/{id}/track — both layers of the wire spelling."""
+    track = client.get("/track").json()
+    assert RFC3339.match(track["first_timestamp"]), track["first_timestamp"]
+    assert RFC3339.match(track["last_timestamp"]), track["last_timestamp"]
+    for waypoint in track["waypoints"]:
+        assert RFC3339.match(waypoint["timestamp"]), waypoint["timestamp"]
+
+    other = client.get(f"/cyclones/{OTHER_CYCLONE_ID}/track").json()
+    assert RFC3339.match(other["first_timestamp"]), other["first_timestamp"]
+    for waypoint in other["waypoints"]:
+        assert RFC3339.match(waypoint["timestamp"]), waypoint["timestamp"]
+
+
+def test_live_cyclone_serves_rfc3339_like_every_other_endpoint(monkeypatch):
+    """The endpoint that was wrong, driven through the real `probe()`.
+
+    A faked `LiveStatus` would prove nothing — it would bypass
+    `AtcfLiveSource.probe`, which is where the conversion happens. So the
+    registry's source is swapped for one whose transport returns a genuine ATCF
+    fix, and the whole path (`_attempt` -> `_record` -> the payload) runs for
+    real. `IO_FIX`'s at-rest spelling is `2025-06-22 18:00:00`, so the exact
+    expected wire value is known independently of the code under test.
+    """
+
+    def transport(url: str, timeout: float):
+        return 200, IO_FIX
+
+    monkeypatch.setattr(
+        registry(),
+        "_source",
+        AtcfLiveSource(endpoints=("https://example.test/x",), transport=transport),
+    )
+
+    body = client.get("/live-cyclone").json()
+    assert body["status"] == "available", body
+
+    cyclone = body["cyclone"]
+    assert cyclone["data_through"] == "2025-06-22T18:00:00Z"
+    for field in ("first_timestamp", "last_timestamp", "data_through"):
+        assert RFC3339.match(cyclone[field]), (field, cyclone[field])
+    # Same object, same spelling — these two used to differ.
+    assert RFC3339.match(body["checked_at"]), body["checked_at"]
+
+
+def test_the_converter_is_the_single_place_the_wire_spelling_is_decided():
+    """No second implementation of the conversion may appear.
+
+    Two functions that both "convert a timestamp" is how `/track` and
+    `/live-cyclone` came to disagree: each had its own, and only one of them
+    was called. The three call sites are named so a fourth has to be added
+    deliberately rather than by copying the two lines.
+    """
+    from backend.cyclones.base import iso_time_to_rfc3339
+
+    assert iso_time_to_rfc3339("2024-05-23 12:00:00") == "2024-05-23T12:00:00Z"
+    with pytest.raises(ValueError):
+        iso_time_to_rfc3339("2024-05-23T12:00:00Z")  # already the wire form
+    with pytest.raises(ValueError):
+        iso_time_to_rfc3339("25/05/2024 3pm")
+
+    # The track endpoints and the live source all reach for it; the raw
+    # `datetime.strptime` that used to sit in two places in main.py is gone.
+    main_src = (REPO_ROOT / "backend" / "main.py").read_text()
+    live_src = (REPO_ROOT / "backend" / "cyclones" / "live.py").read_text()
+    assert main_src.count("iso_time_to_rfc3339(") >= 2
+    assert live_src.count("iso_time_to_rfc3339(") == 3, "one call per wire field"
+    assert "strptime" not in main_src.split("class TrackDataError")[1], (
+        "a second timestamp parser was reintroduced below TrackDataError"
+    )
 
 
 # --------------------------------------------------------------------------

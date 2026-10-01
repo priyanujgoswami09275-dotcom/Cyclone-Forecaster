@@ -57,6 +57,7 @@ from backend.cyclones.base import (
     CycloneSource,
     CycloneWaypoint,
     LiveStatus,
+    iso_time_to_rfc3339,
     live_unavailable_reason,
 )
 
@@ -226,13 +227,21 @@ class AtcfLiveSource(CycloneSource):
                         "season": record.season,
                         "basin": record.basin,
                         "waypoint_count": len(record.waypoints),
-                        "first_timestamp": head.iso_time,
-                        "last_timestamp": tail.iso_time,
+                        # RFC 3339, like `checked_at` directly above and like
+                        # every timestamp `/track` serves. These used to be the
+                        # at-rest `YYYY-MM-DD HH:MM:SS` spelling, so one response
+                        # carried `checked_at: 2026-10-01T00:00:00Z` beside
+                        # `last_timestamp: 2026-10-01 00:00:00` and disagreed
+                        # with `/track` over a shared field name. The conversion
+                        # is `base.iso_time_to_rfc3339`, the same call the track
+                        # endpoints make.
+                        "first_timestamp": iso_time_to_rfc3339(head.iso_time),
+                        "last_timestamp": iso_time_to_rfc3339(tail.iso_time),
                         "latest_latitude": tail.latitude,
                         "latest_longitude": tail.longitude,
                         "latest_wind_kmph": tail.wind_kmph,
                         "latest_wind_reported": tail.wind_reported,
-                        "data_through": record.data_through,
+                        "data_through": iso_time_to_rfc3339(record.data_through),
                         "limitation": ATCF_LIMITATION,
                     },
                 )

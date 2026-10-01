@@ -59,7 +59,7 @@ from backend.cyclones.base import (
 )
 
 
-def _waypoint(iso_time: str = "2024-05-25T12:00:00Z", **overrides) -> CycloneWaypoint:
+def _waypoint(iso_time: str = "2024-05-25 12:00:00", **overrides) -> CycloneWaypoint:
     """One best-track fix, with field overrides, so a test reads as a delta."""
     fields = {
         "iso_time": iso_time,
@@ -86,7 +86,7 @@ _RECORD_FIELDS = {
     "observed": True,
     "waypoints": (
         _waypoint(),
-        _waypoint("2024-05-25T15:00:00Z", latitude=19.4, wind_kmph=None,
+        _waypoint("2024-05-25 15:00:00", latitude=19.4, wind_kmph=None,
                   wind_reported=False),
     ),
     "fetched_at": "2026-10-01T00:00:00Z",
@@ -112,14 +112,14 @@ def test_peak_wind_ignores_unreported_fixes():
     # A waypoint with wind_reported False must not contribute, and must not
     # become 0. This is the rule /track already implements (MEMORY.md §31).
     ws = (
-        CycloneWaypoint("2024-05-25T12:00:00Z", 19.2, 89.2, 35.0, True, None, "TS"),
-        CycloneWaypoint("2024-05-25T15:00:00Z", 19.4, 89.2, None, False, None, "TS"),
+        CycloneWaypoint("2024-05-25 12:00:00", 19.2, 89.2, 35.0, True, None, "TS"),
+        CycloneWaypoint("2024-05-25 15:00:00", 19.4, 89.2, None, False, None, "TS"),
     )
     assert peak_wind_kmph(ws) == 35.0
 
 
 def test_peak_wind_is_none_when_nothing_was_reported():
-    ws = (CycloneWaypoint("2024-05-25T12:00:00Z", 19.2, 89.2, None, False, None, "TS"),)
+    ws = (CycloneWaypoint("2024-05-25 12:00:00", 19.2, 89.2, None, False, None, "TS"),)
     assert peak_wind_kmph(ws) is None
 
 
@@ -133,7 +133,7 @@ def test_peak_wind_keeps_a_reported_zero():
     """
     ws = (
         _waypoint(wind_kmph=35.0, wind_reported=True),
-        _waypoint("2024-05-25T15:00:00Z", wind_kmph=0.0, wind_reported=True),
+        _waypoint("2024-05-25 15:00:00", wind_kmph=0.0, wind_reported=True),
     )
     assert peak_wind_kmph(ws) == 35.0
     assert peak_wind_kmph(ws[1:]) == 0.0
@@ -154,7 +154,7 @@ def test_peak_wind_ignores_an_unreported_zero():
     prediction that the storm does nothing.
     """
     unreported_zero = _waypoint(
-        "2024-05-25T15:00:00Z", wind_kmph=0.0, wind_reported=False
+        "2024-05-25 15:00:00", wind_kmph=0.0, wind_reported=False
     )
     ws = (_waypoint(wind_kmph=35.0, wind_reported=True), unreported_zero)
     assert peak_wind_kmph(ws) == 35.0
@@ -177,7 +177,7 @@ def test_peak_wind_ignores_a_non_finite_wind():
     owns rejecting it at the row, but the peak must not depend on it.
     """
     nan_fix = _waypoint(wind_kmph=float("nan"), wind_reported=True)
-    real = _waypoint("2024-05-25T15:00:00Z", wind_kmph=35.0, wind_reported=True)
+    real = _waypoint("2024-05-25 15:00:00", wind_kmph=35.0, wind_reported=True)
     assert peak_wind_kmph((real, nan_fix)) == 35.0
     assert peak_wind_kmph((nan_fix, real)) == 35.0
     # Alone, a NaN is "no measurement", not a measurement.

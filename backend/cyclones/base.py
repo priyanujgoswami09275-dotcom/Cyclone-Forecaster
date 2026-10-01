@@ -69,6 +69,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
+from datetime import datetime
 import math
 from typing import Literal, Protocol, runtime_checkable
 
@@ -147,11 +148,25 @@ class CycloneWaypoint:
     cache was keyed is exactly how a cache starts serving one storm's track
     under another storm's id.
 
-    `iso_time` is a UTC string ending in `Z` (`2024-05-25T12:00:00Z`) rather
-    than a `datetime`. The sources disagree on timezone and precision — IBTrACS
-    carries unzoned UTC to the minute, ATCF to the second — and normalising to
-    `datetime` here would push that decision into every parser and make it
-    invisible at the point it is made.
+    `iso_time` is a UTC **string**, not a `datetime`. The sources disagree on
+    timezone and precision — IBTrACS carries unzoned UTC to the minute, ATCF to
+    the second — and normalising to `datetime` here would push that decision
+    into every parser and make it invisible at the point it is made.
+
+    **One canonical rule, in two layers.**
+
+    *At rest* the spelling is IBTrACS's own `ISO_TIME`: `YYYY-MM-DD HH:MM:SS`,
+    UTC, **no `Z`** (`2024-05-25 12:00:00`). Both providers conform —
+    `atcf._timestamp_to_iso` turns ATCF's `YYYYMMDDHH` into exactly this rather
+    than inventing a third format — so the catalogue, the committed GeoJSON and
+    any two sources can be compared as plain strings, and they sort correctly.
+
+    *On the wire* the spelling is RFC 3339: `2024-05-25T12:00:00Z`. Converted in
+    exactly one place, `iso_time_to_rfc3339()` below, called only at the API
+    boundary. Every timestamp field a client sees is RFC 3339 — `/track`,
+    `/cyclones/{id}/track` and `/live-cyclone` agree — because two spellings of
+    one field name is a client parsing it one way against one endpoint and
+    another way against the next.
     """
 
     iso_time: str
@@ -175,6 +190,30 @@ class CycloneWaypoint:
         """Plain, JSON-serializable dict of the seven fields. T2 and T7 both
         serialize waypoints; neither should re-derive this."""
         return asdict(self)
+
+
+def iso_time_to_rfc3339(iso_time: str) -> str:
+    """The at-rest spelling -> RFC 3339 (`...Z`), or raise.
+
+    **The one converter.** `main._parse_track_timestamp` and `main._iso_z` (the
+    track endpoints) and `AtcfLiveSource` (the `/live-cyclone` payload) all call
+    this, so the wire format cannot drift between endpoints the way
+    `data/remal_track.geojson` once drifted from `data/cyclones/catalogue.json`
+    — two files describing one storm 11.1 kmph apart.
+
+    It raises rather than passing a malformed instant through. A timestamp that
+    is not in the at-rest form is a source that changed its format, and serving
+    it verbatim would put a second spelling on the wire, which is the defect
+    this function exists to make impossible.
+    """
+    text = str(iso_time).strip()
+    try:
+        parsed = datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError as exc:
+        raise ValueError(
+            f"iso_time {iso_time!r} is not the at-rest form '%Y-%m-%d %H:%M:%S'"
+        ) from exc
+    return parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 @dataclass(frozen=True)
