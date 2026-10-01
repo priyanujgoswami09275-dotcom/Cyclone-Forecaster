@@ -1785,6 +1785,44 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     bathymetry and storm size"* attached. **What was overstated was the method's
     sophistication, not its honesty about its own limits.**
 
+52. **NEW 2026-10-01 — the ML layer shipped a baseline because the model
+    failed, and a near-miss leak was caught before anyone saw its good score.**
+    `backend/ml/storm_peak_intensity.py` predicts a North Indian Ocean storm's
+    peak sustained wind. It scores leave-one-out MAE **21.94 kt against a flat
+    median's 21.03 kt** over 300 storms, R2 0.075. It loses to a one-line
+    constant, so the flat median is what ships, `estimate_source` reads
+    `median_baseline`, and `is_a_prediction` is false. The model's output is
+    kept as `model_kt_unused` — evidence preserved, never presented.
+
+    **The leak is the part worth remembering.** The first feature set included
+    `peak_before_kmph`: the running maximum immediately *before* each storm's
+    peak-wind fix. That scored **3.5 kt** against the baseline's 21.0 and looked
+    like a strong model. It was the target arriving through a side door —
+    correlated 0.971, within 5 kt of the answer for 89% of storms, and not
+    available at prediction time at all, since predicting a storm's peak is what
+    you cannot already know. Dropping it produced the 21.94 kt above. A model
+    this good-looking would have shipped, and it would have been the exact
+    "trained regression" overclaim §51 describes, arrived at honestly rather
+    than by accident.
+
+    **The general lesson: a score far better than a constant baseline is not
+    evidence of a good model, it is evidence of a leak.** The CLI now refuses to
+    write an artefact if any feature correlates with the target above 0.9, and
+    `tests/test_storm_peak_intensity.py` asserts the *absence* of the leak —
+    so re-adding the feature fails the suite instead of restoring a flattering
+    number.
+
+    **Terminology correction, user-approved:** the target is each storm's peak
+    `USA_WIND` over its lifetime, so the feature and module are named "storm
+    peak intensity", **not** "landfall intensity". The concrete reason is that
+    `LANDFALL` is not a boolean: the archive's own units row gives it as
+    **kilometres**, every value is a whole number, and 22,007 NI rows read `0`
+    while 33,988 carry a positive distance up to 1,463 km. It is built to look
+    like a flag. Treating it as one would stamp "at the coast" onto 38% of the
+    archive. Deriving a real landfall target needs a landfall window IBTrACS does
+    not provide.
+
+
 ## Environment / credentials status
 
 - [x] Google Earth Engine authenticated — done 2026-09-27, DEM fetched and committed
@@ -2048,6 +2086,55 @@ RUN_LIVE_CAPTURE=1 venv/bin/python -m backend.tools.capture_advisory
 ---
 
 ## Session log (newest entry first)
+
+### 2026-10-01 — OpenCode: Dynamic Cyclone System — Task 6, and a gate that failed
+
+**Scope.** Branch `feature/dynamic-cyclone-system`, Tasks 1-6 of 11. This entry
+covers Task 5 (cache isolation) and Task 6 (the ML layer).
+
+**Task 5 — commit `7ea54da`.** Every result cache was keyed on a category index
+alone, which is correct while Remal is the only storm in it and wrong the moment
+there is a second one — in the worst way, because a wrong cache key does not
+raise. All five caches now take a `ScenarioContext` keyed on
+`(cyclone_id, scenario_id)`. The numbers did not move: `?category=6` still
+returns 12 hospitals / 22 substations / 251 cut-off roads, surge 4.4719 m,
+2680.22 km², identical to the baseline captured before any of it. Four bugs
+surfaced while wiring it, all producing plausible wrong output rather than
+errors — most of them `category` being dropped from `_context`, which made every
+category return the default scenario's flood extent.
+
+**Task 6 — the deliverable is a negative result.** See "Flagged for review" §52
+for the full account. Short version: a ridge model on seven real IBTrACS
+features scores 21.94 kt LOOCV against a flat median's 21.03 kt, loses, and the
+median ships. It was **not** tuned until it passed.
+
+**Two things worth carrying forward.**
+
+*The leak nearly shipped.* `peak_before_kmph` — the running maximum before each
+storm's peak fix — scored 3.5 kt and looked excellent. It was the target itself,
+correlated 0.971. A general rule now enforced mechanically: **a model far better
+than a constant baseline is evidence of a leak, not of a good model.** The CLI
+aborts if any feature correlates with the target above 0.9, and a test asserts
+the leak stays out.
+
+*The figure guard was ported and immediately earned its keep.* Extracted to
+`tests/figure_guard.py` (now taking several test files, since a figure pinned in
+the IBTrACS suite is pinned), applied to the ML module, it caught three hand-
+counted errors in prose on its first run: `n = 299` when the truth is 300;
+`55,995` described as "rows populated" when it is rows carrying a numeric value;
+and the unit of `LANDFALL` given as nautical miles when the archive's own units
+row says kilometres. Six figures had already been wrong this way across Task 2.
+The mechanism is the only thing that works; self-audit by the author is not
+evidence.
+
+**Verified.** `venv/bin/python -m pytest -q` → **532 passed, 3 skipped, 0
+failures**. `python -m backend.data_pipeline.train_storm_peak_intensity` writes
+the artefact, prints the gate verdict and exits 0 on the failed gate.
+
+**Not verified / open.** Advisory rendering still unobserved live (Gemini free
+tier exhausted). The committed `data/remal_track.geojson` disagrees with
+IBTrACS v04r01 on five fixes — Task 7 must resolve rather than ship two Remals.
+Mobile tests not re-run this task (no mobile files touched).
 
 ### 2026-10-01 — OpenCode: the Web build rebuilt into the real product, and a real map
 

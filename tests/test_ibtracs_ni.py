@@ -46,16 +46,12 @@ This file owns what goes *into* one.
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import csv
-import io
 import json
 import os
-import re
 import subprocess
 import sys
-import tokenize
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1479,6 +1475,8 @@ def test_committed_catalogue_matches_the_code():
 # explicitly justified. That has no false-positive surface on writing style, and
 # it catches the class the suite previously could not see.
 
+from figure_guard import prose_figures  # noqa: E402  (sys.path set above)
+
 _HISTORICAL_PY = REPO_ROOT / "backend" / "cyclones" / "historical.py"
 _SELF_PATH = Path(__file__).name
 
@@ -1497,41 +1495,10 @@ FIGURE_ALLOWLIST: dict[str, str] = {
 }
 
 
-def _prose_figures(path: Path) -> list[tuple[str, int]]:
-    """Every 3+-character digit-run in `path`'s docstrings and comments.
-
-    Code string literals are excluded, which is what stops the check from
-    matching its own allowlist and its own assertion messages.
-    """
-    source = path.read_text()
-    spans: list[tuple[int, int]] = []
-
-    # Docstrings, via ast, so a figure in one is found without parsing prose.
-    tree = ast.parse(source)
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
-                                 ast.AsyncFunctionDef)):
-            continue
-        doc = ast.get_docstring(node, clean=False)
-        if doc is None:
-            continue
-        raw = node.body[0].value if node.body else None
-        if isinstance(raw, ast.Constant) and isinstance(raw.value, str):
-            line = getattr(raw, "lineno", 1)
-            spans.append((line, line + raw.value.count("\n")))
-
-    # Comments, via tokenize, which sees them without interpreting them.
-    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
-        if tok.type == tokenize.COMMENT:
-            spans.append((tok.start[0], tok.end[0]))
-
-    figures: list[tuple[str, int]] = []
-    for index, line in enumerate(source.splitlines(), start=1):
-        if not any(lo <= index <= hi for lo, hi in spans):
-            continue
-        for run in re.findall(r"\d[\d,]{2,}\.?\d*", line):
-            figures.append((run.rstrip("."), index))
-    return figures
+#: The extractor itself now lives in `tests/figure_guard.py`, because the ML
+#: module needs the same rule and a second copy would be a second thing to keep
+#: correct. The local name is kept so the bite test below reads unchanged.
+_prose_figures = prose_figures
 
 
 def test_every_measured_figure_in_this_module_is_pinned() -> None:

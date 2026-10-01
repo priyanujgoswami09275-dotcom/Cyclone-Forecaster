@@ -1,0 +1,58 @@
+{
+  "alpha": 2.4620924014946257,
+  "coefficients": [
+    -0.653297773703908,
+    -5.447711917064787,
+    -0.80128026562529,
+    -0.16213333958227238,
+    -13.548283490803033,
+    -1.5584368457129947,
+    -10.731808963836821
+  ],
+  "feature_names": [
+    "translation_speed_kmph",
+    "bearing_deg",
+    "distance_to_land_km",
+    "latitude",
+    "longitude",
+    "month",
+    "basin_distance_km"
+  ],
+  "feature_units": {
+    "basin_distance_km": "km from the study area's centre",
+    "bearing_deg": "degrees, from STORM_DIR",
+    "distance_to_land_km": "km, from DIST2LAND in nautical miles",
+    "latitude": "degrees north, at the storm's peak-wind fix",
+    "longitude": "degrees east, at the storm's peak-wind fix",
+    "month": "1-12, from ISO_TIME",
+    "translation_speed_kmph": "km/h, from IBTrACS STORM_SPEED in knots"
+  },
+  "intercept": 59.733333333333384,
+  "median_kt": 50.0,
+  "report": {
+    "baseline_mae_kt": 21.027,
+    "beats_baseline": false,
+    "limitation": "Leave-one-out cross-validation over 300 North Indian Ocean storms: mean absolute error 21.9 kt against a flat median baseline of 21.0 kt. This is a statistical estimate about past storms, not a forecast about any future one, and it is not the surge figure \u2014 that comes from the deterministic law and remains authoritative.",
+    "mae_kt": 21.944,
+    "n": 300,
+    "r2": 0.0753
+  },
+  "scaler_mean": [
+    15.964239999999991,
+    219.48333333333332,
+    495.1013333333334,
+    15.286333333333323,
+    80.31066666666663,
+    8.863333333333333,
+    1457.2104943658908
+  ],
+  "scaler_scale": [
+    7.7346816488506285,
+    124.97259588494677,
+    432.86205413836973,
+    4.580106973520256,
+    12.227518945213518,
+    2.8933237327029646,
+    1002.3987877779444
+  ]
+}
