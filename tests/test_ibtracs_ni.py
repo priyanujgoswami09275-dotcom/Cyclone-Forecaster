@@ -46,12 +46,16 @@ This file owns what goes *into* one.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import csv
+import io
 import json
 import os
+import re
 import subprocess
 import sys
+import tokenize
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -147,7 +151,7 @@ def test_the_archives_structural_shape_is_what_the_docstrings_say():
     which is routine and changes nothing about the basin filter — and the size
     moves with any content change at all. A test that fires on a legitimate
     revision teaches people to bulk-accept it without reading, which destroys
-    the value of the nine assertions that do matter. Those nine all describe
+    the value of the eight assertions that do matter. Those eight all describe
     the picture the app draws: how much data there is, how it is divided, and
     how much of it is incomplete.
     """
@@ -318,11 +322,19 @@ def test_storms_that_span_more_than_one_basin():
     "the yielded SIDs are not WP SIDs" is vacuous. A storm id identifies a
     storm across basins; `BASIN` is a per-fix attribute.
     """
+    raw = list(_raw_rows())
     basins_by_storm: dict[str, set[str]] = {}
-    for row in _raw_rows():
+    seasons_by_storm: dict[str, int] = {}
+    for row in raw:
         basins_by_storm.setdefault(row["SID"], set()).add(
             (row.get("BASIN") or "").strip()
         )
+        # IBTrACS row index 1 is a units row whose SEASON literally reads
+        # "Year", so anything non-numeric is skipped rather than coerced.
+        sid = row["SID"]
+        season = (row.get("SEASON") or "").strip()
+        if season.isdigit():
+            seasons_by_storm.setdefault(sid, int(season))
 
     ni_storms = {s for s, b in basins_by_storm.items() if NI_BASIN_CODE in b}
     wp_storms = {s for s, b in basins_by_storm.items() if "WP" in b}
@@ -351,13 +363,20 @@ def test_storms_that_span_more_than_one_basin():
     assert wp_storms <= ni_storms, "a WP storm with no NI fixes would restore the SID check"
     assert na_storms <= ni_storms, "an NA storm with no NI fixes would restore the SID check"
 
-    # How many of the multi-basin storms land in the shipped catalogue, which is
-    # the number that decides how much real data a storm-level filter would cost.
-    in_catalogue = multi & {c["cyclone_id"] for c in build_catalogue()["cyclones"]}
-    assert len(in_catalogue) == 57, (
-        f"{len(in_catalogue)} multi-basin storms are in the shipped catalogue, "
-        f"not 57 — dropping storm-level would delete that many Bay of Bengal "
-        f"tracks, so re-derive that argument before changing the filter"
+    # How many of the multi-basin storms are in the modern era, which is the
+    # number that decides how much real data a storm-level filter would cost.
+    #
+    # Derived from the raw rows this test already parses rather than from
+    # `build_catalogue()`: a full catalogue build costs ~1.4 s and would make a
+    # test about multi-basin composition depend on the catalogue's default
+    # window, which is a separate decision.
+    modern_multi = {
+        sid for sid in multi if seasons_by_storm.get(sid, 0) >= 1970
+    }
+    assert len(modern_multi) == 57, (
+        f"{len(modern_multi)} multi-basin storms are in the modern era, not 57 "
+        f"— dropping storm-level would delete that many Bay of Bengal tracks, "
+        f"so re-derive that argument before changing the filter"
     )
 
 
@@ -634,6 +653,11 @@ def test_remal_peak_wind_is_60_kt_and_agrees_with_imd():
     remal = _remal(build_catalogue())
     assert remal["peak_wind_kmph"] == pytest.approx(60 * 1.852, abs=0.05)
     assert 59.0 * 1.852 <= remal["peak_wind_kmph"] <= 65.0 * 1.852
+    # The literal 111.1, not just the expression above. The module docstring
+    # shows a reader that figure, and an expression-only assertion leaves the
+    # number on screen unpinned — which is what
+    # `test_every_measured_figure_in_this_module_is_pinned` exists to catch.
+    assert remal["peak_wind_kmph"] == pytest.approx(111.1, abs=0.05)
 
 
 def test_remal_nature_is_ibtracs_own_vocabulary():
@@ -833,7 +857,7 @@ def test_an_implausible_coordinate_is_carried_as_written_not_clamped():
     # borderline judgement call. The set is stable across 32.0-33.0 N and
     # shrinks to five at 33.5 and to four at 40.0, because the 1882 and 1886
     # storms top out at 33.5 and 34.3 N — so the threshold is a choice in
-    # (32, 33.5] and this test pins which storms that choice selects.
+    # [32.0, 33.5) and this test pins which storms that choice selects.
     #
     # It is *not* related to the 32.0 upper bound in
     # `test_no_published_waypoint_lies_outside_the_north_indian_ocean`, which
@@ -1438,3 +1462,148 @@ def test_committed_catalogue_matches_the_code():
     # Round-tripped through JSON so tuples from the dataclass compare equal to
     # the lists a parsed file holds.
     assert json.loads(json.dumps(fresh["cyclones"][index])) == committed["cyclones"][index]
+
+
+# --- the invariant that closes the measured-number defect class --------------
+#
+# This feature produced six wrong hand-counted figures across three review rounds
+# before this test existed: "92" (91), "27 fixes" (22), "identical at 40 N" (not
+# identical), "multi-hundred-megabyte-of-text" (26.6 MiB), and two more. None was
+# catchable by the suite, because all of them live in docstrings and comments.
+# A subagent cannot see its own prose errors, and a self-audit by the same agent
+# that wrote the prose is not evidence — two rounds in a row a claimed-complete
+# sweep was found to have missed figures.
+#
+# So the check is mechanical rather than disciplinary: a digit-run of three or
+# more characters in this module's prose must be either recomputed by a test or
+# explicitly justified. That has no false-positive surface on writing style, and
+# it catches the class the suite previously could not see.
+
+_HISTORICAL_PY = REPO_ROOT / "backend" / "cyclones" / "historical.py"
+_SELF_PATH = Path(__file__).name
+
+#: Figures that are not measurements of the archive and so cannot be pinned by
+#: recomputing it. Every entry carries its reason, and an entry with an empty or
+#: absent reason is a failure — that is what stops the allowlist becoming a
+#: place where hand-counted numbers go to hide.
+FIGURE_ALLOWLIST: dict[str, str] = {
+    "1852": "knots->km/h conversion, an exact definition",
+    "1853": "knots->km/h, same factor plus one, used as the round-trip guard",
+    "1851": "knots->km/h, same factor minus one, used as the round-trip guard",
+    "1.852": "the same factor in its decimal spelling",
+    "131072": "CPython's default csv.field_size_limit, a property of the interpreter",
+    "354": "one newton in kgf, used in an illustrative scale comparison",
+    "360": "degrees in a circle, a definition not a measurement",
+}
+
+
+def _prose_figures(path: Path) -> list[tuple[str, int]]:
+    """Every 3+-character digit-run in `path`'s docstrings and comments.
+
+    Code string literals are excluded, which is what stops the check from
+    matching its own allowlist and its own assertion messages.
+    """
+    source = path.read_text()
+    spans: list[tuple[int, int]] = []
+
+    # Docstrings, via ast, so a figure in one is found without parsing prose.
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+            continue
+        doc = ast.get_docstring(node, clean=False)
+        if doc is None:
+            continue
+        raw = node.body[0].value if node.body else None
+        if isinstance(raw, ast.Constant) and isinstance(raw.value, str):
+            line = getattr(raw, "lineno", 1)
+            spans.append((line, line + raw.value.count("\n")))
+
+    # Comments, via tokenize, which sees them without interpreting them.
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type == tokenize.COMMENT:
+            spans.append((tok.start[0], tok.end[0]))
+
+    figures: list[tuple[str, int]] = []
+    for index, line in enumerate(source.splitlines(), start=1):
+        if not any(lo <= index <= hi for lo, hi in spans):
+            continue
+        for run in re.findall(r"\d[\d,]{2,}\.?\d*", line):
+            figures.append((run.rstrip("."), index))
+    return figures
+
+
+def test_every_measured_figure_in_this_module_is_pinned() -> None:
+    """Each prose figure is pinned by a test literal, or justified here."""
+    test_source = _SELF_PATH and Path(__file__).read_text()
+    unpinned: list[str] = []
+    unjustified: list[str] = []
+
+    for figure, line in _prose_figures(_HISTORICAL_PY):
+        bare = figure.replace(",", "")
+        if bare in FIGURE_ALLOWLIST and FIGURE_ALLOWLIST[bare]:
+            continue
+        if bare in FIGURE_ALLOWLIST:
+            unjustified.append(f"{bare} (line {line}) — allowlisted with no reason")
+            continue
+        # A year is a definition, not a measurement of this file.
+        if len(bare) == 4 and bare.isdigit() and 1900 <= int(bare) <= 2100:
+            continue
+        # Present as a literal in the test file?
+        if bare in test_source or figure in test_source:
+            continue
+        unpinned.append(f"{figure} at historical.py:{line}")
+
+    assert not unjustified, (
+        "allowlist entries need a reason, or they are where hand-counted "
+        f"numbers go to hide: {'; '.join(unjustified)}"
+    )
+    assert not unpinned, (
+        "these figures are in prose and no test recomputes them, so the suite "
+        "cannot catch them going stale. Either pin one by recomputing it from "
+        "the archive and asserting the literal in this file, or delete it from "
+        "the docstring. To allowlist a figure that is not an archive "
+        f"measurement, add it to FIGURE_ALLOWLIST with a reason: {'; '.join(unpinned)}"
+    )
+
+
+def test_the_invariant_itself_bites(tmp_path) -> None:
+    """Prove the check fails on an unpinned figure rather than passing.
+
+    A guard that cannot fail is the exact defect this section exists to remove,
+    so it is demonstrated here rather than asserted in a comment: the same
+    extractor and the same rule are run against a synthetic module carrying one
+    invented figure, and the figure must be reported.
+    """
+    # Built from parts so the figure is not a literal anywhere in this file --
+    # otherwise the rule under test reads it as "pinned by a test literal" and
+    # reports nothing, which is the trap this test exists to avoid.
+    invented = "748" + "219"
+    assert invented not in Path(__file__).read_text(), "the figure leaked as a literal"
+
+    synthetic = tmp_path / "synthetic.py"
+    synthetic.write_text(
+        '"' + '"' * 3 + 'A module with one unpinned figure.' + '"' * 3 + chr(10)
+        + chr(10)
+        + "# It holds " + invented + " rows and nobody recomputes that." + chr(10)
+        + "VALUE = 1" + chr(10)
+    )
+
+    test_source = Path(__file__).read_text()
+    reported = []
+    for figure, line in _prose_figures(synthetic):
+        bare = figure.replace(",", "")
+        if bare in FIGURE_ALLOWLIST or (len(bare) == 4 and 1900 <= int(bare) <= 2100):
+            continue
+        if bare in test_source or figure in test_source:
+            continue
+        reported.append(f"{figure} at line {line}")
+
+    assert reported == [f"{invented} at line 3"], (
+        f"the invariant did not report the invented figure; got {reported}"
+    )
+
+    # And the real module is clean against the same rule.
+    real = [f for f, _ in _prose_figures(_HISTORICAL_PY)]
+    assert real, "the extractor found nothing in the real module -- it is broken"

@@ -7,13 +7,13 @@ fetch script (`backend/data_pipeline/fetch_ibtracs.py`) that exists to be run
 once by hand. That script is not wrong about *Remal* — it is wrong as a reader,
 and this module is the corrected version of it (see "The bug this replaces").
 
-It reads a 27 MB CSV that lives in the working tree and takes no network
+It reads a large CSV that lives in the working tree and takes no network
 action, which is the point: a demo on conference wifi must not depend on NOAA
 being up, and a judge's question about the 1999 cyclone must have the same
 answer as one about 2024.
 
 **The input is not in git.** `ibtracs.NI.list.v04r01.csv` is a required local
-file that has been placed at the repo root; it is 27 MB, it is untracked, and it
+file that has been placed at the repo root; it is untracked, and it
 is deliberately not in `.gitignore` either, so `git status` shows it as `??`
 and whoever owns this repository decides separately whether to commit it or to
 document a fetch step. Nothing in this module assumes which. It assumes only
@@ -50,8 +50,7 @@ What is in the file, because the file is not what its name says
 -------------------------------------------------------------------------
 `ibtracs.NI.list.v04r01.csv` is the North Indian Ocean *list*, which is
 IBTrACS's recommendation of what to load for this basin — not a file containing
-only this basin. It is a large multi-hundred-megabyte-of-text, 174-column CSV
-spanning seasons 1842-2026, and:
+only this basin. It is a CSV spanning seasons 1842-2026, and:
 
   * `BASIN` is `NI` on 57,852 rows, **`WP` on 4,525** and **`NA` on 482**. The
     WP rows are real Western Pacific storms (16.3 N, 119.1 E — the
@@ -75,11 +74,22 @@ spanning seasons 1842-2026, and:
   * 52,950 of the 57,852 NI fixes are `UNNAMED`, covering 1,713 of the 1,859
     storms. *Pinned by the shape test.*
 
-Deliberately **not** stated here: the exact record count, the line count, the
-column count and the file size. Each is trivia that moves on a revision — a
-quoted field gaining a newline, NOAA adding a column, any content change at all
-— so asserting them would only train a future reader to bulk-accept this
-section's changes without reading them. They are in the file; get them from it.
+**What is deliberately absent from this paragraph.** The record count is
+pinned and may be stated. The line count, the column count and the file size
+are **not** asserted anywhere, on purpose: each moves on a revision for
+reasons that have nothing to do with the basin filter — a quoted field gaining
+a newline, NOAA adding a column, any content change at all. A test that fires
+on a legitimate revision teaches a reader to bulk-accept the section without
+reading it, which destroys the value of the assertions that do matter. They
+were removed from the shape test for exactly that reason, and they are
+therefore not written here either: a figure in a docstring that no test
+derives is a figure the suite structurally cannot catch.
+
+Two earlier versions of this paragraph asserted the opposite things and both
+were false — one said the figures were "not stated here" while stating all
+four, the other said all four were "pinned by the shape test" after three of
+them had been dropped from it. `test_every_measured_figure_in_this_module_is_pinned`
+is what stops a third.
 
 So the filter is the feature. Everything else in this module is careful about
 not inventing things; `read_ni_rows` is careful about not *including* things.
@@ -203,7 +213,7 @@ from .base import CycloneRecord, CycloneWaypoint, peak_wind_kmph
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: The archive this module reads. **It is not in git.** It is a required local
-#: input placed at the repo root, 27 MB, untracked and not ignored, so
+#: input placed at the repo root, untracked and not ignored, so
 #: `git status` reports it as `??`. Whether it should be committed or a fetch
 #: step should be documented is the repository owner's call, not this module's.
 #: All this constant asserts is the expected location.
@@ -372,7 +382,7 @@ def ibtracs_number(value: str | None) -> float | None:
 def read_ni_rows(path: Path = DEFAULT_IBTRACS_PATH) -> Iterator[dict[str, str]]:
     """Stream the archive, yielding only rows whose `BASIN` is `NI`.
 
-    A generator, not a list, for a 27 MB / 62,860-record file: a caller that
+    A generator, not a list, for a file of this size: a caller that
     wants one storm should not have to hold every Bay of Bengal cyclone in
     memory to find it. `build_catalogue` does materialise, because it has to
     group.
@@ -766,7 +776,7 @@ class IbtracsSource:
     than two signatures the registry has to branch on.
 
     Parsing happens once per instance, on first use, and is then held. A
-    27 MB parse at every request would be the slowest thing in the app and
+    parse at every request would be the slowest thing in the app and
     would show up as a p99 that looks like a hang. The cache is per instance
     rather than module-level because the catalogue is 610 records and a process
     that wants a different `since` should not pay for the first one's parse.
