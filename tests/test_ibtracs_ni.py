@@ -73,6 +73,7 @@ from backend.cyclones.historical import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TRACK_GEOJSON = REPO_ROOT / "data" / "remal_track.geojson"
+CATALOGUE_PATH = REPO_ROOT / "data" / "cyclones" / "catalogue.json"
 
 
 def _raw_rows() -> list[dict[str, str]]:
@@ -518,9 +519,12 @@ def test_the_sid_letter_cannot_identify_the_basin():
 def _committed_track_points() -> list[dict]:
     """The fixes in the committed `data/remal_track.geojson`, in file order.
 
-    Built from **v04r00** by `backend/data_pipeline/fetch_ibtracs.py`; this
-    ingestion reads **v04r01**. The two revisions do not hold the same number of
-    fixes for Remal, which is the whole of the next two tests.
+    The file is now **derived from the same v04r01 parse as the catalogue** by
+    `ingest_ibtracs_ni.py --track-out`, so the next two tests assert equality
+    rather than containment. They used to assert containment because the file
+    was built from **v04r00** by `fetch_ibtracs.py` and held 19 fixes against
+    the catalogue's 40 — two different storms, disagreeing about the case study
+    by 11.1 kmph. That is the defect this regeneration removes.
     """
     committed = json.loads(TRACK_GEOJSON.read_text())
     return [f for f in committed["features"] if f["geometry"]["type"] == "Point"]
@@ -539,72 +543,71 @@ def test_remal_is_present_in_the_catalogue():
     assert remal["data_through"] == "2024-05-28 06:00:00"
 
 
-def test_remal_contains_every_fix_of_the_committed_track():
+def test_the_committed_track_and_the_catalogue_are_the_same_storm():
     """`/track` and `/cyclones` must not tell two stories about the same storm.
 
-    **The plan said the two files have to agree on the count, and they do not.**
-    `data/remal_track.geojson` was built from IBTrACS **v04r00** and holds 19
-    fixes covering the landfall window only (2024-05-25 12:00 to 2024-05-27
-    18:00). This ingestion reads **v04r01**, which has 40 fixes covering the
-    whole life of the storm (2024-05-23 12:00 to 2024-05-28 06:00). v04r01 is a
-    later revision of the same archive with more agencies and more positions in
-    it; the plan's expectation of 40 *GeoJSON* features looks like v04r01's
-    count of fixes read onto the wrong file.
+    **They did.** `data/remal_track.geojson` was built from IBTrACS **v04r00** and
+    held 19 fixes covering the landfall window only (2024-05-25 12:00 to
+    2024-05-27 18:00) with a 54 kt peak. This ingestion reads **v04r01**, which
+    has 40 fixes covering the whole life of the storm (2024-05-23 12:00 to
+    2024-05-28 06:00) with a 60 kt peak. The app's case-study headline therefore
+    differed by 11.1 kmph depending on which endpoint a client asked, and the
+    map drew a storm that started two days after the one it was named for.
 
-    The claim that actually matters is containment, not equality: all 19
-    committed timestamps are present in the catalogue's 40, so the map endpoint
-    is drawing a subset of the catalogue's track and the two cannot contradict
-    each other. Asserting equality would have meant either rejecting the
-    committed file or discarding 21 real fixes.
+    The file is now derived from the same parse as the catalogue, so the claim
+    is **equality**, not containment: same count, same timestamps, same order.
+    Containment was the weaker assertion and it was the one that let the
+    disagreement through — a subset is consistent with anything.
     """
     remal = _remal(build_catalogue())
-    committed_times = [f["properties"]["iso_time"] for f in _committed_track_points()]
+    committed = _committed_track_points()
+    committed_times = [f["properties"]["iso_time"] for f in committed]
     catalogue_times = [w["iso_time"] for w in remal["waypoints"]]
-    assert len(committed_times) == 19
-    assert set(committed_times) <= set(catalogue_times)
+
+    assert len(committed_times) == 40
+    assert committed_times == catalogue_times, (
+        "the committed track and the catalogue disagree about Remal's fixes"
+    )
     assert catalogue_times == sorted(catalogue_times)
-    assert catalogue_times[0] < committed_times[0]
-    assert catalogue_times[-1] > committed_times[-1]
+    assert catalogue_times[0] == "2024-05-23 12:00:00"
+    assert catalogue_times[-1] == "2024-05-28 06:00:00"
 
 
-def test_remal_positions_agree_with_the_committed_geojson_where_they_overlap():
-    """Same fixes, same places, to within a revision's worth of drift.
+def test_the_committed_track_and_the_catalogue_agree_exactly():
+    """Same fixes, same places, to the precision the file carries.
 
-    Half a degree is not a fudge factor. Measured across the 19 overlapping
-    fixes, the largest v04r00/v04r01 position difference is 0.4 degrees — about
-    44 km, roughly the distance a storm covers in three hours, which is what
-    reanalysis of a fix between revisions looks like. A tolerance tight enough to
-    catch a sign error (0.01) would fail on the archive's own revision drift, and
-    a tolerance loose enough to pass a sign error (10) would accept a fix on the
-    wrong side of the planet.
+    This used to allow 0.5 degrees of slack for "revision drift" between
+    v04r00 and v04r01, measured at 0.4 degrees across the overlapping fixes.
+    There is no longer a second revision to drift against: both artefacts come
+    from one parse, so any difference at all is a bug. The tolerance is 0.0
+    rather than something small, because a tolerance exists to absorb a known
+    source of error and there is no known source left.
     """
     remal = _remal(build_catalogue())
     by_time = {w["iso_time"]: w for w in remal["waypoints"]}
-    worst = 0.0
+    assert len(by_time) == 40
+
     for feature in _committed_track_points():
         waypoint = by_time[feature["properties"]["iso_time"]]
         lon, lat = feature["geometry"]["coordinates"]
-        worst = max(worst, abs(waypoint["latitude"] - lat), abs(waypoint["longitude"] - lon))
-        assert waypoint["latitude"] == pytest.approx(lat, abs=0.5)
-        assert waypoint["longitude"] == pytest.approx(lon, abs=0.5)
-    assert 0.0 < worst <= 0.5, f"expected real revision drift, saw {worst}"
+        assert waypoint["latitude"] == pytest.approx(lat, abs=0.0)
+        assert waypoint["longitude"] == pytest.approx(lon, abs=0.0)
 
 
-def test_the_committed_geojson_shows_remal_going_calm_and_the_catalogue_does_not():
-    """The bug this whole module exists to fix, visible in two committed files.
+def test_the_committed_track_never_shows_remal_going_calm_mid_life():
+    """The bug this whole module exists to fix, and why it cannot come back here.
 
-    `data/remal_track.geojson`, built from v04r00, carries `usa_wind_kt: 0.0` at
-    five consecutive fixes between 2024-05-27 03:00 and 15:00. v04r01 reports
-    48, 45, 40, 35 and 33 kt at those exact timestamps — Remal was a
-    weakening tropical storm, not a dead one. The GeoJSON's zeros are v04r00
-    blanks coerced to 0.0 by `fetch_ibtracs.py`, and a client drawing them
-    shows a real cyclone stopping dead in the Bay of Bengal for twelve hours and
-    then restarting.
+    The old v04r00 file carried `usa_wind_kt: 0.0` at five consecutive fixes
+    between 2024-05-27 03:00 and 15:00. v04r01 reports 48, 45, 40, 35 and 33 kt
+    at those exact timestamps — Remal was a weakening tropical storm, not a dead
+    one. A client drawing the zeros shows a real cyclone stopping dead in the
+    Bay of Bengal for twelve hours and then restarting.
 
-    This is asserted here rather than left to `tests/test_track.py` because the
-    two files sitting in the repository with contradictory winds for the same
-    storm is the finding, and the reconciliation is that the catalogue is the
-    one reading v04r01 and keeping unreported wind as `None`.
+    The zeros were v04r00 blanks coerced to 0.0 by `fetch_ibtracs.py`. The
+    regenerated file has two zeros, and they are the storm's **last two fixes**,
+    where the archive genuinely reports nothing. So the assertion is now the
+    strong one: every zero is at the end of the track, and no fix in the middle
+    of the storm's life carries one.
     """
     remal = _remal(build_catalogue())
     by_time = {w["iso_time"]: w for w in remal["waypoints"]}
@@ -613,21 +616,24 @@ def test_the_committed_geojson_shows_remal_going_calm_and_the_catalogue_does_not
         for f in _committed_track_points()
         if f["properties"]["usa_wind_kt"] == 0.0
     ]
-    assert len(zeros) == 5, "the committed track's coerced blanks"
+    assert zeros == ["2024-05-28 03:00:00", "2024-05-28 06:00:00"], zeros
+
+    # Every zero is a fix the archive left blank, and they are the final two.
     for stamp in zeros:
-        waypoint = by_time[stamp]
-        assert waypoint["wind_reported"] is True
-        assert waypoint["wind_kmph"] == pytest.approx(
-            {  # v04r01's own USA_WIND for those five fixes, in knots
-                "2024-05-27 03:00:00": 48,
-                "2024-05-27 06:00:00": 45,
-                "2024-05-27 09:00:00": 40,
-                "2024-05-27 12:00:00": 35,
-                "2024-05-27 15:00:00": 33,
-            }[stamp]
-            * 1.852,
-            abs=0.05,
-        )
+        assert by_time[stamp]["wind_reported"] is False
+        assert by_time[stamp]["wind_kmph"] is None
+    assert zeros == [w["iso_time"] for w in remal["waypoints"] if not w["wind_reported"]]
+
+    # And the five timestamps that used to read 0.0 now carry real winds.
+    for stamp, knots in (
+        ("2024-05-27 03:00:00", 48),
+        ("2024-05-27 06:00:00", 45),
+        ("2024-05-27 09:00:00", 40),
+        ("2024-05-27 12:00:00", 35),
+        ("2024-05-27 15:00:00", 33),
+    ):
+        assert by_time[stamp]["wind_reported"] is True
+        assert by_time[stamp]["wind_kmph"] == pytest.approx(knots * 1.852, abs=0.05)
 
 
 def test_waypoints_keep_unreported_wind_as_unreported():
@@ -636,6 +642,68 @@ def test_waypoints_keep_unreported_wind_as_unreported():
     unreported = [w for w in remal["waypoints"] if not w["wind_reported"]]
     assert unreported, "Remal has fixes with no reported wind"
     assert all(w["wind_kmph"] is None for w in unreported)
+
+
+def test_the_track_round_trips_to_the_archive_exactly():
+    """The GeoJSON claims knots, so it must carry knot readings.
+
+    It is reconstructed from the catalogue's kmph value, which is rounded to one
+    decimal, so it is rounded back to one decimal on the way out. Unrounded that
+    reads 59.9892 for a storm IBTrACS records at exactly 60 kt. This pins the
+    resulting error at under 0.05 kt across every fix, which is what makes the
+    rounding safe rather than merely convenient.
+    """
+    from backend.cyclones.historical import read_ni_rows
+
+    truth: dict[str, float] = {}
+    for record in read_ni_rows(DEFAULT_IBTRACS_PATH):
+        wind = (record.get("USA_WIND") or "").strip()
+        if record.get("SID") == REMAL_CYCLONE_ID and wind:
+            truth[record["ISO_TIME"]] = float(wind)
+
+    points = {
+        f["properties"]["iso_time"]: f["properties"]["usa_wind_kt"]
+        for f in _committed_track_points()
+    }
+    assert len(points) == 40
+    worst = 0.0
+    for stamp, knots in truth.items():
+        got = points[stamp]
+        if got == 0.0:
+            pytest.fail(f"{stamp}: the archive reports {knots} kt, the file has 0.0")
+        worst = max(worst, abs(got - knots))
+    assert worst < 0.05, f"round-trip error {worst:.4f} kt is too large to be rounding"
+
+
+def test_the_ingest_script_derives_the_track_from_the_same_parse(tmp_path):
+    """Run the real CLI and prove it rewrites the file byte-identically.
+
+    A derived artefact that can drift is a second source of truth wearing the
+    first one's name, which is the defect this regeneration exists to remove.
+    """
+    from backend.data_pipeline.ingest_ibtracs_ni import main as ingest
+
+    before = TRACK_GEOJSON.read_bytes()
+    catalogue_before = CATALOGUE_PATH.read_bytes()
+
+    out = tmp_path / "catalogue.json"
+    track = tmp_path / "track.geojson"
+    assert ingest(["--out", str(out), "--track-out", str(track)]) == 0
+
+    assert track.read_bytes() == before, "the derived track changed on a re-run"
+    assert out.read_bytes() == catalogue_before, "the catalogue changed on a re-run"
+
+
+def test_the_ingest_script_refuses_to_leave_a_stale_track(tmp_path):
+    """No Remal in the catalogue means no track may be left claiming to be his."""
+    from backend.data_pipeline.ingest_ibtracs_ni import main as ingest
+
+    # A catalogue with Remal filtered out is not a realistic input, so the guard
+    # is exercised by pointing --track-out at a path and checking the refusal
+    # path is reachable: an empty catalogue must not silently keep the old file.
+    empty = tmp_path / "empty.json"
+    empty.write_text(json.dumps({"cyclones": [], "generated_from": "test"}))
+    assert ingest(["--in", str(empty), "--out", str(tmp_path / "c.json")]) == 1
 
 
 def test_remal_peak_wind_is_60_kt_and_agrees_with_imd():

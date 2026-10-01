@@ -141,7 +141,10 @@ class TestCommittedFile:
     def test_identity_and_provenance_survive_the_parse(self, track):
         assert track["name"] == "REMAL"
         assert track["season"] == "2024"
-        assert track["source"] == "IBTrACS v04r00"
+        # v04r01, not the v04r00 this file used to carry. The committed GeoJSON is
+        # now derived from the same parse as the catalogue, so the two cannot
+        # disagree about which archive they came from.
+        assert track["source"] == "IBTrACS v04r01"
         assert track["wind_units"] == "knots"
         assert track["timezone"] == "UTC"
 
@@ -166,10 +169,17 @@ class TestCommittedFile:
             assert segment["longitude"] == waypoint["longitude"]
 
     def test_coordinates_are_in_the_bay_of_bengal(self, track):
-        """Not a tautology: lat/lon transposition is silent everywhere."""
+        """Not a tautology: lat/lon transposition is silent everywhere.
+
+        The bounds moved when the file was regenerated from v04r01. The old
+        v04r00 file began at 18.8 N because it only covered the landfall window;
+        v04r01 includes the formation at 13.6 N. A transposition still fails
+        outright — 86.6 as a *latitude* is nowhere near any ocean — which is the
+        property this test is actually for.
+        """
         for waypoint in track["waypoints"]:
-            assert 18.0 <= waypoint["latitude"] <= 25.0
-            assert 88.0 <= waypoint["longitude"] <= 91.0
+            assert 10.0 <= waypoint["latitude"] <= 26.0
+            assert 85.0 <= waypoint["longitude"] <= 93.0
 
     def test_sequence_is_dense_and_ordered(self, track):
         assert [w["sequence"] for w in track["waypoints"]] == list(

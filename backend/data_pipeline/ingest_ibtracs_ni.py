@@ -59,6 +59,7 @@ from backend.cyclones.base import CycloneSource
 from backend.cyclones.historical import (
     DEFAULT_IBTRACS_PATH,
     IBTRACS_SOURCE_ID,
+    KNOTS_TO_KMPH,
     NI_BASIN_CODE,
     REMAL_CYCLONE_ID,
     IbtracsSource,
@@ -151,7 +152,96 @@ def build_parser() -> argparse.ArgumentParser:
             "taking it from the input file's mtime. Format: 2026-10-01T00:00:00Z"
         ),
     )
+    parser.add_argument(
+        "--track-out",
+        type=Path,
+        default=TRACK_PATH,
+        help=(
+            "also write the case-study track GeoJSON here, derived from the same "
+            "parse as the catalogue. This is how /track and /cyclones/{id}/track "
+            "are kept from disagreeing about Remal."
+        ),
+    )
+    parser.add_argument(
+        "--no-track",
+        action="store_true",
+        help="write only the catalogue, leaving the existing track GeoJSON alone",
+    )
     return parser
+
+
+#: The archive revision the catalogue and the track are both derived from. Spelled
+#: out here because `historical.py` exposes `IBTRACS_SOURCE_ID` for machine use and
+#: this string is what a human reads in a GeoJSON property.
+ARCHIVE_VERSION = "IBTrACS v04r01"
+
+#: Where `/track`'s GeoJSON lives. Retained as a file because `main.py`'s
+#: `load_track()` and the mobile map both read it, and both predate the catalogue.
+TRACK_PATH = REPO_ROOT / "data" / "remal_track.geojson"
+
+
+def remal_track_geojson(record: dict) -> dict:
+    """The case-study record as the legacy track GeoJSON, in knots.
+
+    **Same shape as the file `fetch_ibtracs.py` used to write** — one LineString
+    plus one Point per fix — so `load_track()` and the mobile map keep working
+    unchanged. Only the provenance and the contents differ.
+
+    `usa_wind_kt` is `0.0` where the archive reported nothing, which is how
+    IBTrACS encodes a blank. That is the encoding the parser downstream already
+    exists to undo: `load_track()` turns a `0.0` into `wind_kt: null` plus
+    `wind_reported: false`, so an unreported fix is never drawn as a calm one.
+
+    This function exists because the committed file was built from IBTrACS
+    **v04r00** while the catalogue is built from **v04r01**, and the two
+    described different storms: 19 fixes spanning 2024-05-25 to 2024-05-27 with a
+    54 kt peak, against 40 fixes spanning 2024-05-23 to 2024-05-28 with a 60 kt
+    peak. `/track` and `/cyclones/{id}/track` would then have disagreed about the
+    case study by 11.1 kmph. Deriving both from one parse makes that impossible
+    to reintroduce by accident.
+    """
+    waypoints = record["waypoints"]
+    features: list[dict] = [
+        {
+            "type": "Feature",
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[w["longitude"], w["latitude"]] for w in waypoints],
+            },
+            "properties": {
+                "name": record["name"],
+                "season": str(record["season"]),
+                "source": ARCHIVE_VERSION,
+                "wind_units": "knots",
+            },
+        }
+    ]
+    for waypoint in waypoints:
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [waypoint["longitude"], waypoint["latitude"]],
+                },
+                "properties": {
+                    "iso_time": waypoint["iso_time"],
+                    # Reconstructed from the catalogue's kmph value, which is
+                    # rounded to one decimal, so it is rounded back to one
+                    # decimal here. Unrounded this reads 59.9892 for a storm
+                    # IBTrACS records at exactly 60 kt — a file whose
+                    # `wind_units` says knots should not carry a value that is
+                    # not a knot reading. `test_the_track_round_trips_to_the_
+                    # archive` pins the resulting error at under 0.05 kt.
+                    "usa_wind_kt": (
+                        round(waypoint["wind_kmph"] / KNOTS_TO_KMPH, 1)
+                        if waypoint["wind_kmph"] is not None
+                        else 0.0
+                    ),
+                },
+            }
+        )
+    return {"type": "FeatureCollection", "features": features}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -208,6 +298,25 @@ def main(argv: list[str] | None = None) -> int:
         handle.write("\n")
 
     remal = next((c for c in cyclones if c["cyclone_id"] == REMAL_CYCLONE_ID), None)
+
+    if not args.no_track:
+        if remal is None:
+            print(
+                f"error: {REMAL_CYCLONE_ID} is not in the catalogue, so the track "
+                f"GeoJSON cannot be derived from it. Refusing to leave a stale one "
+                f"in place next to a catalogue that no longer contains it.",
+                file=sys.stderr,
+            )
+            return 1
+        track_path: Path = args.track_out
+        track_path.parent.mkdir(parents=True, exist_ok=True)
+        with track_path.open("w", encoding="utf-8", newline="\n") as handle:
+            # Legacy shape, so no newline-key sorting: the file is diffed by
+            # humans against the map, and key order carries no meaning here.
+            json.dump(remal_track_geojson(remal), handle, indent=2)
+            handle.write("\n")
+        print(f"wrote   {track_path} — {len(remal['waypoints'])} fixes, same parse")
+
     print(
         f"source  {catalogue['generated_from']} "
         f"(basin {SUPPORTED_BASIN}, season >= {args.since})"
