@@ -201,6 +201,11 @@ The vocabulary every later task speaks. Nothing else can be written until this e
 
 **Interfaces:**
 - Consumes: nothing.
+
+**Import path.** The repo's `conftest.py` puts the **repo root** on `sys.path`,
+and all eleven existing test modules import `backend.*`. So every module here
+is `backend.cyclones.base` — **not** `cyclones.base`. The same holds for
+`backend.weather.open_meteo` and `backend.ml.storm_peak_intensity`.
 - Produces:
   - `CycloneWaypoint(iso_time: str, latitude: float, longitude: float, wind_kmph: float | None, wind_reported: bool, pressure_hpa: float | None, nature: str | None) -> CycloneWaypoint` (frozen dataclass)
   - `CycloneRecord(cyclone_id: str, name: str, season: int, basin: str, subbasin: str | None, source: str, observed: bool, waypoints: tuple[CycloneWaypoint, ...], fetched_at: str, data_through: str | None, peak_wind_kmph: float | None, limitation: str) -> CycloneRecord` (frozen dataclass)
@@ -247,7 +252,7 @@ def test_live_unavailable_reason_names_the_limitation_and_promises_no_substitute
 - [ ] **Step 2: Run and confirm it fails**
 
 Run: `venv/bin/python -m pytest tests/test_cyclones_base.py -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'cyclones'`
+Expected: FAIL — `ModuleNotFoundError: No module named 'backend.cyclones'`
 
 - [ ] **Step 3: Implement `backend/cyclones/base.py`**
 
@@ -367,7 +372,7 @@ def test_a_wp_row_in_the_source_is_never_yielded():
 - [ ] **Step 2: Run and confirm it fails**
 
 Run: `venv/bin/python -m pytest tests/test_ibtracs_ni.py -q`
-Expected: FAIL — `ModuleNotFoundError`
+Expected: FAIL — `ModuleNotFoundError: No module named 'backend.cyclones'`
 
 - [ ] **Step 3: Implement `backend/cyclones/historical.py`**
 
@@ -475,7 +480,7 @@ def test_wind_never_invents_a_value_for_a_blank_field():
 - [ ] **Step 2: Run and confirm it fails**
 
 Run: `venv/bin/python -m pytest tests/test_atcf.py -q`
-Expected: FAIL — `ModuleNotFoundError`
+Expected: FAIL — `ModuleNotFoundError: No module named 'backend.cyclones.atcf'`
 
 - [ ] **Step 3: Implement `backend/cyclones/atcf.py`**
 
@@ -562,7 +567,7 @@ async def test_every_endpoint_is_tried_before_giving_up():
 - [ ] **Step 7: Run and confirm it fails**
 
 Run: `venv/bin/python -m pytest tests/test_live_source.py -q`
-Expected: FAIL — `ModuleNotFoundError`
+Expected: FAIL — `ModuleNotFoundError: No module named 'backend.cyclones.live'`
 
 - [ ] **Step 8: Implement `backend/cyclones/live.py`**
 
@@ -650,7 +655,7 @@ def test_missing_variable_in_the_payload_is_not_zero():
 - [ ] **Step 2: Run and confirm it fails**
 
 Run: `venv/bin/python -m pytest tests/test_open_meteo.py -q`
-Expected: FAIL — `ModuleNotFoundError`
+Expected: FAIL — `ModuleNotFoundError: No module named 'backend.weather.open_meteo'`
 
 - [ ] **Step 3: Implement**
 
@@ -748,7 +753,8 @@ def test_an_unknown_cyclone_id_falls_back_to_remal_and_says_so():
 - [ ] **Step 2: Run and confirm it fails**
 
 Run: `venv/bin/python -m pytest tests/test_scenarios.py tests/test_cache_isolation.py -q`
-Expected: FAIL — the scenario module is missing and `main.py`'s caches are category-keyed
+Expected: FAIL — `ImportError` for `backend.cyclones.scenarios`, and the
+cache-isolation tests fail on `main.py`'s caches being category-keyed
 
 - [ ] **Step 3: Implement `backend/cyclones/scenarios.py`**
 
@@ -870,7 +876,7 @@ def test_prediction_is_bounded_by_the_training_range():
 - [ ] **Step 2: Run and confirm it fails**
 
 Run: `venv/bin/python -m pytest tests/test_storm_peak_intensity.py -q`
-Expected: FAIL — `ModuleNotFoundError`
+Expected: FAIL — `ModuleNotFoundError: No module named 'backend.ml.storm_peak_intensity'`
 
 - [ ] **Step 3: Implement `build_training_set`**
 
