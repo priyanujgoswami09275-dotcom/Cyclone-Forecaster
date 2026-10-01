@@ -512,8 +512,25 @@ async def test_http_403_yields_live_unavailable_not_a_substitute():
     st = await src.probe()
     assert st.status == "live_unavailable"
     assert st.http_status == 403
-    assert st.reason and st.reason != ""
+    # The promise, not just any non-empty string. A diagnostic alone would satisfy
+    # `st.reason != ""` while telling a judge nothing about what is NOT being shown.
+    assert LIVE_UNAVAILABLE_REASON in st.reason
+    assert st.checked_at in st.reason
+    # And the engineering detail is present alongside it, not instead of it.
+    assert "403" in st.reason
     assert await src.fetch() is None      # NOT a historical record
+
+
+async def test_the_reason_carries_the_promise_on_every_failure_state():
+    # `no_active_storm` is the state most likely to be misread as a working feed.
+    for status, body in (("live_unavailable", "403"), ("no_active_storm", "")):
+        src = AtcfLiveSource(endpoints=("https://example.test/x",),
+                             transport=fake_transport(status=200, body=body)
+                             if status == "no_active_storm"
+                             else fake_transport(status=403, body=""))
+        st = await src.probe()
+        assert st.status == status
+        assert LIVE_UNAVAILABLE_REASON in st.reason
 
 async def test_http_404_yields_live_unavailable():
     src = AtcfLiveSource(endpoints=("https://example.test/x",),
@@ -573,7 +590,28 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'backend.cyclones.live'
 
 `DEFAULT_ATCF_ENDPOINTS` is the verified list from the ADR, in order: NRL `atcf_web/docs/current_storms.txt`, NRL `atcf_web/current_storms.txt`, NHC `data/atcf/current_storms.txt`, NHC `CurrentStorms.json`. `timeout_s` defaults to 6.0.
 
-`probe()` tries each endpoint in order, recording the URL and the HTTP status. It returns on the first that yields a parseable NI storm; otherwise it returns a `LiveStatus` whose `status` is `no_active_storm` when every reachable endpoint returned an empty body, and `live_unavailable` otherwise. `reason` is composed from the statuses actually observed — e.g. "Tried 4 sources: 403, 403, 404, 200 (no NI cyclone listed)." — never a generic string.
+`probe()` tries each endpoint in order, recording the URL and the HTTP status. It returns on the first that yields a parseable NI storm; otherwise it returns a `LiveStatus` whose `status` is `no_active_storm` when every reachable endpoint returned an empty body, and `live_unavailable` otherwise.
+
+**`reason` MUST begin with `live_unavailable_reason(checked_at)` from Task 1** —
+the promise that no historical or case-study cyclone is being substituted is the
+judge-facing part, and the diagnostic is the engineering part. Compose them, never
+replace one with the other:
+
+```python
+from backend.cyclones.base import live_unavailable_reason
+reason = f"{live_unavailable_reason(checked_at)} Sources tried: {observed}."
+```
+
+so the shipped string reads *"…no historical or case-study cyclone is being
+substituted for live data. Attempt made at 2026-10-01T09:30:00Z. Sources tried:
+403, 403, 404, 200 (no NI cyclone listed)."* **Never a generic string, and never a
+diagnostic alone.** Task 1's re-review flagged that an earlier draft of this plan
+said to compose the reason from the statuses observed, which would have dropped
+the promise entirely; this is the correction.
+
+The same composition applies to `no_active_storm`: the reason there must also carry
+the promise, since "no storm running" is exactly the state a reader could mistake
+for a working live feed.
 
 `fetch()` returns a `CycloneRecord` built from `parse_atcf(body, basin="IO")`, with `limitation` stating the positions are operational ATCF fixes, that ATCF wind is a 1-minute mean sustained wind in knots (unlike the 3-minute IMD basis used elsewhere in the app), and that this is a live observation, not a forecast. If nothing parses, `fetch()` returns `None` and the caller reports `live_unavailable`. **There is no code path from `live.py` to `historical.py`.**
 
@@ -1172,7 +1210,10 @@ git commit -m "feat(ai): an evidence-grounded AI Risk Analyst, pinned model, no 
 
 ```javascript
 test('an unavailable live feed never says a storm is happening', () => {
-  const s = { status: 'live_unavailable', reason: 'Tried 4 sources: 403, 403, 404, 200.',
+  // The backend composes reason as live_unavailable_reason(checked_at) + the
+  // diagnostic, so a real payload always carries the promise first.
+  const s = { status: 'live_unavailable',
+              reason: 'No live cyclone feed could be reached. ... Attempt made at 2026-10-01T00:00:00Z. Sources tried: 403, 403, 404, 200.',
               source: 'nrlmry.navy.mil', http_status: 403,
               checked_at: '2026-10-01T00:00:00Z', cyclone: null };
   const label = liveStateLabel(s);
