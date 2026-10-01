@@ -519,19 +519,45 @@ class TestGzip:
             f"gzip only got {plain_len} -> {zipped_len}; expected a large win"
         )
 
-    def test_the_gzipped_body_decompresses_to_the_same_json(self, client):
+    def test_the_gzipped_body_decompresses_to_the_same_json(
+        self, client, monkeypatch
+    ):
         """Gzip must not change the bytes the client ultimately parses.
 
         Both bodies arrive already decoded by httpx, so this compares the
         decompressed payloads — which is exactly the equality that matters to
         a caller. The wire-level check is the Content-Length assertion above.
+
+        The clock is frozen because `/surge-zone` now stamps `generated_at`
+        when the body is built (provenance, added by b853406 — the pre-branch
+        main returned no such field). Two requests a second apart then differ
+        in that one field, and this test failed intermittently for a reason
+        that has nothing to do with gzip: reproduced by sleeping 1.6 s between
+        the calls, where only `generated_at` changed.
+
+        `main.datetime` is frozen rather than the field dropped from the
+        comparison, because excluding a key would quietly narrow the assertion
+        this test names — every byte must survive the round trip, the
+        timestamp included.
         """
+        from datetime import datetime as _real
+
+        class _Frozen:
+            @classmethod
+            def now(cls, tz=None):
+                return _real(2026, 1, 1, 0, 0, 0, tzinfo=tz)
+
+        monkeypatch.setattr(main, "datetime", _Frozen)
+
         url = "/surge-zone?category=6"
         plain = client.get(url, headers={"Accept-Encoding": "identity"})
         zipped = client.get(url, headers={"Accept-Encoding": "gzip"})
 
         assert zipped.content == plain.content
         assert zipped.json() == plain.json()
+        # The freeze has to be shown to have taken effect, or the two equality
+        # assertions above only passed because both calls landed in one second.
+        assert plain.json()["generated_at"] == "2026-01-01T00:00:00+00:00"
 
     def test_a_small_response_is_left_uncompressed(self, client):
         """/health is a few hundred bytes; gzipping it is pure overhead."""
