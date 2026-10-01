@@ -321,14 +321,18 @@ def test_live_status_serialises_with_source_and_timestamp():
 
 
 def test_live_status_to_dict_keys_are_the_endpoint_response_contract():
-    """The six keys, hardcoded.
+    """The seven keys, hardcoded.
 
     T7 serves `GET /live-cyclone` from this dict verbatim, and T9's
-    `apiCyclones.ts` types the response from it. So these six names *are* an API
+    `apiCyclones.ts` types the response from it. So these names *are* an API
     contract, and a renamed key is a client that silently reads `undefined`.
     Hardcoded rather than compared against `dataclasses.fields(LiveStatus)`, for
     the same reason as the record test above: the declaration cannot disagree
     with itself.
+
+    `cyclone` was added in T7. It is `None` on both unhappy paths and carries
+    the parsed storm on `available` — the probe used to discard the fixes it had
+    just parsed, so an `available` status arrived with nothing to show.
     """
     s = LiveStatus("no_active_storm", "example", 200, "Feed answered; no NI "
                    "cyclone listed.", "2026-10-01T00:00:00Z", ("https://x/y",))
@@ -339,7 +343,10 @@ def test_live_status_to_dict_keys_are_the_endpoint_response_contract():
         "reason",
         "checked_at",
         "endpoints",
+        "cyclone",
     ]
+    # And the default is the only safe one: no storm, nothing substituted.
+    assert s.to_dict()["cyclone"] is None
 
 
 def test_live_status_values_are_closed_at_the_type_level():

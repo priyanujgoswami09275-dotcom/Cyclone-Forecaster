@@ -732,7 +732,7 @@ export interface TrackWaypoint {
 export interface TrackResponse {
   name: string | null;
   season: string | null;
-  /** e.g. "IBTrACS v04r00" — the provenance every rendered number inherits. */
+  /** e.g. "IBTrACS v04r01" — the provenance every rendered number inherits. */
   source: string | null;
   wind_units: string | null;
   timezone: string;

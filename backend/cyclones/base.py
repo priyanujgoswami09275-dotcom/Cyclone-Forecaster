@@ -315,10 +315,18 @@ class LiveStatus:
     #: kind of lie. `LIVE_UNAVAILABLE_REASON` refers the reader to this.
     checked_at: str
     endpoints: tuple[str, ...]
+    #: The storm itself, when there is one. `None` on every other state — and
+    #: `None` is the whole point: a live feed that answered with nothing, or did
+    #: not answer at all, must not have a historical cyclone placed in this
+    #: field by a caller who found one convenient.
+    #:
+    #: A summary dict rather than a `CycloneRecord`, so this module stays free of
+    #: the live parser and the two never have to agree on a shape.
+    cyclone: dict | None = None
 
     def to_dict(self) -> dict:
-        """The six fields, plain. `GET /live-cyclone` returns exactly this plus
-        `cyclone` and `limitation`, so those keys must not be renamed."""
+        """The seven fields, plain. `GET /live-cyclone` returns exactly this plus
+        `limitation`, so these keys must not be renamed."""
         return asdict(self)
 
 

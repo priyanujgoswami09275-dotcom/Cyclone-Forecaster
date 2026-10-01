@@ -41,7 +41,7 @@ import math
 import os
 import time
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
@@ -79,7 +79,7 @@ from .ai.advisory import (
 )
 from .cyclones.base import CycloneRecord, LiveStatus, live_unavailable_reason
 from .cyclones.live import AtcfLiveSource
-from .cyclones.registry import registry
+from .cyclones.registry import CATALOGUE_LIMITATION, registry
 from .cyclones.scenarios import (
     DEFAULT_CYCLONE_ID,
     ScenarioContext,
@@ -340,8 +340,24 @@ def _context(
 def _provenance(ctx: ScenarioContext) -> dict:
     """What every response says about what it computed and how.
 
-    Present on every endpoint so a client never has to guess whether a number
-    is a category default, a chosen scenario, or another storm's.
+    **Merged into the top level of every response**, not nested under a
+    `provenance` key. A client that wants to know whether a number is a category
+    default, a chosen scenario, or another storm's figure should not have to
+    know which endpoints nest it — the whole point is that no response is
+    ambiguous about itself.
+
+    `generated_at` and the limitations are here rather than repeated per endpoint
+    because a disclosure that has to be remembered is a disclosure that gets
+    forgotten.
+
+    **The scenario's limitation is `scenario_limitation`, not `limitation`.**
+    `_category_header` already returns a `limitation` — the surge law's, which
+    CLAUDE.md requires on every surge figure — and two disclosures sharing one
+    key means one silently overwrites the other. That happened: merging this
+    dict after the header replaced the surge disclosure with the scenario's, and
+    `tests/test_module_c.py::test_top_level_caveats_travel_too` caught it. A
+    key that can only hold one of two required strings is a bug waiting for the
+    next endpoint to add a third.
     """
     scenario = ctx.resolve(registry().get(ctx.cyclone_id))
     return {
@@ -351,9 +367,42 @@ def _provenance(ctx: ScenarioContext) -> dict:
         "imd_category": scenario.imd_category,
         "wind_is_band_midpoint": scenario.wind_is_band_midpoint,
         "scenario_kind": scenario.kind,
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "scenario_limitation": scenario.limitation,
+        # Kept, and named for what it is: the scenario's own disclosure. Endpoints
+        # that carry a surge figure merge this first and their own header second,
+        # so the surge limitation wins the `limitation` key without either being
+        # lost.
         "limitation": scenario.limitation,
     }
+
+
+def _cyclone_block(record: CycloneRecord | None) -> dict | None:
+    """The storm a response is about, or `None` when it is not about one.
+
+    Present on every response that is scoped to a cyclone, so a client never has
+    to infer from a bare id which storm's figures these are.
+    """
+    if record is None:
+        return None
+    return {
+        "cyclone_id": record.cyclone_id,
+        "name": record.name,
+        "season": record.season,
+        "basin": record.basin,
+        "subbasin": record.subbasin,
+        "peak_wind_kmph": record.peak_wind_kmph,
+        "waypoint_count": len(record.waypoints),
+    }
+
+
+def _envelope(ctx: ScenarioContext, **body) -> dict:
+    """A response body with its provenance merged in.
+
+    One place, so no endpoint can ship a number without saying which
+    `(cyclone_id, scenario_id)` pair produced it.
+    """
+    return {**_provenance(ctx), **body}
 
 
 @lru_cache(maxsize=64)
@@ -379,7 +428,14 @@ def _flood_shape(result: FloodResult):
     return shape(result.frames[-1].geometry)
 
 
-def _category_header(index: int, ctx: ScenarioContext) -> dict:
+def _category_header(
+    index: int,
+    ctx: ScenarioContext,
+    *,
+    wind_kmph: float | None = None,
+    band_index: int | None = None,
+    is_band_midpoint: bool | None = None,
+) -> dict:
     """The category context every endpoint's response opens with.
 
     Every response states the `method` that produced the surge number, the
@@ -390,16 +446,40 @@ def _category_header(index: int, ctx: ScenarioContext) -> dict:
     Takes the context as well as the index, because the band alone no longer
     identifies the answer: the same band under a different cyclone is a
     different scenario, and the response has to say which it computed.
+
+    **Two keyword arguments, because two callers need different things.**
+
+    `wind_kmph` is the wind that produced *this* response's surge. `/categories`
+    calls this once per band and passes that band's own wind, so the seven rows
+    stay seven different numbers; `/surge-zone` and `/exposure` pass the
+    resolved scenario's wind, because that is what their surge was computed
+    from. Both directions fail silently: a category list that repeats one number
+    seven times, or a surge figure labelled with a wind that did not produce it.
+
+    `band_index` is which band's bounds to report. It defaults to `index`, and
+    is overridden when the resolved scenario *is* a band — so
+    `?category=2&scenario_id=cat4` reports cat4's bounds rather than cat2's
+    next to cat4's wind.
     """
-    label, lower, upper, wind = category_band(index)
-    # This header describes a *band*, so it states that band's own wind and the
-    # surge that wind produces. The scenario the caller actually asked for
-    # rides alongside in `_provenance`, so a client showing an `observed`
-    # scenario is never handed the band's number in its place.
-    # `surge_for_wind` is the bare number; the header also needs the method,
-    # the anchor and the limitation, which live on the full result.
-    surge = predict_surge(wind)
-    band = IMD_BANDS[index]
+    if wind_kmph is None:
+        wind_kmph = category_band(index)[3]
+    if band_index is None:
+        band_index = index
+        scenario = ctx.resolve(registry().get(ctx.cyclone_id))
+        if scenario.wind_is_band_midpoint:
+            matches = [
+                i for i, b in enumerate(IMD_BANDS) if b.label == scenario.imd_category
+            ]
+            if matches:
+                band_index = matches[0]
+
+    label, lower, upper, _band_wind = category_band(band_index)
+    surge = predict_surge(wind_kmph)
+    band = IMD_BANDS[band_index]
+    if is_band_midpoint is None:
+        # The default is the band's own answer: a band with an upper bound has a
+        # midpoint, the open-ended top band has a threshold instead.
+        is_band_midpoint = upper is not None
     return {
         "category": index,
         "imd_category": label,
@@ -408,10 +488,12 @@ def _category_header(index: int, ctx: ScenarioContext) -> dict:
         # than km/h. Shipping both makes it checkable that `band_kmph` is the
         # km/h column and not, as it briefly was, the knots one.
         "band_knots": {"lower": band.lower_knots, "upper": band.upper_knots},
-        "wind_kmph": wind,
-        # False only for the open-ended top band, where the representative is
-        # the documented threshold rather than a midpoint of a documented band.
-        "wind_is_band_midpoint": upper is not None,
+        "wind_kmph": wind_kmph,
+        # False for the open-ended top band, where the representative is the
+        # documented threshold rather than a midpoint of a documented band — and
+        # for an `observed` scenario, which is a real storm's wind and not a
+        # band's at all.
+        "wind_is_band_midpoint": is_band_midpoint,
         "surge_m": surge.surge_m,
         "method": surge.method,
         "anchor": {
@@ -498,6 +580,12 @@ def categories(
     actual case study. The preset gives it one, by name and by id.
     """
     return {
+        # Provenance like every other response. `/categories` is a classification
+        # scheme rather than one scenario's result, so it has no surge figure of
+        # its own to disclose — but it is still computed for a cyclone and a
+        # scenario, and a client should not have to know which endpoints hide
+        # their provenance one level down.
+        **_provenance(ctx),
         "source": (
             "India Meteorological Department cyclone wind classification "
             "(3-min mean sustained wind). IMD publishes each band in both "
@@ -520,11 +608,12 @@ def categories(
         "limitation": SURGE_LIMITATION,
         "categories": [
             {
-                **_category_header(index, ctx),
                 # Each band's OWN surge, not the requested scenario's. This row
                 # describes the band, so reading it from `ctx` would repeat the
                 # same number seven times and silently empty the dead-zone note
-                # that categories 0-3 exist to carry.
+                # that categories 0-3 exist to carry. Passed explicitly so the
+                # intent is in the call rather than in a default.
+                **_category_header(index, ctx, wind_kmph=category_band(index)[3]),
                 "note": (
                     "this band produces less surge than the DEM's 1 m vertical "
                     "resolution can represent, so the flood model returns no "
@@ -612,6 +701,24 @@ KNOTS_TO_KMPH = 1.852
 
 class TrackDataError(ValueError):
     """The committed track file is missing, malformed, or not what it claims."""
+
+
+def _iso_z(text: str) -> str:
+    """`2024-05-23 12:00:00` -> `2024-05-23T12:00:00Z`, or raise.
+
+    The two track endpoints must emit the same timestamp format. `/track`
+    converts because it reads a file; `track_payload` reads the catalogue, whose
+    `iso_time` is the archive's own space-separated spelling. A client consuming
+    both should not have to accept two formats for the same field.
+    """
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+    except ValueError as exc:
+        raise TrackDataError(
+            f"iso_time {text!r} is not '%Y-%m-%d %H:%M:%S'"
+        ) from exc
 
 
 def _parse_track_timestamp(raw: object, waypoint_index: int) -> str:
@@ -747,6 +854,24 @@ def load_track() -> dict:
         "first_timestamp": waypoints[0]["timestamp"],
         "last_timestamp": waypoints[-1]["timestamp"],
         "unreported_wind_count": sum(1 for w in waypoints if not w["wind_reported"]),
+        # The same block `track_payload` returns for every other cyclone, so the
+        # two track endpoints have one shape and a client can consume either.
+        "cyclone": {
+            "cyclone_id": DEFAULT_CYCLONE_ID,
+            "name": line_props.get("name"),
+            "season": int(line_props.get("season") or 0),
+            "basin": "NI",
+            "subbasin": "BB",
+            "peak_wind_kmph": max(
+                (
+                    w["wind_kmph"]
+                    for w in waypoints
+                    if w["wind_reported"] and w["wind_kmph"] is not None
+                ),
+                default=None,
+            ),
+            "waypoint_count": len(waypoints),
+        },
         "disclosure": (
             "Historical best-track positions for the case-study cyclone, "
             "pre-fetched from IBTrACS and committed to data/remal_track.geojson. "
@@ -757,6 +882,335 @@ def load_track() -> dict:
             "carries wind_kt: null and wind_reported: false, which is NOT the "
             "same as 0 knots. The source file writes a blank USA_WIND as 0.0, so "
             "this endpoint is what separates 'not reported' from 'calm'."
+        ),
+    }
+
+
+def track_payload(record: CycloneRecord) -> dict:
+    """The `/track` shape for any catalogue record.
+
+    **Why this exists separately from `load_track()`.** `/track` serves the
+    committed GeoJSON, which carries Remal's winds in exact knots. The catalogue
+    stores `wind_kmph` rounded to one decimal, so rebuilding a track from it
+    would report 59.9892 kt for a storm IBTrACS records at exactly 60. For the
+    case study the file is the better source and `/cyclones/{id}/track` serves
+    the same payload when asked for Remal, so the two endpoints cannot disagree.
+    For any other storm there is no file, and this is the only source there is.
+
+    `wind_kt` is reconstructed from kmph and rounded to one decimal, which is
+    exact for every value IBTrACS publishes in whole knots.
+    """
+    waypoints = []
+    for index, fix in enumerate(record.waypoints):
+        reported = fix.wind_reported and fix.wind_kmph is not None
+        waypoints.append(
+            {
+                "sequence": index,
+                "timestamp": _iso_z(fix.iso_time),
+                "latitude": fix.latitude,
+                "longitude": fix.longitude,
+                "wind_kt": round(fix.wind_kmph / KNOTS_TO_KMPH, 1) if reported else None,
+                "wind_kmph": fix.wind_kmph if reported else None,
+                "wind_reported": reported,
+                "nature": fix.nature,
+            }
+        )
+    return {
+        "name": record.name,
+        "season": str(record.season),
+        "source": "IBTrACS v04r01",
+        "wind_units": "knots",
+        "timezone": "UTC",
+        "path": [
+            {"latitude": w["latitude"], "longitude": w["longitude"]} for w in waypoints
+        ],
+        "waypoints": waypoints,
+        "waypoint_count": len(waypoints),
+        "first_timestamp": waypoints[0]["timestamp"] if waypoints else None,
+        "last_timestamp": waypoints[-1]["timestamp"] if waypoints else None,
+        "unreported_wind_count": sum(1 for w in waypoints if not w["wind_reported"]),
+        "cyclone": {
+            "cyclone_id": record.cyclone_id,
+            "name": record.name,
+            "season": record.season,
+            "basin": record.basin,
+            "subbasin": record.subbasin,
+            "peak_wind_kmph": record.peak_wind_kmph,
+            "waypoint_count": len(record.waypoints),
+        },
+        "disclosure": (
+            "Historical best-track positions from IBTrACS v04r01, a record of what "
+            "happened and not a forecast for any storm. USA_WIND is the IBTrACS "
+            "knots column; a fix with no reported wind carries wind_kt: null and "
+            "wind_reported: false, which is NOT the same as 0 knots. This track is "
+            "not an input to the surge figure, which comes from the deterministic "
+            "law 1.2 x (wind/115)^2."
+        ),
+    }
+
+
+@app.get("/cyclones")
+def list_cyclones() -> dict:
+    """Every historical cyclone the app can address, and where the list came from.
+
+    Sorted case study first, then newest first, so the default is always the
+    first thing a client sees and the rest read as a chronology.
+    """
+    historical = registry().historical()
+    by_id = {record.cyclone_id: record for record in historical}
+    default_id = registry().default_cyclone_id()
+
+    def sort_key(record: CycloneRecord) -> tuple:
+        return (0 if record.cyclone_id == default_id else 1, -record.season)
+
+    cyclones = []
+    for record in sorted(historical, key=sort_key):
+        cyclones.append(
+            {
+                "cyclone_id": record.cyclone_id,
+                "name": record.name,
+                "season": record.season,
+                "basin": record.basin,
+                "subbasin": record.subbasin,
+                "peak_wind_kmph": record.peak_wind_kmph,
+                "waypoint_count": len(record.waypoints),
+                "is_case_study": record.cyclone_id == default_id,
+            }
+        )
+
+    return {
+        "source": registry().describe(),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "count": len(cyclones),
+        "default_cyclone_id": default_id,
+        "limitation": CATALOGUE_LIMITATION,
+        "cyclones": cyclones,
+    }
+
+
+@app.get("/cyclones/{cyclone_id}/track")
+def get_cyclone_track(cyclone_id: str) -> dict:
+    """One cyclone's track, in the same shape `/track` returns.
+
+    **Remal is served from the committed GeoJSON**, which is the same payload
+    `/track` returns, so the two endpoints are literally the same code path for
+    the case study and cannot disagree. Every other storm is built from the
+    catalogue, which is the only source there is for it.
+
+    An unknown id is a 400 naming the catalogue size, never a silent fall back to
+    the default — a client that mistyped a storm id should be told, not shown a
+    different storm's track.
+    """
+    record = registry().get(cyclone_id)
+    if record is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown cyclone_id {cyclone_id!r}. The catalogue holds "
+                f"{len(registry().historical())} North Indian Ocean storms; "
+                f"call GET /cyclones for the list."
+            ),
+        )
+    if cyclone_id == DEFAULT_CYCLONE_ID:
+        return load_track()
+    return track_payload(record)
+
+
+@app.get("/scenarios")
+def list_scenarios(
+    cyclone_id: Annotated[str | None, Query(description="Cyclone these scenarios apply to")] = None,
+) -> dict:
+    """The strengths a client may ask for, and what each one means in kmph.
+
+    Scoped to a cyclone because one of them is that cyclone's *own* observed
+    intensity, which is a different number for every storm. The band scenarios
+    are the same for all of them; the `observed` one is not, and a client
+    comparing two cyclones needs to know which is which.
+    """
+    if cyclone_id is not None and registry().get(cyclone_id) is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown cyclone_id {cyclone_id!r}. The catalogue holds "
+                f"{len(registry().historical())} North Indian Ocean storms; "
+                f"call GET /cyclones for the list."
+            ),
+        )
+    record = registry().get(cyclone_id or DEFAULT_CYCLONE_ID)
+    scenarios = scenarios_for(record)
+
+    return {
+        "cyclone_id": record.cyclone_id,
+        "cyclone_name": record.name,
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "scenarios": [
+            {
+                "scenario_id": scenario.scenario_id,
+                "label": scenario.label,
+                "wind_kmph": scenario.wind_kmph,
+                "imd_category": scenario.imd_category,
+                "kind": scenario.kind,
+                "wind_is_band_midpoint": scenario.wind_is_band_midpoint,
+                "limitation": scenario.limitation,
+            }
+            for scenario in scenarios
+        ],
+        "limitation": (
+            "Scenario strengths for "
+            f"{record.name} {record.season}. The band scenarios are IMD's "
+            "classification thresholds at their midpoints; `observed` is this "
+            "cyclone's own peak and is a different number for every storm. "
+            "Every surge figure comes from the deterministic law "
+            "1.2 x (wind/115)^2 and none of these is a forecast."
+        ),
+    }
+
+
+@app.get("/live-cyclone")
+def get_live_cyclone() -> dict:
+    """The live state, reported as a state rather than an error.
+
+    **Never a 5xx for an unreachable source.** A feed being down is a fact about
+    the feed, not a fault in this service, and a client that cannot reach us
+    because we returned 500 has learned nothing. The three statuses are kept
+    apart because they mean different things: `available` means a live fix was
+    parsed, `no_active_storm` means the source answered and there is nothing
+    active, and `live_unavailable` means no trustworthy answer arrived.
+
+    **Never a historical stand-in.** When the status is not `available` the
+    `cyclone` field is `null`, always. Substituting Remal for a live storm would
+    be the one unforgivable substitution in this system: it would put a real
+    historical cyclone on a screen labelled as now.
+    """
+    status = registry().live_status()
+    return {
+        "status": status.status,
+        "source": status.source,
+        "http_status": status.http_status,
+        "reason": status.reason,
+        "checked_at": status.checked_at,
+        "endpoints": status.endpoints,
+        "cyclone": status.cyclone,
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "limitation": (
+            "Live cyclone state from the ATCF best-track feeds. This is a probe of "
+            "a live source, not a forecast, and it is never substituted with a "
+            "historical or case-study cyclone: when no live fix is available the "
+            "cyclone field is null. The historical list at /cyclones and the "
+            "deterministic storm-surge simulation are unaffected by this status."
+        ),
+    }
+
+
+def _comparison_entry(ctx: ScenarioContext) -> dict:
+    """One cyclone at one scenario, reduced to the figures a comparison needs.
+
+    Every number here is one the app computed for this exact pair — no figure is
+    carried across from another cyclone or another scenario, which is the whole
+    reason the comparison exists.
+    """
+    flood = flood_for_scenario(ctx)
+    exposure_result = compute_exposure(flood.frames[-1].geometry)
+    payload = exposure_result.to_dict()
+    scenario = ctx.resolve(registry().get(ctx.cyclone_id))
+    record = registry().get(ctx.cyclone_id)
+    return {
+        "cyclone_id": ctx.cyclone_id,
+        "name": record.name if record else None,
+        "season": record.season if record else None,
+        "scenario_id": ctx.scenario_id,
+        "scenario_kind": scenario.kind,
+        "wind_kmph": scenario.wind_kmph,
+        "imd_category": scenario.imd_category,
+        # From the deterministic law, never from the scenario: a scenario is a
+        # wind, and the surge is a function of that wind.
+        "surge_m": round(surge_for_wind(scenario.wind_kmph), 4),
+        "flood_area_km2": round(flood.frames[-1].land_area_km2, 2),
+        "hospitals_exposed": payload["hospitals"]["count"],
+        "substations_exposed": payload["substations"]["count"],
+        "roads_cut_off": payload["roads"]["count"],
+        "unreported_wind_fixes": (
+            sum(1 for w in record.waypoints if not w.wind_reported) if record else None
+        ),
+    }
+
+
+@app.get("/comparison")
+def compare_cyclones(
+    category: Annotated[int, Query(ge=0, le=6, description="IMD category index 0-6")],
+    cyclone_ids: Annotated[
+        str | None,
+        Query(description="Comma-separated IBTrACS SIDs. Absent means the case study."),
+    ] = None,
+    scenario_id: Annotated[
+        str | None, Query(description="`cat0`-`cat6`, or `observed`. Wins over `category`.")
+    ] = None,
+) -> dict:
+    """The same scenario applied to several cyclones, side by side.
+
+    The point is the delta, and a delta is only meaningful between figures that
+    were computed the same way. So every entry is built by one helper from one
+    `(cyclone_id, scenario_id)` pair, and the deltas are taken between entries
+    in this response rather than against anything a client remembered.
+
+    **A single cyclone has no delta.** Emitting a zero delta for one storm would
+    present a comparison that was never made.
+    """
+    if cyclone_ids:
+        ids = [part.strip() for part in cyclone_ids.split(",") if part.strip()]
+    else:
+        ids = [DEFAULT_CYCLONE_ID]
+
+    unknown = [cyclone_id for cyclone_id in ids if registry().get(cyclone_id) is None]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"unknown cyclone_id {unknown[0]!r}. The catalogue holds "
+                f"{len(registry().historical())} North Indian Ocean storms; "
+                f"call GET /cyclones for the list."
+            ),
+        )
+
+    entries = [_comparison_entry(_context(category, cyclone_id, scenario_id)) for cyclone_id in ids]
+
+    deltas: dict = {"between": ids}
+    if len(entries) == 2:
+        left, right = entries
+        deltas["note"] = (
+            f"{left['name']} {left['season']} against {right['name']} {right['season']}, "
+            f"both at {left['scenario_id']} ({left['wind_kmph']:.0f} kmph)."
+        )
+        for field in (
+            "surge_m",
+            "flood_area_km2",
+            "hospitals_exposed",
+            "substations_exposed",
+            "roads_cut_off",
+        ):
+            deltas[f"{field}_delta"] = round(left[field] - right[field], 4)
+    elif len(entries) == 1:
+        deltas["note"] = (
+            "One cyclone, so there is nothing to compare it against. Add a second "
+            "cyclone_id to get deltas."
+        )
+    else:
+        deltas["note"] = (
+            f"{len(entries)} cyclones. Deltas are reported for exactly two, because "
+            "a delta between three storms is not a number."
+        )
+
+    return {
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "scenario_id": entries[0]["scenario_id"],
+        "cyclones": entries,
+        "deltas": deltas,
+        "limitation": (
+            "Each cyclone computed independently at the same scenario strength, so "
+            "the deltas are between figures produced the same way. The surge figure "
+            "comes from the deterministic law 1.2 x (wind/115)^2 and is not a "
+            "forecast; a cyclone's own observed intensity is a different scenario "
+            "from these band midpoints."
         ),
     }
 
@@ -811,8 +1265,15 @@ def surge_zone(
     result = flood_for_scenario(ctx)
     payload = result.to_feature_collection()
     return {
-        **_category_header(category, ctx),
-        "provenance": _provenance(ctx),
+        **_provenance(ctx),
+        **_category_header(
+            category,
+            ctx,
+            wind_kmph=ctx.wind_kmph(registry().get(ctx.cyclone_id)),
+            is_band_midpoint=ctx.resolve(
+                registry().get(ctx.cyclone_id)
+            ).wind_is_band_midpoint,
+        ),
         # `final_land_area_km2` is the modelled extent; `drawn_area_km2` is
         # what the returned polygon actually shows, after sub-0.5 km2 DEM
         # speckle is dropped for rendering. They differ at high surge, and
@@ -852,8 +1313,16 @@ def exposure(
     result = compute_exposure(flood.frames[-1].geometry)
     payload = result.to_dict()
     return {
-        **_category_header(category, ctx),
-        "provenance": _provenance(ctx),
+        **_provenance(ctx),
+        **_category_header(
+            category,
+            ctx,
+            wind_kmph=ctx.wind_kmph(registry().get(ctx.cyclone_id)),
+            is_band_midpoint=ctx.resolve(
+                registry().get(ctx.cyclone_id)
+            ).wind_is_band_midpoint,
+        ),
+        "cyclone": _cyclone_block(registry().get(ctx.cyclone_id)),
         "final_land_area_km2": payload_counts_land(flood),
         "hospitals": payload["hospitals"],
         "substations": payload["substations"],
@@ -909,8 +1378,15 @@ def routes(
     if not route.reachable:
         route = _diagnose_unreachable(route, locality, shelter, flood)
     return {
-        **_category_header(category, ctx),
-        "provenance": _provenance(ctx),
+        **_category_header(
+            category,
+            ctx,
+            wind_kmph=ctx.wind_kmph(registry().get(ctx.cyclone_id)),
+            is_band_midpoint=ctx.resolve(
+                registry().get(ctx.cyclone_id)
+            ).wind_is_band_midpoint,
+        ),
+        **_provenance(ctx),
         "origin": locality.to_dict(),
         "shelter": shelter.to_dict(),
         "shelter_assignment_basis": assigned,
@@ -946,8 +1422,15 @@ def allocation(
     # apart on which shelters exist or who is assigned where.
     result = allocation_for_scenario(ctx)
     return {
-        **_category_header(category, ctx),
-        "provenance": _provenance(ctx),
+        **_category_header(
+            category,
+            ctx,
+            wind_kmph=ctx.wind_kmph(registry().get(ctx.cyclone_id)),
+            is_band_midpoint=ctx.resolve(
+                registry().get(ctx.cyclone_id)
+            ).wind_is_band_midpoint,
+        ),
+        **_provenance(ctx),
         "final_land_area_km2": payload_counts_land(flood),
         "localities_evaluated": len(populations),
         "allocation": result["assignment"],

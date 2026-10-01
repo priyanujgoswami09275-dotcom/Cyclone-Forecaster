@@ -271,6 +271,8 @@ def test_the_probe_response_serialises() -> None:
         "reason",
         "checked_at",
         "endpoints",
+        # Added in T7: the storm itself, `None` whenever there is not one.
+        "cyclone",
     }
 
 

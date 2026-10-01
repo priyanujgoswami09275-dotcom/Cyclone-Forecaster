@@ -208,6 +208,8 @@ class AtcfLiveSource(CycloneSource):
             observed.append(str(status))
             spoke += 1 if spoke_atcf else 0
             if waypoints:
+                record = self._record(waypoints)
+                head, tail = record.waypoints[0], record.waypoints[-1]
                 return LiveStatus(
                     status="available",
                     source=url,
@@ -218,6 +220,21 @@ class AtcfLiveSource(CycloneSource):
                     ),
                     checked_at=now,
                     endpoints=self.endpoints,
+                    cyclone={
+                        "cyclone_id": record.cyclone_id,
+                        "name": record.name,
+                        "season": record.season,
+                        "basin": record.basin,
+                        "waypoint_count": len(record.waypoints),
+                        "first_timestamp": head.iso_time,
+                        "last_timestamp": tail.iso_time,
+                        "latest_latitude": tail.latitude,
+                        "latest_longitude": tail.longitude,
+                        "latest_wind_kmph": tail.wind_kmph,
+                        "latest_wind_reported": tail.wind_reported,
+                        "data_through": record.data_through,
+                        "limitation": ATCF_LIMITATION,
+                    },
                 )
         # "No active storm" only when every source answered *in ATCF* and none
         # listed this basin. Anything else is a source we could not read.
