@@ -504,10 +504,22 @@ def estimate_for(features: tuple[float, ...]) -> StormPeakEstimate:
             ),
         )
 
+    return _baseline_estimate(report, median_kt, model_kt=prediction)
+
+
+def _baseline_estimate(
+    report: LeaveOneOutReport, median_kt: float, *, model_kt: float | None
+) -> StormPeakEstimate:
+    """The shipped figure, with the losing model output attached if there is one.
+
+    Extracted so `baseline_estimate()` and `estimate_for()` cannot drift into two
+    different descriptions of the same constant. The only field that differs is
+    `model_kt`, which is evidence about a prediction nobody is showing.
+    """
     return StormPeakEstimate(
         estimate_kt=median_kt,
         estimate_source=SOURCE_BASELINE,
-        model_kt=prediction,
+        model_kt=model_kt,
         baseline_kt=median_kt,
         interval_kt=(median_kt - report.baseline_mae_kt, median_kt + report.baseline_mae_kt),
         n_training=report.n,
@@ -527,6 +539,32 @@ def estimate_for(features: tuple[float, ...]) -> StormPeakEstimate:
     )
 
 
+def baseline_estimate() -> StormPeakEstimate:
+    """The shipped figure, obtained **without** features — because there aren't any.
+
+    `estimate_for` needs a feature vector, and a request that names a cyclone and
+    a scenario has not supplied one. The seven features describe a *track*:
+    translation speed, bearing, distance to land, latitude, longitude, month and
+    basin distance. None of them is a property of "category 6 applied to Remal".
+    Handing this function a plausible-looking tuple would produce a `model_kt`
+    derived from data nobody observed, and the only reason it would not have
+    reached a reader is a label.
+
+    **It cannot change the shipped answer anyway.** When the gate fails — which
+    is the real outcome, measured at 21.94 kt against the baseline's 21.03 kt —
+    `estimate_kt` is `median_kt`, a constant no feature can move. So this returns
+    exactly what `estimate_for` returns for any input whatsoever, minus
+    `model_kt`. `test_risk_analyst.py` proves that equality field by field
+    instead of asking a reader to take it on trust.
+
+    If the gate ever passes, this stops being equivalent to `estimate_for` and
+    starts being merely the baseline — which is still the honest answer for a
+    request with no track in it, and is labelled as the baseline either way.
+    """
+    model, report = trained_model()
+    return _baseline_estimate(report, model.median_kt, model_kt=None)
+
+
 __all__ = [
     "FEATURE_NAMES",
     "FEATURE_UNITS",
@@ -540,6 +578,7 @@ __all__ = [
     "StormPeakEstimate",
     "StormPeakIntensityModel",
     "TrainingRow",
+    "baseline_estimate",
     "build_training_set",
     "estimate_for",
     "evaluate",

@@ -53,6 +53,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from google.genai.errors import ServerError
+from pydantic import BaseModel, Field
 from shapely.geometry import shape
 
 #: Repo root, for the committed data files. `data/` holds the pre-fetched DEM,
@@ -73,7 +74,9 @@ from .ai.advisory import (
     ADVISORY_MODEL,
     DistrictAdvisory,
     EvacuationPriority,
+    RiskAnalysis,
     generate_advisory,
+    generate_risk_analysis,
     plan_coverage,
     validate_advisory,
 )
@@ -101,6 +104,7 @@ from .locations import (
     population_methodology,
     scoping,
 )
+from .ml.storm_peak_intensity import baseline_estimate
 from .simulation.allocation import DemandNode, allocate_shelters
 from .simulation.dem import load_dem
 from .simulation.exposure import compute_exposure
@@ -1641,24 +1645,26 @@ GEMINI_DAILY_LIMIT_MESSAGE = (
 )
 
 
-def _generate_with_capacity_retry(*args, **kwargs) -> tuple[DistrictAdvisory, int]:
-    """`generate_advisory`, retried across capacity blocks.
+def _with_capacity_retry(fn, *args, **kwargs) -> tuple[object, int]:
+    """`fn`, retried across capacity blocks. The one ladder, shared by both
+    Gemini endpoints.
 
-    Transparent: same positional and keyword arguments. Returns the advisory and
-    the number of attempts it took, so the handler can report how hard it tried
-    instead of a client guessing from a latency. The only error this raises
-    itself is exhausted-retry exhaustion.
+    Extracted from `_generate_with_capacity_retry` when `/risk-analyst` was
+    added: the plan requires that endpoint to reuse this ladder and this error
+    taxonomy *verbatim*, and a second copy of the loop is a second place for the
+    two to disagree about how many attempts a busy model gets. `/advisory` and
+    `/risk-analyst` differ in what they call and in the prose they return, not
+    in how they handle a model that is at capacity.
 
-    Applies to both the first pass and the correction pass, and to nothing
-    else: the correction pass is a different kind of retry (a drafting slip,
-    not a busy model) and the two are kept separate so `attempts` in the
-    response still means what it says.
+    Returns the value and the number of attempts it took, so a handler can
+    report how hard it tried instead of a client guessing from a latency. The
+    only error this raises itself is exhausted-retry exhaustion.
     """
     last: ServerError | None = None
     waited = 0
     for attempt in range(1, CAPACITY_MAX_ATTEMPTS + 1):
         try:
-            return generate_advisory(*args, **kwargs), attempt
+            return fn(*args, **kwargs), attempt
         except Exception as exc:
             # A spent daily quota is checked first and re-raised immediately,
             # ahead of the capacity branch. It arrives as a `ClientError` 429,
@@ -1684,6 +1690,24 @@ def _generate_with_capacity_retry(*args, **kwargs) -> tuple[DistrictAdvisory, in
         f"capacity, not a fault in this service; the same request is worth "
         f"retrying in about {CAPACITY_RETRY_AFTER_SECONDS}s. Last error: {last}"
     ) from last
+
+
+def _generate_with_capacity_retry(*args, **kwargs) -> tuple[DistrictAdvisory, int]:
+    """`generate_advisory`, retried across capacity blocks.
+
+    Transparent: same positional and keyword arguments. Returns the advisory and
+    the number of attempts it took, so the handler can report how hard it tried
+    instead of a client guessing from a latency. The only error this raises
+    itself is exhausted-retry exhaustion.
+
+    Applies to both the first pass and the correction pass, and to nothing
+    else: the correction pass is a different kind of retry (a drafting slip,
+    not a busy model) and the two are kept separate so `attempts` in the
+    response still means what it says.
+    """
+    # The global is read here, at call time, so a test that patches
+    # `main.generate_advisory` is still patching what the ladder invokes.
+    return _with_capacity_retry(generate_advisory, *args, **kwargs)
 
 
 @app.post("/advisory")
@@ -1882,6 +1906,183 @@ def advisory(
             "attempts": attempts,
             "gemini_calls": gemini_calls,
         },
+    }
+
+
+class RiskAnalystRequest(BaseModel):
+    """The body `POST /risk-analyst` takes.
+
+    A body rather than query parameters because this is the one endpoint that
+    is reached by a deliberate press rather than by a page loading, and a body
+    is not bookmarkable — which is the point. Nothing here auto-fires.
+    """
+
+    category: int = Field(..., ge=0, le=6, description="IMD category index 0-6")
+    cyclone_id: str | None = Field(
+        default=None, description="IBTrACS SID. Absent means the default case study."
+    )
+    scenario_id: str | None = Field(
+        default=None, description="`cat0`-`cat6`, or `observed`. Wins over `category`."
+    )
+    origin: str | None = Field(
+        default=None, description="Locality id from /localities. Optional."
+    )
+
+
+def _comparison_partner(cyclone_id: str) -> str:
+    """Which storm to set beside this one.
+
+    The case study, because a reader already knows what Remal did and a
+    comparison against a familiar reference is one a person can actually use.
+    When the request **is** the case study, comparing it with itself would emit
+    a column of zeros and a note that there is nothing to compare — so it falls
+    to the basin's strongest other storm: informative, deterministic, and not a
+    coin flip between two arbitrary ids.
+    """
+    if cyclone_id != DEFAULT_CYCLONE_ID:
+        return DEFAULT_CYCLONE_ID
+    others = [r for r in registry().historical() if r.cyclone_id != cyclone_id]
+    if not others:  # pragma: no cover - the catalogue has 610 storms
+        return cyclone_id
+    return max(others, key=lambda r: (r.peak_wind_kmph or 0.0, r.season)).cyclone_id
+
+
+@app.post("/risk-analyst")
+def risk_analyst(body: RiskAnalystRequest) -> dict:
+    """An evidence-grounded risk analysis, behind a deliberate press.
+
+    Three properties, in the order they are checked:
+
+    **The request is validated before the server configuration**, so a client
+    that named an unknown cyclone hears about that even on an unconfigured
+    server. The two problems are independent and reporting only the second
+    hides the first — the same ordering `/advisory` uses, deliberately.
+
+    **Configuration reuses `/advisory`'s disclosure verbatim.** A second
+    config path is a second place for the two to drift, and a client that
+    already handles the advisory's 503 would otherwise have to learn a second
+    one for an identical cause.
+
+    **The payloads are the ones the client can fetch itself** — `exposure()`
+    and `compare_cyclones()` are called directly rather than re-derived. This
+    is what stops the prose and the map disagreeing: if the analyst assembled
+    its own figures, nothing downstream would notice a divergence.
+
+    The surge figure reaches the model as the deterministic law's output, and
+    the ML estimate reaches it with its own gate verdict attached. Neither is
+    recomputed, rounded differently, or presented as the other.
+    """
+    ctx = _context(body.category, body.cyclone_id, body.scenario_id)
+
+    locality = None
+    if body.origin is not None:
+        locality = get_locality(body.origin)
+        if locality is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"Unknown origin '{body.origin}'. Call GET /localities for "
+                    f"valid ids."
+                ),
+            )
+
+    if not os.environ.get("GEMINI_API_KEY"):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "The advisory service is not configured: GEMINI_API_KEY is not "
+                "set in the server's environment. Set it there and restart — do "
+                "not add it to a tracked file. The computed inputs are still "
+                "available at /surge-zone, /exposure and /allocation."
+            ),
+        )
+
+    exposure_payload = exposure(
+        body.category, cyclone_id=ctx.cyclone_id, scenario_id=ctx.scenario_id
+    )
+    partner = _comparison_partner(ctx.cyclone_id)
+    comparison_payload = compare_cyclones(
+        body.category,
+        cyclone_ids=f"{ctx.cyclone_id},{partner}",
+        scenario_id=ctx.scenario_id,
+    )
+
+    # No feature vector, and none invented: see `baseline_estimate`. The gate
+    # failed, so the shipped figure is a constant that no features can move.
+    peak = baseline_estimate()
+
+    origin_facts = None
+    if locality is not None:
+        facts = _origin_facts(ctx, locality)
+        origin_facts = {
+            "locality_id": body.origin,
+            "locality_name": locality.name,
+            "shelter": facts["shelter"].name,
+            "route_reachable": facts.get("reachable"),
+            "route_length_km": facts.get("length_km"),
+        }
+
+    # The same ladder `/advisory` uses, and the same three outcomes: a spent
+    # quota is 429 with no Retry-After (retrying spends a limit already gone),
+    # a busy model is retried three times and then 503 with one, and any other
+    # SDK failure is 502. Before this was wired in, all three surfaced as a
+    # bare non-JSON 500 — a plan violation, since Task 8 requires this endpoint
+    # to reuse the ladder and the taxonomy verbatim.
+    try:
+        result, gemini_calls = _with_capacity_retry(
+            generate_risk_analysis,
+            context=ctx,
+            exposure=exposure_payload,
+            comparison=comparison_payload,
+            peak_estimate=peak,
+            advisory=None,
+            origin_facts=origin_facts,
+        )
+    except GeminiQuotaError as exc:
+        raise HTTPException(status_code=429, detail=GEMINI_DAILY_LIMIT_MESSAGE) from exc
+    except GeminiCapacityError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+            headers={"Retry-After": str(CAPACITY_RETRY_AFTER_SECONDS)},
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 - any SDK failure is a 502 to the client
+        raise HTTPException(
+            status_code=502,
+            detail=f"Gemini risk analysis failed: {type(exc).__name__}: {exc}",
+        ) from exc
+
+    analysis: RiskAnalysis = result
+
+    return {
+        **_provenance(ctx),
+        **_category_header(
+            body.category,
+            ctx,
+            wind_kmph=exposure_payload["wind_kmph"],
+            is_band_midpoint=exposure_payload["wind_is_band_midpoint"],
+        ),
+        "cyclone": _cyclone_block(registry().get(ctx.cyclone_id)),
+        "analysis": analysis.model_dump(),
+        # Same field name `/advisory` uses, for the same reason: HTTP calls
+        # actually made. A client handling both endpoints learns one name, and
+        # a reader can tell a first-try answer from one that rode out two 503s.
+        "gemini_calls": gemini_calls,
+        "model": ADVISORY_MODEL,
+        "comparison_between": comparison_payload["deltas"]["between"],
+        "peak_estimate": peak.to_dict(),
+        "is_estimate": True,
+        "limitation": (
+            "AI-generated analysis written by "
+            f"{ADVISORY_MODEL} from this service's own computed figures. It is "
+            "NOT an official warning and not an IMD product, and it must not be "
+            "presented as one. The storm-surge figure inside it comes from the "
+            "deterministic law 1.2 x (wind/115)^2 — a screening estimate scaled "
+            "from one observed event, omitting tide, pressure, bathymetry and "
+            "storm size — and stays authoritative. The machine-learning figure "
+            "is a flat-median baseline that did not beat its own baseline "
+            "gate, is not a prediction, and is not the surge figure."
+        ),
     }
 
 
