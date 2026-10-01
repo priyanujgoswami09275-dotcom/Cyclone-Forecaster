@@ -19,10 +19,11 @@ The three rules this module encodes, each from a bug already made once
 --------------------------------------------------------------------
 1. **A missing wind is not a zero wind.** IBTrACS writes a blank `USA_WIND` as
    `0.0`, so a fix can carry a number that means *not reported*. `main.py`'s
-   `/track` already separates the two with a `wind_reported` flag; this is the
-   same flag, and `peak_wind_kmph` filters on it. Filtering on the value being
-   non-zero instead would erase the reported 0 kt of a storm that dissipated
-   (MEMORY.md §31), and letting a `None` become a 0 would invent a calm fix.
+   `/track` serves a `wind_reported` flag, but it derives it as
+   `float(wind_kt) > 0` — a test on the value, which is the exact rule this
+   module exists to avoid, and it costs that endpoint every reported 0 kt.
+   Here the flag is set by the *parser* that read the file, and
+   `peak_wind_kmph` filters on it without ever consulting the value.
 2. **Unavailable is not empty.** `LiveStatus.status` has three values, not two:
    `no_active_storm` means the source answered and there is nothing active,
    `live_unavailable` means no trustworthy answer arrived. They are the same
@@ -68,6 +69,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
+import math
 from typing import Literal, Protocol, runtime_checkable
 
 #: Shown to a user when no live cyclone feed could be reached. This string
@@ -85,11 +87,13 @@ from typing import Literal, Protocol, runtime_checkable
 #: - *Say what still works.* The historical list and the deterministic
 #:   simulation are independent of this feed, and a reader who thinks the whole
 #:   app is broken is being told something false.
-#: - *Point at the time of the attempt*, which travels beside this string as
-#:   `LiveStatus.checked_at`. A constant cannot carry a runtime timestamp, so
-#:   the sentence refers to the timestamp in the same payload rather than
-#:   pretending to be one. `LiveStatus` is what ties them together, and its
-#:   serialization is why `checked_at` exists as a field at all.
+#: - *Point at the time of the attempt.* The sentence above deliberately carries
+#:   no timestamp, because a module-level constant has no runtime clock and
+#:   calling one would put a fabricated time in a string. `live_unavailable_reason()`
+#:   below appends the real one, so use that rather than this constant directly:
+#:   the sentence and its timestamp are one message, and the brief's two
+#:   requirements — a pinned constant, and a reason that names when the attempt
+#:   happened — are satisfied by composing rather than by choosing one.
 #:
 #: Deliberately absent: hostnames, file paths, HTTP status codes, exception
 #: names. Those belong in `LiveStatus.source` / `.http_status` / `.endpoints`,
@@ -101,6 +105,38 @@ LIVE_UNAVAILABLE_REASON = (
     "simulation are unaffected. The time of this attempt is reported with this "
     "message."
 )
+
+
+def live_unavailable_reason(checked_at: str) -> str:
+    """`LIVE_UNAVAILABLE_REASON` with the time of the attempt appended.
+
+    This is the only sanctioned way to build the `reason` of a `live_unavailable`
+    status, and it exists because the two halves of the judge-facing message
+    cannot live in one place. The promise — feed down, nothing substituted,
+    history unaffected — belongs in a pinned constant so it cannot be edited
+    per-source. The time of the attempt is a runtime fact, so it has to be
+    interpolated; and a constant that claimed a timestamp would be a fabricated
+    one. Composing keeps the sentence and its timestamp inseparable, which is
+    the property that matters: a reason with no time cannot be judged stale, and
+    a time with no promise does not say what is being shown instead.
+
+    T3's `probe()` also has diagnostic detail worth showing — "tried 4 sources:
+    403, 403, 404, 200" — and may legitimately prepend or follow that with this.
+    What it must not do is ship a `live_unavailable` reason that omits the
+    promise; the composition is the floor, not the ceiling.
+
+    `checked_at` is the same string as `LiveStatus.checked_at`. Empty is
+    rejected rather than rendered, because an empty timestamp prints as
+    "Attempt made at ." — a message that looks complete and says nothing.
+    """
+    if not checked_at or not checked_at.strip():
+        raise ValueError(
+            "checked_at must be a non-empty UTC timestamp such as "
+            f"'2026-10-01T00:00:00Z'; got {checked_at!r}. An empty value would "
+            'render as "Attempt made at ." — a sentence that looks complete and '
+            "carries no time."
+        )
+    return f"{LIVE_UNAVAILABLE_REASON} Attempt made at {checked_at}."
 
 
 @dataclass(frozen=True)
@@ -181,6 +217,8 @@ class CycloneRecord:
     waypoints: tuple[CycloneWaypoint, ...]
     fetched_at: str
     data_through: str | None
+    #: Finite, or `None`. Expected to be `peak_wind_kmph(record.waypoints)`;
+    #: see that function for why a non-finite value must not survive here.
     peak_wind_kmph: float | None
     limitation: str
 
@@ -193,20 +231,40 @@ class CycloneRecord:
 def peak_wind_kmph(waypoints: Iterable[CycloneWaypoint]) -> float | None:
     """The strongest wind any fix actually reported, in kmph, or `None`.
 
-    A fix contributes only when `wind_reported` is true *and* `wind_kmph` is not
-    `None`. `None` means "we have measured nothing", and returning it is
-    honest; returning `0.0` would feed `0.0` into `surge_for_wind` and produce a
-    surge of 0 m presented as a prediction.
+    A fix contributes only when `wind_reported` is true, `wind_kmph` is not
+    `None`, and that value is finite. `None` means "we have measured nothing",
+    and returning it is honest; returning `0.0` would feed `0.0` into
+    `surge_for_wind` and produce a surge of 0 m presented as a prediction.
 
     A reported `0.0` does contribute, and that asymmetry is deliberate: a
     best-track agency does report 0 kt for a storm that has dissipated, and
     dropping those would understate the storm's life. Both directions are tested
     in `tests/test_cyclones_base.py`.
+
+    Non-finite winds are excluded, and this is not an input-validation
+    niceness — it is a correctness fix. `max()` is order-dependent around NaN:
+    `max(nan, 35.0)` is 35.0 but `max(35.0, nan)` is nan, so a single poisoned
+    fix silently sets the peak of a whole storm to NaN *or* hides behind it,
+    depending on track order. From there `surge_for_wind(nan)` returns nan, and
+    `json.dumps` writes a bare `NaN` token, which is **not JSON** — `json.loads`
+    accepts it only because Python is lenient by default and a conforming
+    parser will not. `float("inf")` is the same class of problem: it would read
+    as the most extreme cyclone ever recorded. The twin of this function,
+    `peakReportedWindKmph` in `mobile/trackFacts.ts`, already guards with
+    `Number.isFinite`; this is that guard, in Python.
+
+    The guard is a backstop, not a licence. A non-finite wind must never reach
+    this function: IBTrACS coerces with `float()` and never range-checks, and
+    `json.loads` will happily read a bare `NaN` back out of a file. So the
+    parsers in T2 and T3 own the rejection, where they can name the row and the
+    column they were reading.
     """
     reported = (
         w.wind_kmph
         for w in waypoints
-        if w.wind_reported and w.wind_kmph is not None
+        if w.wind_reported
+        and w.wind_kmph is not None
+        and math.isfinite(w.wind_kmph)
     )
     return max(reported, default=None)
 
@@ -238,6 +296,14 @@ class LiveStatus:
     `status` is a `Literal`, closed at three values. A fourth state invented by
     a later task is then a type error rather than a string that reaches a client
     unlabelled.
+
+    `reason` carries the rule a judge-facing screen depends on: **a
+    `live_unavailable` status must state that nothing is being substituted for
+    the live feed.** Build it with `live_unavailable_reason(checked_at)`, which
+    is the sentence plus the time of the attempt; a probe that also wants to
+    report what it tried can add that detail, but not instead of the promise.
+    The other two states have no such obligation — `no_active_storm` is a
+    working feed with nothing to report, and `available` has a storm.
     """
 
     status: Literal["available", "live_unavailable", "no_active_storm"]

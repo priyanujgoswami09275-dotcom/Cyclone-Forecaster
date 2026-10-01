@@ -27,6 +27,7 @@ from .base import (
     CycloneSource,
     CycloneWaypoint,
     LiveStatus,
+    live_unavailable_reason,
     peak_wind_kmph,
 )
 
@@ -36,5 +37,6 @@ __all__ = [
     "CycloneSource",
     "CycloneWaypoint",
     "LiveStatus",
+    "live_unavailable_reason",
     "peak_wind_kmph",
 ]

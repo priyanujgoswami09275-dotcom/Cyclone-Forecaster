@@ -12,8 +12,11 @@ What is worth protecting, and why
    `0.0`, so a fix can carry a number that means "not reported". `peak_wind_kmph`
    filters on `wind_reported`, never on the value being non-zero — dropping
    reported zeros would understate a track that weakens to nothing, and turning
-   them into zeros would invent a calm. Both directions are tested (MEMORY.md
-   §31, and the note beside `peakReportedWindKmph` in `main.py`).
+   them into zeros would invent a calm. It also rejects non-finite winds, because
+   `max()` is order-dependent around NaN and `json.dumps` would write a bare
+   `NaN` token that no conforming parser accepts. Both directions are tested
+   (MEMORY.md §31, and `peakReportedWindKmph` in `mobile/trackFacts.ts`, which is
+   the twin of this function on the client).
 2. **`LiveStatus` has three states, not two.** `no_active_storm` means the
    source answered and there is nothing active; `live_unavailable` means we could
    not get a trustworthy answer. Collapsing them would tell a judge that a
@@ -23,7 +26,16 @@ What is worth protecting, and why
    nothing is standing in for it, and that the historical list and the
    deterministic simulation are untouched — because a reader who suspects the
    app quietly fell back to Remal would be right to be suspicious of it.
-4. **The source protocol has exactly one signature.** T3's `fetch` and T2's
+   `live_unavailable_reason()` is how that sentence reaches a status with the
+   time of the attempt attached, so the promise is reachable through the payload
+   rather than floating as an unused constant.
+4. **The declared shapes are contracts, written out as literals.** T2 serves a
+   catalogue from `CycloneRecord.to_dict()`, T7 serves `/live-cyclone` from
+   `LiveStatus.to_dict()`, and T9 types the client off both. So the expected key
+   lists below are hardcoded rather than read back from `dataclasses.fields()`:
+   a test that compares a declaration to itself cannot fail, and a renamed field
+   is a silent `undefined` in a client instead of a failure here.
+5. **The source protocol has exactly one signature.** T3's `fetch` and T2's
    `identifier` must match it or the registry has two dialects.
 """
 
@@ -42,6 +54,7 @@ from backend.cyclones.base import (
     CycloneSource,
     CycloneWaypoint,
     LiveStatus,
+    live_unavailable_reason,
     peak_wind_kmph,
 )
 
@@ -61,26 +74,31 @@ def _waypoint(iso_time: str = "2024-05-25T12:00:00Z", **overrides) -> CycloneWay
     return CycloneWaypoint(**fields)
 
 
+#: The record's field values, module-level so a test can drop one and prove the
+#: constructor rejects it. `_record()` copies it; nothing mutates it.
+_RECORD_FIELDS = {
+    "cyclone_id": "2024145N14087",
+    "name": "REMAL",
+    "season": 2024,
+    "basin": "N",
+    "subbasin": None,
+    "source": "ibtracs_v04r01_ni",
+    "observed": True,
+    "waypoints": (
+        _waypoint(),
+        _waypoint("2024-05-25T15:00:00Z", latitude=19.4, wind_kmph=None,
+                  wind_reported=False),
+    ),
+    "fetched_at": "2026-10-01T00:00:00Z",
+    "data_through": "2024-05-26T18:00:00Z",
+    "peak_wind_kmph": 35.0,
+    "limitation": "Screening estimate, not a forecast.",
+}
+
+
 def _record(**overrides) -> CycloneRecord:
     """A minimal two-fix record; overrides let a test state only what differs."""
-    fields = {
-        "cyclone_id": "2024145N14087",
-        "name": "REMAL",
-        "season": 2024,
-        "basin": "N",
-        "subbasin": None,
-        "source": "ibtracs_v04r01_ni",
-        "observed": True,
-        "waypoints": (
-            _waypoint(),
-            _waypoint("2024-05-25T15:00:00Z", latitude=19.4, wind_kmph=None,
-                      wind_reported=False),
-        ),
-        "fetched_at": "2026-10-01T00:00:00Z",
-        "data_through": "2024-05-26T18:00:00Z",
-        "peak_wind_kmph": 35.0,
-        "limitation": "Screening estimate, not a forecast.",
-    }
+    fields = dict(_RECORD_FIELDS)
     fields.update(overrides)
     return CycloneRecord(**fields)
 
@@ -144,6 +162,43 @@ def test_peak_wind_ignores_an_unreported_zero():
     assert peak_wind_kmph((unreported_zero,)) is None
 
 
+def test_peak_wind_ignores_a_non_finite_wind():
+    """A NaN must not be able to poison the maximum, in either track order.
+
+    `max()` is order-dependent around NaN — `max(nan, 35.0)` is 35.0 but
+    `max(35.0, nan)` is nan — so a single poisoned fix either sets a whole
+    storm's peak to NaN or hides behind the real peak, depending on where the
+    source happened to put it in the file. From there `surge_for_wind(nan)`
+    returns nan, and `json.dumps` writes a bare `NaN` token: not JSON. Any
+    conforming client parser rejects the response.
+
+    `peakReportedWindKmph` in `mobile/trackFacts.ts` already guards with
+    `Number.isFinite`; this is the same guard, in Python. The parser in T2/T3
+    owns rejecting it at the row, but the peak must not depend on it.
+    """
+    nan_fix = _waypoint(wind_kmph=float("nan"), wind_reported=True)
+    real = _waypoint("2024-05-25T15:00:00Z", wind_kmph=35.0, wind_reported=True)
+    assert peak_wind_kmph((real, nan_fix)) == 35.0
+    assert peak_wind_kmph((nan_fix, real)) == 35.0
+    # Alone, a NaN is "no measurement", not a measurement.
+    assert peak_wind_kmph((nan_fix,)) is None
+
+    # Infinity is the same class of poison: it would read as the most extreme
+    # cyclone ever recorded, and `surge_for_wind(inf)` is inf metres of surge.
+    inf_fix = _waypoint(wind_kmph=float("inf"), wind_reported=True)
+    neg_inf_fix = _waypoint(wind_kmph=float("-inf"), wind_reported=True)
+    assert peak_wind_kmph((inf_fix,)) is None
+    assert peak_wind_kmph((neg_inf_fix,)) is None
+    assert peak_wind_kmph((real, inf_fix)) == 35.0
+
+    # The consequence, stated concretely: this is what the guard prevents from
+    # reaching a client. Python's json writes NaN because it is lenient by
+    # default; `allow_nan=False` is what a conforming writer does.
+    assert "NaN" in json.dumps({"peak_wind_kmph": float("nan")})
+    with pytest.raises(ValueError):
+        json.dumps({"peak_wind_kmph": float("nan")}, allow_nan=False)
+
+
 # --------------------------------------------------------------------------
 # Serialization — T2 and T7 both hand these objects to json.dumps
 # --------------------------------------------------------------------------
@@ -151,7 +206,12 @@ def test_peak_wind_ignores_an_unreported_zero():
 
 def test_waypoint_to_dict_round_trips_through_json():
     d = _waypoint().to_dict()
-    assert set(d) == {
+    # Hardcoded, and in order: the brief constructs waypoints positionally
+    # (`CycloneWaypoint("...", 19.2, 89.2, 35.0, True, None, "TS")`), so a
+    # reorder is a break, not a cosmetic change. Written out rather than derived
+    # from `dataclasses.fields()` — comparing the class against itself proves
+    # nothing, it just cannot fail.
+    assert list(d) == [
         "iso_time",
         "latitude",
         "longitude",
@@ -159,7 +219,7 @@ def test_waypoint_to_dict_round_trips_through_json():
         "wind_reported",
         "pressure_hpa",
         "nature",
-    }
+    ]
     assert json.loads(json.dumps(d)) == d
 
 
@@ -181,8 +241,66 @@ def test_record_to_dict_round_trips_through_json():
 
 
 def test_record_to_dict_keeps_the_field_names_the_record_declares():
-    d = _record().to_dict()
-    assert [f.name for f in dataclasses.fields(CycloneRecord)] == list(d)
+    """The 12 keys, hardcoded and in the brief's order.
+
+    Nine later tasks consume this dict — T2 builds the whole catalogue from it,
+    T7 serves `/cyclones` and `/cyclones/{id}/track` from it. A rename is a
+    breaking change to a response contract, and this test is where that rename
+    gets caught instead of a `KeyError` six call sites away.
+
+    `dataclasses.fields()` is deliberately NOT the source of the expected list.
+    Comparing the declaration against itself cannot fail — a renamed field just
+    renames on both sides — so the earlier version of this test proved nothing.
+    """
+    assert list(_record().to_dict()) == [
+        "cyclone_id",
+        "name",
+        "season",
+        "basin",
+        "subbasin",
+        "source",
+        "observed",
+        "waypoints",
+        "fetched_at",
+        "data_through",
+        "peak_wind_kmph",
+        "limitation",
+    ]
+
+
+# --------------------------------------------------------------------------
+# The caveat that may not be defaulted away
+# --------------------------------------------------------------------------
+
+
+def test_limitation_is_mandatory_and_cannot_be_defaulted_away():
+    """No default. Ever.
+
+    This is the whole enforcement of "a screening estimate must never read as a
+    forecast" on this record. A `limitation: str = ""` default would let every
+    caller forget it, and a forgotten caveat is indistinguishable from no caveat
+    on a screen — so the declaration is what gets asserted here, not a value. A
+    test asserting `d["limitation"]` proves nothing: a fixture compares its own
+    literal to itself and passes for a defaulted field just as happily.
+    """
+    assert dataclasses.fields(CycloneRecord)[-1].name == "limitation"
+    assert dataclasses.fields(CycloneRecord)[-1].default is dataclasses.MISSING
+
+    # Stronger than the one field: *nothing* on the record may be defaulted, so
+    # a later task cannot make a constructor call shorter by adding one.
+    defaulted = [
+        f.name
+        for f in dataclasses.fields(CycloneRecord)
+        if f.default is not dataclasses.MISSING
+    ]
+    assert defaulted == []
+
+    # And behaviourally, not just structurally: a record without a limitation
+    # cannot be constructed at all.
+    without = dict(_RECORD_FIELDS)
+    without.pop("limitation")
+    with pytest.raises(TypeError, match="limitation"):
+        CycloneRecord(**without)
 
 
 # --------------------------------------------------------------------------
@@ -200,6 +318,28 @@ def test_live_status_serialises_with_source_and_timestamp():
     assert d["http_status"] == 403
     assert d["checked_at"] == "2026-10-01T00:00:00Z"
     assert d["endpoints"]
+
+
+def test_live_status_to_dict_keys_are_the_endpoint_response_contract():
+    """The six keys, hardcoded.
+
+    T7 serves `GET /live-cyclone` from this dict verbatim, and T9's
+    `apiCyclones.ts` types the response from it. So these six names *are* an API
+    contract, and a renamed key is a client that silently reads `undefined`.
+    Hardcoded rather than compared against `dataclasses.fields(LiveStatus)`, for
+    the same reason as the record test above: the declaration cannot disagree
+    with itself.
+    """
+    s = LiveStatus("no_active_storm", "example", 200, "Feed answered; no NI "
+                   "cyclone listed.", "2026-10-01T00:00:00Z", ("https://x/y",))
+    assert list(s.to_dict()) == [
+        "status",
+        "source",
+        "http_status",
+        "reason",
+        "checked_at",
+        "endpoints",
+    ]
 
 
 def test_live_status_values_are_closed_at_the_type_level():
@@ -244,6 +384,57 @@ def test_live_unavailable_reason_names_the_limitation_and_promises_no_substitute
     assert "{" not in r and "}" not in r
     assert "/" not in r and "http" not in r.lower()
     assert len(r) < 400, "this is a sentence on a screen, not a specification"
+
+
+def test_live_unavailable_reason_composes_the_constant_with_the_time_of_the_attempt():
+    """The constant alone is not the message. Composed, it is.
+
+    The brief wants two things that a single constant cannot both be: pinned
+    wording nobody edits per-source, and a reason that names when the attempt
+    happened. `live_unavailable_reason()` is how both hold — the pinned sentence
+    plus a real timestamp, never a fabricated one baked into a module-level
+    string.
+    """
+    composed = live_unavailable_reason("2026-10-01T00:00:00Z")
+    # The promise survives verbatim — that is the whole point of composing
+    # rather than reformatting.
+    assert LIVE_UNAVAILABLE_REASON in composed
+    assert "substitut" in composed.lower()
+    # And so does the time.
+    assert "2026-10-01T00:00:00Z" in composed
+    assert composed.startswith(LIVE_UNAVAILABLE_REASON)
+
+
+def test_a_live_unavailable_status_can_carry_the_composed_reason():
+    """The guarantee is reachable through the payload, not just the constant.
+
+    A free-floating constant is a convention; this is the path T3's `probe()`
+    takes. The diagnostic detail a probe has ("tried 4 sources: 403, ...") may
+    go with it — what may not replace it is the promise.
+    """
+    checked_at = "2026-10-01T00:00:00Z"
+    s = LiveStatus(
+        "live_unavailable",
+        "nrlmry.navy.mil",
+        403,
+        live_unavailable_reason(checked_at),
+        checked_at,
+        ("https://www.nrlmry.navy.mil/atcf_web/docs/current_storms.txt",),
+    )
+    d = s.to_dict()
+    assert d["status"] == "live_unavailable"
+    assert LIVE_UNAVAILABLE_REASON in d["reason"]
+    assert d["checked_at"] in d["reason"]
+    # And it survives the wire, because that is where it is read.
+    assert LIVE_UNAVAILABLE_REASON in json.loads(json.dumps(d))["reason"]
+
+
+def test_live_unavailable_reason_refuses_an_empty_timestamp():
+    """An empty timestamp renders as "Attempt made at ." — complete-looking and
+    empty. Refused at the point of composition, where the caller can be named."""
+    for bad in ("", "   "):
+        with pytest.raises(ValueError, match="checked_at"):
+            live_unavailable_reason(bad)
 
 
 # --------------------------------------------------------------------------
