@@ -25,7 +25,7 @@ Three ways this file can lie on a judge's screen, in order of how bad each looks
    `limitation` string has to say so on the record itself, not in a changelog.
 
 Two corrections to the plan this file was written from, both checked against
-the committed CSV rather than assumed (see `test_two_basins_never_collide_into_one_id`):
+the archive rather than assumed (see `test_two_basins_never_collide_into_one_id`):
 
 - An IBTrACS `SID` is **13** characters, not 14, and its basin letter is at
   **index 7**, not 11: `<4-digit season><3-digit number><basin letter><5
@@ -52,6 +52,7 @@ import json
 import os
 import subprocess
 import sys
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -75,7 +76,7 @@ TRACK_GEOJSON = REPO_ROOT / "data" / "remal_track.geojson"
 
 
 def _raw_rows() -> list[dict[str, str]]:
-    """Every row of the committed CSV, unfiltered — the thing we must not trust."""
+    """Every row of the archive, unfiltered — the thing we must not trust."""
     with DEFAULT_IBTRACS_PATH.open(newline="") as fh:
         return list(csv.DictReader(fh))
 
@@ -123,6 +124,60 @@ def test_a_non_finite_reading_never_becomes_a_number():
 # ---------------------------------------------------------------------------
 # 2. The basin filter. The property the whole file is named after.
 # ---------------------------------------------------------------------------
+
+
+def test_the_archives_structural_shape_is_what_the_docstrings_say():
+    """Recomputes the shape numbers `historical.py` quotes, so they cannot rot.
+
+    This exists because a bare measured figure in a docstring, re-counted by
+    hand, got the implausible-fix count wrong in this feature and a review had
+    to catch it. A number no test derives is a number that goes stale silently.
+    So the structural claims — record count, column count, season span, the
+    non-NI rows the filter exists to remove, the blank winds that make rule 1 of
+    `base.py` matter — are all derived from the file here.
+
+    A future archive revision moves these numbers in this test and in the
+    docstrings in the same edit, or fails here, which is the point.
+    """
+    with DEFAULT_IBTRACS_PATH.open(newline="") as fh:
+        reader = csv.DictReader(fh)
+        columns = len(reader.fieldnames)
+        raw = list(reader)
+
+    ni = [r for r in raw if (r.get("BASIN") or "").strip() == NI_BASIN_CODE]
+    basins = Counter((r.get("BASIN") or "").strip() for r in raw)
+
+    # The docstring's "62,860 records (62,861 lines counting the header)".
+    assert len(raw) == 62860
+    with DEFAULT_IBTRACS_PATH.open(encoding="utf-8") as fh:
+        assert sum(1 for _ in fh) == 62861
+
+    assert columns == 174
+    # Stripped, so the units row counts as "" — the single space it actually is.
+    assert basins == {"NI": 57852, "WP": 4525, "NA": 482, "": 1}
+
+    seasons = sorted({int(r["SEASON"]) for r in ni})
+    assert (seasons[0], seasons[-1]) == (1842, 2026)
+
+    # "USA_WIND is blank on 45,280 of 57,852 NI fixes" — the count that makes
+    # rule 1 of base.py a real rule rather than a hypothetical one.
+    blank_wind = sum(1 for r in ni if not (r["USA_WIND"] or "").strip())
+    assert (blank_wind, len(ni)) == (45280, 57852)
+
+    # "NATURE ... NR on 3,014 of them" — the values that must survive verbatim.
+    assert sum(1 for r in ni if (r["NATURE"] or "").strip() == "NR") == 3014
+
+    # "52,950 of the 57,852 NI fixes are UNNAMED, covering 1,713 of the 1,859
+    # storms" — the placeholder that must not be prettified.
+    unnamed_fixes = sum(1 for r in ni if (r["NAME"] or "").strip() == "UNNAMED")
+    unnamed_storms = {r["SID"] for r in ni if (r["NAME"] or "").strip() == "UNNAMED"}
+    assert unnamed_fixes == 52950
+    assert len(unnamed_storms) == 1713
+    assert len({r["SID"] for r in ni}) == 1859
+
+    # "It reads a 27 MB CSV" — the only number here that is a rounding of
+    # another, and the one most likely to drift on a new revision.
+    assert round(DEFAULT_IBTRACS_PATH.stat().st_size / 1024 / 1024) == 27
 
 
 def test_only_north_indian_ocean_rows_are_read():
@@ -542,18 +597,31 @@ def test_pressure_is_none_when_the_file_has_none():
     the file, and the file says 10.9%. Filling the other 89% with an
     interpolated or default pressure would be the fabrication this project has
     been wrong about before.
+
+    The ratio is **recomputed from the raw file** rather than asserted as a
+    literal, so a future archive revision moves the number in this docstring and
+    this test in the same edit instead of the docstring quietly going stale.
     """
+    raw = list(read_ni_rows())
+    source_pres = [
+        r
+        for r in raw
+        if (r["USA_PRES"] or "").strip() not in ("", "-1", "-999", "-9999")
+    ]
+    assert source_pres, "IBTrACS does report some pressures"
+    assert round(100 * len(source_pres) / len(raw), 1) == 10.9, "the docstring's 10.9%"
+
     with_pres = [
         w
         for c in build_catalogue()["cyclones"]
         for w in c["waypoints"]
         if w["pressure_hpa"] is not None
     ]
-    assert with_pres, "IBTrACS does report some pressures"
-    assert all(850.0 <= w["pressure_hpa"] <= 1080.0 for w in with_pres)
     # Every fix that has a pressure also has a wind: both come from the US
     # agency columns, and where one is missing the other is too. Measured: zero
     # rows in the whole file have `USA_PRES` without `USA_WIND`.
+    assert len(with_pres) == len(source_pres)
+    assert all(850.0 <= w["pressure_hpa"] <= 1080.0 for w in with_pres)
     assert all(w["wind_kmph"] is not None for w in with_pres)
 
 
@@ -620,6 +688,82 @@ def test_latitude_and_longitude_are_never_substituted():
         for waypoint in cyclone["waypoints"]:
             assert 0.0 <= waypoint["latitude"] <= 90.0
             assert 0.0 <= waypoint["longitude"] <= 180.0
+
+
+def test_an_implausible_coordinate_is_carried_as_written_not_clamped():
+    """`historical.py` says implausible coordinates survive the parse. This
+    proves it from the archive rather than trusting that sentence.
+
+    `SUBBASIN == "AS"` is IBTrACS's Arabian Sea, which does not extend much
+    past 25 N. Six NI storms in this file reach past 32 N, the northernmost at
+    83.0. The rule is that this module carries them, because deciding an
+    observation is implausible is a policy it does not have — so the assertion
+    is that the catalogue holds the implausible latitude **unchanged**, and the
+    figures are recomputed from the file rather than written as literals.
+
+    That recomputation is the durable part. A bare measured number in a
+    docstring, re-counted by hand, got a fix count wrong once in this feature
+    and a review had to catch it; a number no test derives is a number that goes
+    stale silently. These are derived, so a new archive revision moves them
+    here and in the docstring in the same edit.
+    """
+    rows = list(read_ni_rows())
+
+    # 32 N, not something tighter or looser. The Arabian Sea does not extend
+    # much past 25 N, so anything past 32 is not a borderline judgement call but
+    # an archive artefact, and 32 is the same upper bound
+    # `test_no_published_waypoint_lies_outside_the_north_indian_ocean` already
+    # uses — which is why every storm this finds is pre-1970 and that test still
+    # passes over the whole 1,859. At a looser 40 N the two sets are identical
+    # (measured), so the choice is not load-bearing on where it sits.
+    affected = {
+        r["SID"]
+        for r in rows
+        if (r["SUBBASIN"] or "").strip() == "AS" and float(r["LAT"]) > 32.0
+    }
+    assert len(affected) == 6, "measured: six NI storms reach past 32 N"
+
+    # Extremes over every fix of each affected storm, not just the implausible
+    # ones — a storm that reaches 83 N also has ordinary fixes, and the claim
+    # under test is about the whole record coming through unchanged.
+    by_storm: dict[str, list[float]] = {}
+    for row in rows:
+        if row["SID"] in affected:
+            by_storm.setdefault(row["SID"], []).append(float(row["LAT"]))
+    extremes = {sid: (min(lats), max(lats)) for sid, lats in by_storm.items()}
+
+    # Both storms the module docstring names are here, with the figures it
+    # quotes, and two more reach 69.5 N.
+    assert extremes["1966233N13340"] == (65.2, 83.0)
+    assert extremes["1951272N20274"] == (80.8, 81.0)
+    assert {"1932244N19296", "1961249N14342"} <= set(extremes)
+    assert all(max_lat > 32.0 for _, max_lat in extremes.values())
+    # Four of the six are storms that ran north out of the Arabian Sea and back;
+    # the other two never left it and are the outright artefacts, both pinned
+    # above. Sorted so the list reads as a shape rather than a set.
+    assert sorted(max_lat for _, max_lat in extremes.values()) == [
+        33.5, 34.3, 69.5, 72.2, 81.0, 83.0,
+    ]
+
+    # The rule itself: every latitude survives exactly as filed, not clamped by
+    # the one range check in `_row_waypoint`.
+    published = {
+        c["cyclone_id"]: c["waypoints"]
+        for c in build_catalogue(since=0)["cyclones"]
+        if c["cyclone_id"] in affected
+    }
+    assert set(published) == set(affected), "every such storm is published"
+    for storm_id, waypoints in published.items():
+        assert min(w["latitude"] for w in waypoints) == extremes[storm_id][0]
+        assert max(w["latitude"] for w in waypoints) == extremes[storm_id][1]
+        # No fix was dropped from any of them on the way in.
+        assert len(waypoints) == len(by_storm[storm_id])
+
+    # It is the default season window, not the parse, that keeps these out of the
+    # shipped catalogue — which is what the module docstring says. All six are
+    # pre-1970, so `since=0` is needed to see them at all.
+    default_ids = {c["cyclone_id"] for c in build_catalogue()["cyclones"]}
+    assert not (affected & default_ids), "all six storms are pre-1970"
 
 
 def test_the_unnamed_placeholder_is_preserved_as_the_file_wrote_it():
@@ -904,7 +1048,7 @@ def test_source_records_are_the_catalogue(source: IbtracsSource):
 # 9. Rules that cannot be tested against the real file.
 # ---------------------------------------------------------------------------
 #
-# The committed CSV is clean: no NI fix is missing a coordinate and no NI
+# The archive is clean: no NI fix is missing a coordinate and no NI
 # `SEASON` fails to parse, so the two drop rules in `build_catalogue` never fire
 # on it. They get a synthetic subset with the same header, which also pins the
 # units row — the other thing a hand-made IBTrACS subset gets wrong.

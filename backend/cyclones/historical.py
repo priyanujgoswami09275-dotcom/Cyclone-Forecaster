@@ -20,8 +20,20 @@ document a fetch step. Nothing in this module assumes which. It assumes only
 that the file is there: `read_ni_rows` and `build_catalogue` both fail loudly
 rather than inventing a catalogue when it is not, and
 `backend/data_pipeline/ingest_ibtracs_ni.py` says in its error message which
-file is missing. A test that needs the archive skips rather than failing if it
-is absent — except where the assertion is *about* the archive.
+file is missing.
+
+**Without the archive the test suite fails; it does not skip.** There is no
+`skipif` on any of them, no `tests/conftest.py`, and no pytest config in this
+repo. This is a deliberate trade and the other way round was available:
+`tests/test_overlays.py` has used `pytestmark = pytest.mark.skipif(...)` for a
+missing overlay this whole time. Skipping is wrong here because a green suite
+has to mean *the assertions ran*. A skip is green, so a missing archive would
+read as a passing suite and the failure would surface much later — as a
+catalogue that quietly stopped being regenerated, or as a reviewer's question
+answered by a test that never executed. A `FileNotFoundError` is loud and
+immediate, and it names the file, which is the one thing a person needs to know.
+The cost is that this suite cannot go green on a fresh clone until the archive
+is placed; the benefit is that green is never a lie.
 
 What is in the file, measured, because the file is not what its name says
 -------------------------------------------------------------------------
@@ -110,8 +122,10 @@ What this module refuses to do
   the parser, where the message can name the line — but a range check is also a
   policy about which observations count, and this file has no such policy. So
   an implausible coordinate is carried as written, including 1966 storm
-  `1966233N13340`'s run of fixes from 80.5 N to 83.0 N, and
-  `tests/test_ibtracs_ni.py` checks the hemispheres rather than a bbox.
+  `1966233N13340`, which runs from 65.2 N up to 83.0 N while filed under
+  `SUBBASIN == "AS"` (Arabian Sea). `tests/test_ibtracs_ni.py` recomputes that
+  from the archive rather than trusting a number written here, and checks the
+  hemispheres rather than a bbox.
 - **It does not filter by name or recency.** `since` is a season floor and
   nothing else. 1,713 of the NI storms are `UNNAMED` and they stay `UNNAMED`;
   the app is a cyclone forecaster, not a cyclone hall of fame, and a catalogue
@@ -486,9 +500,9 @@ def _row_waypoint(row: dict[str, str]) -> CycloneWaypoint | None:
         # the globe is a parse bug in every reading: a hemispheric swap, a
         # concatenated field. It is a rejection, not a repair — nothing is
         # clamped, and no value is corrected. (A merely *implausible* fix is
-        # carried as written: 1966 storm `1966233N13340` holds 27 fixes from
-        # 80.5 N up to 83.0 N, and 1951's `1951272N20274` reaches 81.0 N, both
-        # filed under `SUBBASIN == "AS"`. Both are pre-1970 and so outside the
+        # carried as written: 1966 storm `1966233N13340` runs from 65.2 N up to
+        # 83.0 N, and 1951's `1951272N20274` sits at 80.8-81.0 N, both filed
+        # under `SUBBASIN == "AS"`. Both are pre-1970 and so outside the
         # catalogue's default window, but they are in the 1,859. Which
         # observations to disbelieve is not this module's call.)
         return None
