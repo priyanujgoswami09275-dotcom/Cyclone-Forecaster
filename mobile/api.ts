@@ -813,7 +813,19 @@ export function nearestCategory(
  * running in the background and still spend the user's Gemini quota after
  * the UI has given up.
  */
-async function request<T>(
+/**
+ * One `fetch`, with the timeout and the error taxonomy applied.
+ *
+ * Exported for `apiCyclones.ts`, which serves the Dynamic Cyclone System
+ * endpoints. It needs the same `request` rather than a second copy: a second
+ * copy is a second place for the timeout, the `AbortError`/`TypeError`
+ * distinction and the `Retry-After` parsing to disagree with the first, and
+ * only one of them would be tested.
+ *
+ * Not part of the app's own call surface — every endpoint function below is
+ * the intended entry point.
+ */
+export async function request<T>(
   path: string,
   init: RequestInit,
   timeoutMs: number,
@@ -968,13 +980,37 @@ export function getLocalities(): Promise<LocalitiesResponse> {
 }
 
 /**
+ * The cyclone/scenario scoping parameters, as a query string fragment.
+ *
+ * **Absent means "the case study at the default scenario"**, which is what
+ * every existing call site asks for. The parameters are omitted rather than
+ * sent as `undefined`, so a request captured before the Dynamic Cyclone System
+ * existed is byte-identical to the same request made now — a captured fixture
+ * stays a fixture.
+ */
+function scopeQuery(cycloneId?: string, scenarioId?: string): string {
+  const parts: string[] = [];
+  if (cycloneId) parts.push(`cyclone_id=${encodeURIComponent(cycloneId)}`);
+  if (scenarioId) parts.push(`scenario_id=${encodeURIComponent(scenarioId)}`);
+  return parts.join('&');
+}
+
+/**
  * Cyclone Remal's observed best track, from the committed IBTrACS extract.
  *
  * Not a slider endpoint: the track is a historical fact, so it is fetched once
  * at boot and never refetched when the intensity changes.
+ *
+ * `cycloneId` addresses another storm. Absent is Remal, and the URL is
+ * unchanged.
  */
-export function getTrack(): Promise<TrackResponse> {
-  return request<TrackResponse>('/track', { method: 'GET' }, READ_TIMEOUT_MS);
+export function getTrack(cycloneId?: string): Promise<TrackResponse> {
+  const scope = scopeQuery(cycloneId);
+  return request<TrackResponse>(
+    `/track${scope ? `?${scope}` : ''}`,
+    { method: 'GET' },
+    READ_TIMEOUT_MS,
+  );
 }
 
 export function getSurgeZone(category: number): Promise<SurgeZoneResponse> {
@@ -985,9 +1021,21 @@ export function getSurgeZone(category: number): Promise<SurgeZoneResponse> {
   );
 }
 
-export function getExposure(category: number): Promise<ExposureResponse> {
+/**
+ * The exposure for one strength.
+ *
+ * `cycloneId` / `scenarioId` scope the request to another storm or another
+ * strength. Both absent is the case study at the chosen category — the call
+ * every existing screen makes, and the URL it has always made.
+ */
+export function getExposure(
+  category: number,
+  cycloneId?: string,
+  scenarioId?: string,
+): Promise<ExposureResponse> {
+  const scope = scopeQuery(cycloneId, scenarioId);
   return request<ExposureResponse>(
-    `/exposure?category=${category}`,
+    `/exposure?category=${category}${scope ? `&${scope}` : ''}`,
     { method: 'GET' },
     READ_TIMEOUT_MS,
   );
@@ -996,17 +1044,29 @@ export function getExposure(category: number): Promise<ExposureResponse> {
 /**
  * `origin` is a locality ID from /localities (e.g. "sagar"), never a name
  * and never a coordinate.
+ *
+ * `cycloneId` / `scenarioId` scope the request; both absent leaves the URL
+ * exactly as it was.
  */
-export function getRoutes(category: number, origin: string): Promise<RoutesResponse> {
-  const q = `category=${category}&origin=${encodeURIComponent(origin)}`;
+export function getRoutes(
+  category: number,
+  origin: string,
+  cycloneId?: string,
+  scenarioId?: string,
+): Promise<RoutesResponse> {
+  const scope = scopeQuery(cycloneId, scenarioId);
+  const q = `category=${category}&origin=${encodeURIComponent(origin)}${scope ? `&${scope}` : ''}`;
   return request<RoutesResponse>(`/routes?${q}`, { method: 'GET' }, READ_TIMEOUT_MS);
 }
 
 export function getAllocation(
   category: number,
   origin: string,
+  cycloneId?: string,
+  scenarioId?: string,
 ): Promise<AllocationResponse> {
-  const q = `category=${category}&origin=${encodeURIComponent(origin)}`;
+  const scope = scopeQuery(cycloneId, scenarioId);
+  const q = `category=${category}&origin=${encodeURIComponent(origin)}${scope ? `&${scope}` : ''}`;
   return request<AllocationResponse>(`/allocation?${q}`, { method: 'GET' }, READ_TIMEOUT_MS);
 }
 
