@@ -205,6 +205,36 @@ superseded light-theme specs, which are kept in git history.
   tappable and `onRequestClose` is wired, or the sheet traps the user on
   Android.
 
+### The dynamic-cyclone components, 2026-10-02
+
+Three components were added for storm selection and comparison. **None of them
+introduces a colour, a type size or a radius** — they are built from the
+existing token table, which is why there is no new spec section, only a record
+of where they sit.
+
+- **`CyclonePicker`** — sits above `StrengthChips` in `PanelStep` 1, which was
+  retitled "Pick a storm". Horizontally scrolling chips using the same
+  `selectedFill`/`selectedText` selected state as the strength chips, plus a
+  two-option `Historical | Live` segmented toggle using `accessibilityState
+  { selected }`. The live state renders a `caption`/`textMuted` banner from
+  `liveBannerText` — one of exactly three strings (`Live`, `No active cyclone`,
+  `Live feed unavailable`), with **no storm name** when unavailable, because a
+  name is a claim only the `available` state licenses.
+- **`ScenarioComparePanel`** and **`RiskAnalystPanel`** — content-only, no
+  `Modal` of their own. On **native** they are wrapped in the existing
+  `AdvisoryModal`; on **Web** they render inline in the control column, because
+  a modal would hide the map, which is the thing being compared. This matches
+  `AdvisoryPanel`'s long-standing treatment on both platforms.
+- Reached from two `GhostButton`s in `PanelStep` 3, under the primary action,
+  with a shared `secondaryActions` row so they align rather than stack
+  arbitrarily.
+
+The masthead `Text` is now derived from the selected storm rather than being
+the literal "Cyclone Remal, May 2024", which used to sit above a map drawing a
+different storm's track. The case study keeps its exact original wording when
+selected, and its anchor line gains a `Case study — ` prefix the moment
+something else is on screen.
+
 ### The native map — Leaflet in a WebView, 2026-10-01
 
 **This section replaces the map's renderer.** The design decisions below it
@@ -263,13 +293,19 @@ the exact procedure:
    MEMORY.md §50, so look specifically for pins in the *northern* part of the
    map, which is where every exposed asset is.
 5. **Check the track control.** Tap the track control; the camera should fit the
-   whole 19-fix track. Tap again; it should return to the study region. Pressing
+   whole 40-fix track. Tap again; it should return to the study region. Pressing
    either twice must work both times.
 6. **Check a tap.** Tap a hospital disc — the popup should show the asset name
    and status, and should be plain text.
 7. **Switch to airplane mode and reload.** The banner should appear rather than a
    blank grey rectangle. That is the "never leave a blank map" requirement, and
    it is the one check most likely to be skipped.
+8. **Check the storm picker and its two sheets.** In step 1, confirm the picker
+   lists storms and that Remal is selected. Pick another storm: the track and
+   the header must both change to it. Then open *Compare scenarios* and
+   *Generate analysis* — both open in the advisory modal on native, and both
+   must keep the map reachable when dismissed. **None of this has ever been
+   seen on a handset**; it is type-checked and unit-tested only.
 
 ### The basemap (`customMapStyle`)
 

@@ -41,7 +41,8 @@ simulator — it's more credible and gives a concrete demo narrative.
 ## Architecture — data flow
 
 ```
-Data sources (track, OSM infra, DEM, historical cyclone dataset)
+Data sources (IBTrACS track + full NI catalogue, OSM infra, DEM,
+              historical cyclone dataset, ATCF live feeds, Open-Meteo*)
         |
 Surge model — anchored quadratic scaling: 1.2 x (wind/115)^2,
               scaled from one observed event (NOT a trained regression;
@@ -52,10 +53,23 @@ Simulation engine:
   - Evacuation routing (graph search over live road network)
   - Shelter allocation (linear programming / transportation problem)
         |
+Dynamic cyclone layer:
+  - Historical catalogue — 610 NI storms, BASIN == 'NI' at ingestion
+  - Scenarios per storm — observed (only where a track is committed) + 7 bands
+  - Live ATCF probe — 4 configurable endpoints; live_unavailable is the
+    expected default, never backfilled with a historical storm
+  - Storm-peak-intensity model — gate FAILED against the flat median,
+    so the median ships, labelled as a baseline
+        |
 Gemini AI — synthesizes the district advisory from all computed outputs
         |
 Mobile app (Expo / React Native) — displays everything
+           (two map screens + cyclone picker, comparison sheet,
+            risk-analyst panel)
 ```
+
+\* Open-Meteo is implemented and tested under `backend/weather/` but is
+**wired to no route** — see README "Weather context".
 
 Deployment: **Render** hosts the FastAPI backend (free tier — pre-warm
 before live demos, cold start is 30–50s after 15 min idle).
@@ -64,10 +78,13 @@ before live demos, cold start is 30–50s after 15 min idle).
 
 | Layer | Tool | Used for |
 |---|---|---|
-| Data | IBTrACS | Real historical track (lat/lon/wind/time) for Remal |
+| Data | IBTrACS | Remal's track (`ibtracs.NI.list.v04r00.csv` URL), and the full catalogue from `ibtracs.NI.list.v04r01.csv` filtered to `BASIN == 'NI'` |
 | Data | OpenStreetMap (Overpass API) | Hospitals, substations, roads for the affected districts |
 | Data | Google Earth Engine | SRTM 30m elevation (DEM) — terrain for the flood model |
+| Data | ATCF best-track feeds | Live cyclone probe. 4 configurable endpoints, no mirror (none is public for the NI basin) |
+| Data | Open-Meteo | Weather context layer — **implemented and tested, wired to no route** |
 | Surge | plain arithmetic | `surge_m = 1.2 x (wind_kmph/115)^2`, anchored on Remal's documented 1.2 m at 115 km/h. No ML ships — see "Corrections / gotchas" |
+| ML | scikit-learn linear regression | Storm **peak** intensity. **Gate FAILED** (21.94 kt vs 21.03 kt baseline, LOOCV over 300 storms) — the flat median ships, labelled `median_baseline` |
 | Simulation | NumPy / a BFS queue | Time-stepped flood propagation (cellular automaton) |
 | Simulation | osmnx + networkx | Road network graph; Dijkstra shortest safe path avoiding flooded edges |
 | Simulation | scipy.optimize.linprog | Shelter allocation as a capacitated transportation problem |
@@ -88,6 +105,36 @@ before live demos, cold start is 30–50s after 15 min idle).
 https://www.ncei.noaa.gov/data/international-best-track-archive-for-climate-stewardship/v04r00/access/csv/ibtracs.NI.list.v04r00.csv
 ```
 Filter `NAME == "REMAL"`, `SEASON == "2024"`. Skip row index 1 (units row).
+
+**This exact URL now 404s** — NOAA moved the dataset to an `...-ibtracs` suffix
+on the path segment. `backend/data_pipeline/fetch_ibtracs.py` carries the
+corrected URL with a comment; the dataset and version are unchanged. Don't
+"fix" it back.
+
+**IBTrACS full catalogue (all North Indian Ocean storms)**
+```
+ibtracs.NI.list.v04r01.csv     # local, NOT in git — required input
+```
+Built by `backend/data_pipeline/ingest_ibtracs_ni.py`, which filters
+**strictly `BASIN == 'NI'`** and produces `data/cyclones/catalogue.json`:
+**610 storms, 1970–2026**, Remal first and flagged `is_case_study`. The filter
+is at ingestion, not at read time, so the catalogue cannot silently acquire a
+Western Pacific storm.
+
+Two columns in this file are easy to misread:
+
+- **`LANDFALL` is a distance in kilometres, not a flag.** The archive's own
+  units row says km, and every value is a whole number, which is what makes it
+  look boolean — 22,007 rows read `0`, 1,857 are blank, 55,995 are numeric and
+  33,988 of those are positive, reaching 1,463 km. Zero means *zero kilometres
+  to land*, a measurement, not "did not make landfall"; a boolean read would
+  stamp "at the coast" onto 38% of rows. The peak-intensity feature builder
+  deliberately does not use it as a categorical; see
+  `backend/ml/storm_peak_intensity.py` and `tests/test_storm_peak_intensity.py`,
+  where each of those counts is recomputed from the CSV rather than quoted.
+- **`USA_WIND` is in knots**, and a blank is written as `0.0` upstream. A blank
+  wind and a `0` wind are different claims (MEMORY.md §31), so ingestion marks
+  wind as reported/unreported rather than trusting the zero.
 
 **OSM infrastructure (Overpass API)** — bbox covers South/North 24 Parganas
 and Sagar Island: `(21.30, 87.80, 22.60, 89.20)`. Pull `amenity~hospital|clinic`,
@@ -186,6 +233,44 @@ to the same bbox, 30m scale, exported via `getDownloadURL`.
 - If reusing code drafted by another AI session, check for stray
   `[cite: N]` fragments left inside code blocks — these break Python/JS
   syntax and must be stripped before running.
+- **`GET /track` takes no parameters, and FastAPI silently ignores query
+  strings it does not declare.** `def get_track() -> dict` means
+  `GET /track?cyclone_id=anything` returns `200` and *Remal's track*, for
+  `nonexistent` included. The app therefore routes an id to
+  `/cyclones/{id}/track`. The failure mode is a success status with the wrong
+  storm's data, which is why `mobile/tests/apiCyclones.test.mjs` asserts the
+  URLs. Do not add a `cyclone_id` parameter to `/track` instead — that changes
+  the case-study contract that the fixtures depend on.
+- **The `observed` scenario exists only for cyclones whose track is committed
+  locally — today that is Remal alone.** `/scenarios?cyclone_id=…` is the
+  authority; requesting `scenario_id=observed` for one of the other 609 is
+  `400 unknown scenario 'observed'. Available: cat0 … cat6`. Never assume the
+  scenario list — `pickSecondScenario` consults the catalogue first.
+- **At a band scenario, exposure counts are identical across cyclones.** The
+  surge comes from the band's wind and the flood runs over the same delta
+  terrain, so switching storms changes the *track*, not the counts. Only the
+  `observed` scenario is storm-specific. A cyclone-vs-cyclone comparison at
+  `cat6` therefore returns `4.4719` in every row and means nothing — compare
+  two *scenarios* of one storm instead.
+- **The storm-peak-intensity gate FAILED and the result ships.** 21.94 kt LOOCV
+  MAE against a 21.03 kt flat median, R² 0.075, n = 300. The median is
+  delivered as `estimate_source: "median_baseline"` with
+  `is_a_prediction: false`. **Do not tune until it passes** — that is the
+  exact mistake the gate exists to prevent. Revisit only with a real training
+  table, not by re-slicing these 300 rows.
+- **`live_unavailable` is the expected state of the live provider, not a
+  bug.** Measured 2026-10-02: 403, 403, 404, then a 200 from
+  `nhc.noaa.gov/CurrentStorms.json` that lists only Eastern Pacific storms.
+  The `cyclone` field stays null and no historical storm is substituted.
+- **Remal's track is 40 fixes, not 19.** The catalogue parse replaced the
+  original 19-fix GeoJSON extract (`e404e80`), and
+  `tests/test_new_endpoints.py` pins `waypoint_count == 40`. `README.md`,
+  `Design.md` and any older MEMORY.md entry saying 19 are superseded.
+- **`LANDFALL` is in kilometres.** The dynamic-cyclone plan document called it
+  "a distance in nautical miles"; the archive's own units row says **km**, and
+  `tests/test_storm_peak_intensity.py` recomputes `LANDFALL_MAX_KM = 1463.0`
+  from the CSV. Logged under "Flagged for review" in MEMORY.md rather than
+  silently followed — the plan is wrong here, the data is not.
 
 ## Open research items
 
@@ -201,7 +286,19 @@ to the same bbox, 30m scale, exported via `getDownloadURL`.
   — via building density from OSM or a population raster (e.g. WorldPop)
   clipped to the same bbox.
 - Confirm `osmnx` graph extraction performance/quality for the target bbox
-  before committing routing logic to it.
+  before committing routing logic to it. **Resolved:** the graph is extracted
+  and committed at **86,636 nodes** (`GET /health`), Dijkstra runs over it, and
+  `tests/test_module_b.py` covers routing including the unreachable case.
+- **A real training table for storm peak intensity** — the current one is 300
+  NI storms from IBTrACS alone, and the model lost to a flat median on it
+  (21.94 kt vs 21.03 kt). More storms, or traceable forward-speed and
+  approach-angle features, is the prerequisite for the gate to mean anything.
+  Until then the median ships, and re-splitting these 300 rows is not
+  progress.
+- **A North Indian Ocean live source.** Four ATCF endpoints are configured and
+  none currently yields an NI storm. If one appears (an RSMC New Delhi feed,
+  or NHC publishing an NI b-deck), it is an endpoint-list change, not a code
+  change — that was the point of making the list configurable.
 
 ## Reference code
 

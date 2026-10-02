@@ -64,7 +64,7 @@ step" before starting any work.
 | B. Simulation engine (flood propagation, routing, shelter allocation) | In progress | Engine complete and tested on real data. Only the shelter *dataset* is missing — no real locations/capacities exist to use (see blockers). |
 | C. Backend / API (FastAPI) | Done | `backend/main.py` + `backend/locations.py`. All contract endpoints live and curl-verified. `/advisory` is live (Module D below). **Display overlay layer added 2026-09-28** — `backend/tools/render_overlays.py` + `data/overlays/` + `GET /overlays`; display-only, §32. **`GET /track` added 2026-09-29** — the case study's real IBTrACS track; an endpoint, not a mount, because a blank `USA_WIND` must not read as calm. **Dynamic Cyclone System Tasks 7–8 landed 2026-10-02** (`e404e80`, `b853406`, `0f576d2`, `3dcb661`): `GET /cyclones`, `GET /cyclones/{id}/track`, `GET /scenarios`, `GET /live-cyclone`, `GET /comparison`, `POST /risk-analyst` — provenance merged at the top level of every response, timestamps RFC 3339 on the wire and IBTrACS's spelling at rest (`0f576d2`), and the Gemini error taxonomy shared with `/advisory` rather than a copy. `tests/test_new_endpoints.py` 33 tests. |
 | D. AI advisory layer (Gemini) | Done | `backend/ai/advisory.py` + the `POST /advisory` handler. Schema, prompt, call, an honesty validator, district-scoped localities, a capacity-retry wrapper, and `load_dotenv()` key loading. **Three live advisories produced**; all three rounds of defects are now closed (§20–§25). **`POST /risk-analyst` added 2026-10-02** (`3dcb661`, Task 8): `RiskAnalysis`/`RiskFinding` with a required `evidence_kind` (four kinds, `general_knowledge` included), four labelled prompt blocks, pinned `ADVISORY_MODEL` with no fallback and no rotation. The capacity ladder was extracted into `_with_capacity_retry` so both endpoints share one loop — `tests/test_risk_analyst.py` asserts its counter appears exactly once in `backend/main.py`. **Live rendering NOT VERIFIED for either endpoint**: every test monkeypatches the generator. Verified test counts: `test_module_d.py` 72, `test_capture_advisory.py` 34, `test_risk_analyst.py` 30, `test_advisory_quota.py` 15. Two operational notes, not code gaps: the free tier is 20 calls/day (§26) and eight border-cluster localities still need a boundary dataset (§24). |
-| E. Mobile app (Expo / React Native) | In progress | Design system + `theme.typography` + `api.ts` (Stage 1) all landed 2026-09-28. **Stage 2, the map screen, landed 2026-09-28** (`1f23721`). **Stage 3 landed 2026-09-29** (`cf25a81`, `dcfba38`). **Stage A of the dark rebuild landed 2026-09-30.** **The Web build was rebuilt 2026-10-01** (`b8090a0`): `MapScreen.web.tsx` is now the judge-facing product rather than a compatibility fallback, with a DEM-derived SVG map in place of a Google Maps iframe, all four chips wired to the real API, a searchable 45-locality picker, and the advisory rendered as a document. **Live at `cyclone-forecaster-ui.vercel.app` and verified in a real browser.** The native app is untouched and still uses `react-native-maps`. **Still never run on a physical phone.** |
+| E. Mobile app (Expo / React Native) | In progress | Design system + `theme.typography` + `api.ts` (Stage 1) all landed 2026-09-28. **Stage 2, the map screen, landed 2026-09-28** (`1f23721`). **Stage 3 landed 2026-09-29** (`cf25a81`, `dcfba38`). **Stage A of the dark rebuild landed 2026-09-30.** **The Web build was rebuilt 2026-10-01** (`b8090a0`): `MapScreen.web.tsx` is now the judge-facing product rather than a compatibility fallback, with a DEM-derived SVG map in place of a Google Maps iframe, all four chips wired to the real API, a searchable 45-locality picker, and the advisory rendered as a document. **Live at `cyclone-forecaster-ui.vercel.app` and verified in a real browser.** The native app is untouched and still uses `react-native-maps`. **Still never run on a physical phone.** **Dynamic Cyclone System Tasks 9–10 landed 2026-10-02** (`e7139d4`, `db9f963`, `91783dc`): `cycloneModel.ts` (wire types + live-state, freshness, delta maths), `apiCyclones.ts` (six endpoints), `scenarioCompare.ts`, `CyclonePicker`, `ScenarioComparePanel`, `RiskAnalystPanel`, both map screens wired. The masthead now names the *selected* storm instead of always saying Remal. Two defects found by driving the exported app in a browser, not by the suite — `/track?cyclone_id=` silently returning Remal (fixed `db9f963`, guarded by `tests/apiCyclones.test.mjs`) and a comparison that assumed `observed` exists for every storm (fixed by `pickSecondScenario`). `node --test` **328 pass / 0 fail**; `tsc` clean. |
 | E2. Web app (judge-facing) | Done, one round | `b8090a0`. Platform-specific build, no mapping library, no native map module. Owns `mapProjection.ts`, `basemap.ts`, `webBasemap.ts`, `webViewModel.ts`, `WebImpactMap.tsx`, `AdvisoryPanel.tsx`, `LocalitySearch.tsx`. Reuses `api.ts`/`strengthChips.ts`/`exposureTiles.ts`/`trackFacts.ts`/`legend.ts`/`advisoryFlow.ts`/`theme.ts` verbatim so it cannot disagree with the native screen. Verified against production in Chrome: four chips, real exposure changes, origin search, no console errors, no overflow at 420–1600 px. |
 | F. Deployment | Done | **Both projects are live on Vercel** and were verified through the MCP on 2026-10-01. Backend `cyclone-forecaster` → `cyclone-forecaster-chi.vercel.app` (FastAPI, `dpl_DjhJU7bk3MbgvGnoWGdBE44xR5vm`). Web `cyclone-forecaster-ui` → `cyclone-forecaster-ui.vercel.app` (`dpl_84AgfTBUMAuokBP1RdX9TjJExVkd`). `EXPO_PUBLIC_API_URL` is set on the UI project only. `render.yaml` is retained and still correct. |
 
@@ -176,7 +176,7 @@ step" before starting any work.
   `venv/bin/python backend/data_pipeline/fetch_osm_infra.py delta_roads`.
 - `data/shelters.json` — EMPTY shelter list + full provenance record (OSM
   check, official WBDMD reference). The emptiness is deliberate and documented.
-- `data/remal_track.geojson` — real IBTrACS v04r00 track: 19 fixes, 2024-05-25 12Z → 2024-05-27 18Z, max USA_WIND 54 kt (JTWC 1-min; properties carry `wind_units: knots`)
+- `data/remal_track.geojson` — real IBTrACS track: **41 features = 1 LineString path + 40 point fixes**, **2024-05-23 12Z → 2024-05-28 06Z**, max `usa_wind_kt` **60 kt** (JTWC 1-min) = **111.1 km/h** served (`wind_units: knots`). `GET /track` serves **40 waypoints** (`tests/test_new_endpoints.py` pins 40; the 41st feature is the path, not a fix)
 - `data/hospitals.geojson` — 560 real OSM features (amenity~hospital|clinic)
 - `data/substations.geojson` — 103 real OSM features (power~substation|plant)
 - `data/roads.geojson` — 3712 real OSM ways (arterials)
@@ -201,11 +201,13 @@ step" before starting any work.
 - `mobile/app.config.ts` — **new 2026-09-28.** Reads `GOOGLE_MAPS_ANDROID_API_KEY` from the env and injects `android.config.googleMaps`, so a billable Google credential never reaches `app.json`. Unset → config byte-identical to `app.json`.
 - `mobile/.env.example` — committed template for `EXPO_PUBLIC_API_URL` + `GOOGLE_MAPS_ANDROID_API_KEY`. **Must live under `mobile/`, not the repo root**: Expo reads `.env` from the directory holding `app.json`. `mobile/.env` is gitignored (verified).
 - `mobile/app.json`, `tsconfig.json`, `babel.config.js` — minimal Expo managed scaffold
-- **`GET /track` + `tests/test_track.py` (23 tests, 2026-09-29).** The case
-  study's real best track: 19 fixes, `path` + `waypoints`, `wind_kt` **null**
-  where IBTrACS reported none (5 of 19), knots→km/h server-side, `timezone:
+- **`GET /track` + `tests/test_track.py`.** The case
+  study's real best track: **40 fixes**, `path` + `waypoints`, `wind_kt` **null**
+  where IBTrACS reported none (**2 of 40**, both 2024-05-28), knots→km/h server-side, `timezone:
   UTC`, RFC 3339 timestamps, and a `disclosure` string. Reads the committed
-  `data/remal_track.geojson`; never fetched live. An endpoint rather than a
+  `data/remal_track.geojson`; never fetched live. Takes **no query parameters**
+  (an id goes to `/cyclones/{id}/track` — see Flagged for review and
+  `tests/apiCyclones.test.mjs`). An endpoint rather than a
   static mount — the reasoning is in `load_track()`'s docstring.
 - **`mobile/tests/track.test.mjs` (4 tests, 2026-09-29).** Run with
   `cd mobile && node --test 'tests/*.test.mjs'` — the stdlib runner, no Jest
@@ -249,7 +251,7 @@ step" before starting any work.
   shelter disclosure failing **closed**, the backend's own `reason` shown
   verbatim, and a real-zero exposure rendering as `0` because that is a finding.
 - **`mobile/components/WebImpactMap.tsx` (new).** The SVG map: DEM basemap,
-  the `/overlays` flood raster, the 19-fix track, cut-off roads as real
+  the `/overlays` flood raster, the 40-fix track, cut-off roads as real
   `<path>` geometry, hospital/substation pins, origin and shelter pins, the
   route polyline, and a legend resolved from the shared `legend.ts` name/value
   split so no colour is retyped.
@@ -330,14 +332,16 @@ means in practice is listed under "Flagged for review" below.
   cat0-3 = 0 (a real result, not a failure), cat4 16052, cat5 76327, cat6
   119406, remal_observed 14657.
 
-- **NEW 2026-09-29 — the track is real data with two properties the UI has to
-  respect.** 5 of its 19 fixes have **no reported wind** (IBTrACS leaves
-  `USA_WIND` blank as the storm crossed the Bay on 27 May, and
-  `fetch_ibtracs.py` writes that blank as `0.0`); `/track` serves those as
-  `wind_kt: null` + `wind_reported: false` and the mobile callout says "Wind
-  not reported for this fix". **A `0 kmph` label on any of those five would be
-  a fabricated measurement on a map of a real cyclone.** Related: IBTrACS
-  `USA_WIND` is a **1-minute** (JTWC) estimate, while IMD's published winds and
+- **NEW 2026-09-29, count corrected 2026-10-02 — the track is real data with
+  two properties the UI has to respect.** **2 of its 40 fixes** have **no
+  reported wind** (IBTrACS leaves `USA_WIND` blank at **2024-05-28 03:00 and
+  06:00 UTC**, measured from `GET /track`: 38 `wind_reported: true`, 2 false,
+  and **0** waypoints carrying `wind_kmph == 0`); `/track` serves those as
+  `wind_kmph: null` + `wind_reported: false` and the mobile callout says "Wind
+  not reported for this fix". **A `0 kmph` label on any of those two would be
+  a fabricated measurement on a map of a real cyclone.** (This entry said "5 of
+  19, on 27 May" — that described the pre-`e404e80` extract and is superseded.)
+  Related: IBTrACS `USA_WIND` is a **1-minute** (JTWC) estimate, while IMD's published winds and
   the rest of this app are **3-minute** — comparable in magnitude, not the same
   statistic.
 - **NEW 2026-09-29 — most of the track is off-screen at boot, and that is
@@ -1868,6 +1872,68 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     it raise; where a claim matters, write the test in the same commit as the
     claim.
 
+54. **NEW 2026-10-02 — `distance_to_land_km` is 1.852× too large: the file's
+    own units row says `DIST2LAND` is in kilometres, and the code converts it
+    from nautical miles anyway.** Raised, not fixed — Task 11 produces no code,
+    and correcting a feature invalidates the committed ML artefact and moves the
+    gate number, which is a decision for a human rather than a doc task.
+
+    **The measured evidence**, from row 2 (the units row) of
+    `ibtracs.NI.list.v04r01.csv`:
+
+    ```
+    DIST2LAND units = 'km'      LANDFALL units = 'km'
+    USA_WIND  units = 'kts'     STORM_SPEED units = 'kts'
+    ```
+
+    The confusion is understandable: **56 other columns really are `nmile`** —
+    but they are all storm-size radii (`USA_R34_*`, `R50`, `R64`, `RMW`,
+    `ROCI`, `EYE`, and the TOKYO/KMA/BOM/REUNION equivalents). `DIST2LAND` and
+    `LANDFALL` are the *only* two `km` columns in the file. The dynamic-cyclone
+    plan conflated the two groups.
+
+    What the code does today (`backend/ml/storm_peak_intensity.py`):
+
+    ```python
+    #: Nautical miles to km, for `DIST2LAND`.
+    NM_TO_KM = 1.852
+    ...
+    distance_nm = ibtracs_number(at.get("DIST2LAND"))
+    ...
+    (distance_nm * NM_TO_KM) if distance_nm is not None else 0.0,
+    ```
+
+    with `"distance_to_land_km": "km, from DIST2LAND in nautical miles"` in
+    `FEATURE_UNITS`. So every training row carries a `distance_to_land_km`
+    inflated by 1.852×, and the variable is even named `distance_nm`.
+
+    **Three things make this lower-stakes than it looks, and one makes it worth
+    fixing anyway:**
+
+    - The gate **failed** (21.94 kt vs 21.03 kt), so the model does not ship —
+      the flat median does. No live figure is affected.
+    - It is one of seven features, and a *linear* model absorbs a constant
+      scale factor into that feature's coefficient almost exactly. The effect
+      on MAE is likely small.
+    - **But** the plan document is now wrong in three places (lines 24, 868,
+      950 and the Task 11 checklist at 1392 all say nautical miles), so anyone
+      re-deriving the feature will repeat it.
+    - And the real cost is *interpretation*: a feature labelled kilometres that
+      is actually 1.852× kilometres is exactly the "prose describing a system
+      that is not there" failure §53 names, one layer down.
+
+    **Also: nothing asserts this feature.** `grep distance_to_land tests/` is
+    empty — unlike the leak guard for `peak_before_kmph`, which is pinned. A
+    unit error in a feature with no test is invisible by construction.
+
+    **Suggested resolution for a human** (not done here): correct the
+    conversion, re-run `train_storm_peak_intensity.py`, and record the new
+    `mae_kt` / `baseline_mae_kt` **without** treating a pass as a success — the
+    gate's meaning is unchanged either way. Add a test that reads the CSV units
+    row and asserts `DIST2LAND`'s unit, so the next person cannot get this
+    from the plan. Note `STORM_SPEED` → `KNOTS_TO_KMPH` *is* correct and must
+    not be "fixed" the same way.
+
 
 ## Environment / credentials status
 
@@ -1943,32 +2009,41 @@ lockfile), `.claude/` (settings + skills).
 
 ## Next step
 
-**On `feature/dynamic-cyclone-system`: Tasks 9 and 10 — wire the Dynamic
-Cyclone System into the existing Expo/React Native and web experience.**
+**On `feature/dynamic-cyclone-system`: Tasks 9, 10 and 11 are done. What is
+left is review, then decide where the branch goes.**
 
-Backend Tasks 1–8 are committed (`78b343d` … `3dcb661`); `venv/bin/python
--m pytest -q` → **618 passed, 3 skipped**. **No frontend file has been touched
-on this branch.** Task 9 creates `mobile/cycloneModel.ts` and
-`mobile/apiCyclones.ts` (types plus `liveStateLabel`, `freshnessNote`,
-`comparisonDeltas`, `mlEstimateLabel`) and adds optional `cycloneId` /
-`scenarioId` to `api.ts`'s existing getters, defaulting to `undefined` so every
-current call site is unchanged. Task 10 adds `CyclonePicker`,
-`ScenarioComparePanel`, `RiskAnalystPanel` and wires both map screens — the
-scenario chips must become a **superset** of today's, with `cat4`/`cat5`/`cat6`
-still present and still the default, not a replacement.
+All eleven tasks of `docs/superpowers/plans/2026-10-01-dynamic-cyclone-system.md`
+are committed. Latest commits: `e7139d4` (Task 9), `db9f963` (the `/track`
+routing defect), `91783dc` (Task 10), `0b7d79e` (a mtime-race in two catalogue
+tests), plus this docs commit. Measured state:
+`node --test` **328 pass / 0 fail**, `tsc` clean, `pytest` **618 passed, 3
+skipped**, catalogue byte-identical, `/exposure?category=6` still
+**12 / 22 / 251 / 4.4719 / 2680.22**.
 
-**The rule that matters on that branch:** an unavailable live feed must never
-read as an active storm. `liveStateLabel` returns "Live feed unavailable" and
-nothing that implies a watch; `liveBannerText` must not contain a storm name;
-and a historical storm is never substituted for live data. When NI ATCF is
-unreachable the UI shows `live_unavailable` with the backend's own reason — it
-does not fall back to Remal.
+**Concrete next actions, in order:**
 
-**Also unverified on this branch: live Gemini success rendering, for
-`POST /risk-analyst` as much as `POST /advisory`.** Every test monkeypatches the
-generator; the error paths were exercised against the real endpoint with a
-stubbed generator, which proves routing and taxonomy and nothing about what the
-model returns. Do not read passing tests as the analysis rendering.
+1. **Whole-branch review**, then `finishing-a-development-branch` — decide
+   merge, or keep it open.
+2. **Redeploy the backend.** `cyclone-forecaster-chi.vercel.app` predates Tasks
+   7–8 and **404s on `/cyclones` and `/live-cyclone`**. The production-origin
+   web bundle calls both at boot, so it will not render against the deployed
+   API until this is done. This is the only thing blocking the live demo.
+3. **A phone.** The picker, comparison sheet and risk panel have never been
+   seen on a handset (Design.md checklist step 8).
+4. **A human decision on Flagged for review §54** — the `DIST2LAND` unit
+   defect. Measured, not fixed, because correcting the feature moves the gate
+   number and that is not a docs-task call.
+
+**The two rules that survive from this branch:** an unavailable live feed must
+never read as an active storm (`liveStateLabel`'s three closed strings,
+`liveBannerText` with no storm name, `cyclone` null rather than Remal), and the
+ML gate failed so the flat median ships labelled `median_baseline` with
+`is_a_prediction: false` — do not tune until it passes.
+
+**Still unverified, and not to be read as done: live Gemini success rendering**
+for both `POST /advisory` and `POST /risk-analyst`. Every test monkeypatches
+the generator. Passing tests prove routing and taxonomy, not what the model
+returns.
 
 ---
 
@@ -2162,6 +2237,128 @@ RUN_LIVE_CAPTURE=1 venv/bin/python -m backend.tools.capture_advisory
 ---
 
 ## Session log (newest entry first)
+
+### 2026-10-02 — OpenCode: Dynamic Cyclone System — Tasks 9, 10 and 11 (docs)
+
+**Scope.** Branch `feature/dynamic-cyclone-system`, Tasks 9–11 of 11 — the UI
+integration and the documentation. Subagent delegation was unavailable again
+(free tier returned nothing, paid models returned "Insufficient account funds"),
+so the controller executed directly; noted as a deviation each time it happened.
+
+**Task 9 — `e7139d4`, mobile domain layer.** `cycloneModel.ts` (wire types
+mirrored off the responses, plus `liveStateLabel`, `freshnessNote`,
+`mlEstimateLabel`, `comparisonDeltas`), `apiCyclones.ts` (six endpoints),
+`api.ts` (`request` exported, `scopeQuery`, optional `cycloneId`/`scenarioId`
+on the four scoped getters), `tests/cycloneModel.test.mjs`. `scopeQuery`
+*omits* params rather than sending `undefined`, so un-scoped URLs stay
+byte-identical — proven by direct invocation, not asserted in prose.
+
+**Two defects found by verification, both fixed in their own commits:**
+
+- **`db9f963` — `GET /track?cyclone_id=…` silently returned Remal for every
+  id.** `def get_track() -> dict` declares no parameters and FastAPI ignores
+  unknown query strings, so the app got `200` and the case study's track after
+  switching to a 1970 storm — including for `cyclone_id=nonexistent`. Found by
+  watching the track caption fail to change in a headless browser; **the suite
+  was green the whole time**, because nothing asserted the URL. An id now routes
+  to `/cyclones/{id}/track`, whose payload for the case study is byte-identical
+  to `/track` (7868 bytes, `REMAL`, 40 waypoints). Guarded by
+  `tests/apiCyclones.test.mjs` (11 assertions), whose tree was verified in
+  isolation with Task 10 stashed.
+- **The comparison hard-coded `scenario_id=observed`,** which is `400 unknown
+  scenario 'observed'` for 609 of 610 cyclones — `observed` is registered only
+  where a track is committed locally. `pickSecondScenario` now consults
+  `/scenarios` first. Also discovered *why* the second scenario matters: at a
+  band, `/comparison?cyclone_ids=A,B` returns `4.4719` in every row, so
+  cyclone-vs-cyclone is a meaningless table; two **scenarios** of one storm is
+  the honest axis.
+
+**Task 10 — `91783dc`.** `scenarioCompare.ts`, `CyclonePicker.tsx`,
+`ScenarioComparePanel.tsx`, `RiskAnalystPanel.tsx`, both `MapScreen` files
+wired, `tests/scenarioCompare.test.mjs`, `WEB_GRAPH` grown to 23. Panels are
+content-only: wrapped in `AdvisoryModal` on native, rendered inline on Web
+where a modal would hide the map — matching `AdvisoryPanel`'s precedent.
+
+Two further findings, both fixed inside Task 10 rather than left:
+
+- **The masthead named Remal while the map drew another storm.** The H1 was the
+  literal `"Cyclone Remal, May 2024"`. It now follows the selection, the case
+  study keeps its exact original wording when selected, and its anchor line
+  gains a `Case study — ` prefix otherwise. `cycloneDisplayName` title-cases
+  IBTrACS's uppercase names and handles the paired `BESS:BONNIE` / `KHAI-MUK`
+  forms; `null` renders `Unnamed`, because **482 of the 610** catalogued storms
+  are unnamed (counted from `catalogue.json`, not estimated).
+- The risk button's `accessibilityLabel` did not contain its visible label
+  (WCAG 2.5.3), so `getByRole('button', {name: 'Generate analysis'})` found
+  nothing. Fixed to match.
+
+**Task 11 — docs.** `README.md`, `CLAUDE.md`, `Design.md`, `Rules.md`,
+`MEMORY.md`. Every figure below was measured, and stale ones corrected:
+`/track` is **40 fixes, not 19** (the catalogue parse replaced the old GeoJSON
+extract in `e404e80`; `README.md` and `Design.md` both said 19), routes are
+**17, not 11**, and cat-1 wind is **55.5, not 56**.
+
+**The plan document is wrong about `LANDFALL`, and I did not follow it.**
+Task 11's checklist says *"`LANDFALL` is a distance in nautical miles"*. The
+CSV's own units row says **`km`** for both `DIST2LAND` and `LANDFALL`. Logged
+under Flagged for review §54 rather than silently overridden, per Rules.md.
+
+**A third defect, found by running the suite: two tests were asserting a
+filesystem timestamp, not a property of the data.** `pytest` went 618 passed →
+**2 failed** with no product code changed. Root cause, found by single-variable
+experiment rather than guesswork: the `git stash push --include-untracked`
+used to verify `db9f963` in isolation removed and recreated the *untracked*
+`ibtracs.NI.list.v04r01.csv`, resetting its mtime — and `build_catalogue` takes
+`generated_at` / `fetched_at` from that mtime. The committed catalogue still
+stamped `2026-09-30T20:17:27Z`.
+
+Evidence that the data never moved: fresh and committed differ in `fetched_at`
+across all 610 records **and in no other field**; the CSV's sha-256 stayed
+`7a14625d…`. Setting **only** the mtime back made both tests pass; setting it
+forward again made both fail; content identical throughout.
+
+`test_committed_catalogue_matches_the_code`'s own docstring already said a full
+byte-comparison is *"deliberately not asserted, because the file is written on
+another machine whose copy of the input has a different mtime"* — the code had
+just never been told, and compared `fetched_at` anyway. Fixed in its own commit
+**`0b7d79e`**, following the precedent of `e9b02a8` (the gzip timestamp race):
+the determinism test now pins `--generated-at`, the record test excludes
+`fetched_at` while still requiring both sides to carry it. **The lesson for the
+next session: a `--include-untracked` stash moves every untracked data file's
+mtime, so any test that reads a timestamp out of one of them is a time bomb.**
+
+**Measured state, every command actually run:**
+
+| Command | Result |
+|---|---|
+| `cd mobile && npx tsc --noEmit` | **exit 0** |
+| `cd mobile && node --test 'tests/*.test.mjs'` | **328 pass, 0 fail** |
+| same, on `db9f963`'s tree with Task 10 stashed | **305 pass, 0 fail** |
+| `venv/bin/python -m pytest -q` | **618 passed, 3 skipped** |
+| `python backend/data_pipeline/train_storm_peak_intensity.py` | n=300, LOOCV **21.94 kt** vs baseline **21.03 kt**, R² 0.075, **GATE FAILED** |
+| `curl /exposure?category=6` | **12 / 22 / 251 / 4.4719 / 2680.22** (invariant holds) |
+| `curl /live-cyclone` | `live_unavailable`; statuses **403, 403, 404, 200** — the 200 lists only Eastern Pacific storms (Rachel, Nolo) |
+| `curl /cyclones` | **610**, all `BASIN == 'NI'`, 1970–2026, Remal first |
+| `git diff --quiet HEAD -- data/cyclones/catalogue.json` | unchanged |
+| `expo export --platform web` (production origin) | exit 0, production origin only, no localhost |
+| headless Chromium vs the exported bundle | **22/22 checks** |
+
+**NOT VERIFIED — stated rather than implied:**
+
+- **Live Gemini success rendering** for both `/advisory` and `/risk-analyst`.
+  Free tier previously exhausted; success is covered only by mocked tests. The
+  error paths are the real ones.
+- **Physical phone.** The cyclone picker, comparison sheet and risk panel are
+  type-checked and unit-tested, never seen on a handset. Design.md's checklist
+  gained a step 8 for them.
+- **Any ATCF source other than the NHC Atlantic bytes used as a fixture.**
+- **The `DIST2LAND` unit defect** (§54) — measured, documented, deliberately
+  not fixed in a docs task.
+- **The deployed backend is stale.** `cyclone-forecaster-chi.vercel.app`
+  predates Tasks 7–8 and 404s on `/cyclones` and `/live-cyclone`, so the
+  production-origin bundle would not boot against it until redeployed.
+
+**Next:** whole-branch review, then `finishing-a-development-branch`.
 
 ### 2026-10-02 — OpenCode: Dynamic Cyclone System — Tasks 7 and 8
 

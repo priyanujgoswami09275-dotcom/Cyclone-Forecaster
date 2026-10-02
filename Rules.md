@@ -21,9 +21,24 @@
   shipped model a "trained regression" is a factual error, and it was in this
   file until 2026-10-01. The honest framing is "scaled from one observed
   event, and it says so on every figure".
-- Pin the exact Gemini model string in code (`gemini-3.7-flash` as of the
-  current CLAUDE.md). Don't silently swap model versions — check
-  MEMORY.md for any later-verified update before changing this.
+- Pin the exact Gemini model string in code (`gemini-3.8-flash` as of the
+  current CLAUDE.md and `GET /health`'s `advisory_model`; it replaced
+  `gemini-3.7-flash` on 2026-09-28 when 3.7 returned 503 on five consecutive
+  attempts). Don't silently swap model versions — check MEMORY.md for any
+  later-verified update before changing this.
+- **Never present the storm-peak-intensity estimate as a prediction.** Its
+  leave-one-out MAE (21.94 kt) did not beat the flat median (21.03 kt) over
+  300 storms, so the gate failed and the median ships — `estimate_source:
+  "median_baseline"`, `is_a_prediction: false`. Do not tune the model until the
+  gate passes and then call it a success; the gate's purpose is to stop a
+  worse-than-constant model being sold as one. Revisit only with a real
+  training table, not by reshuffling these 300 rows.
+- **Never substitute a historical or case-study cyclone for live data.** When
+  the ATCF probe fails, `GET /live-cyclone` returns `live_unavailable` with a
+  null `cyclone`, the attempted-at timestamp and the per-endpoint statuses.
+  Offering Remal in its place would make an unavailable feed look like a
+  quiet day. This is also why the UI's live banner never appends a storm name
+  when the state is not `available`.
 
 ## Hard engineering rules
 
