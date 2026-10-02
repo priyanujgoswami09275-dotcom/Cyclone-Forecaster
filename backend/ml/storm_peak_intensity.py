@@ -246,7 +246,13 @@ class LeaveOneOutReport:
     baseline_mae_kt: float
     r2: float
     beats_baseline: bool
-    per_fold: tuple[float, ...]
+    #: Per-fold absolute errors. Present when the report was *computed*, absent
+    #: when it was read back from the artefact — `to_dict()` omits them, because
+    #: 300 floats in a committed JSON file is 300 floats nobody reads and a
+    #: second copy of the evaluation to keep in step with the first. Nothing
+    #: outside `evaluate()` consumes it; the gate, the disclosures and the
+    #: shipped figure are all built from the five fields above it.
+    per_fold: tuple[float, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -417,6 +423,15 @@ class StormPeakIntensityModel:
 
     @classmethod
     def from_json(cls, path: Path) -> "StormPeakIntensityModel":
+        """Read a fitted model and its gate back off disk, without refitting.
+
+        **The report comes back too, and that is the point.** A model without its
+        gate is unusable here: `estimate_for` and `baseline_estimate` read
+        `report.beats_baseline` to decide whether the model's output is allowed
+        to be the number on screen, so loading the coefficients while leaving
+        `report` as `None` would force a refit — which is precisely the runtime
+        dependency on the raw IBTrACS archive this loader exists to remove.
+        """
         payload = json.loads(path.read_text())
         if tuple(payload["feature_names"]) != FEATURE_NAMES:
             raise ValueError(
@@ -432,19 +447,83 @@ class StormPeakIntensityModel:
         ridge.intercept_ = float(payload["intercept"])
         model._pipeline = Pipeline([("scale", scaler), ("ridge", ridge)])
         model._median = float(payload["median_kt"])
+        model.report = LeaveOneOutReport(**_report_fields(payload["report"], path))
         return model
+
+
+#: Where the fitted model lives once trained. **Committed**, unlike the archive
+#: it was trained from: `data/cyclones/catalogue.json` is committed for the same
+#: reason, and this file is deliberately shaped like that one — a normalised
+#: build product of an offline ingestion step, not a re-derivation on demand.
+ARTEFACT_PATH = Path(__file__).resolve().parents[2] / "data" / "ml" / "storm_peak_intensity.json"
+
+#: The fields `LeaveOneOutReport` keeps when it is read back off disk. `to_dict()`
+#: writes these five plus a rendered `limitation`; the per-fold errors are the
+#: ones it leaves out, and the dataclass defaults them to empty.
+_REPORT_FIELDS = ("n", "mae_kt", "baseline_mae_kt", "r2", "beats_baseline")
+
+
+def _report_fields(payload: dict, path: Path) -> dict:
+    """Pull the report's own fields out of an artefact, checking the key set.
+
+    Missing or unexpected keys raise rather than defaulting. A report whose `n`
+    silently defaulted to 0 would make every disclosure on the endpoint say "0
+    storms", which is a wrong number that reads as a real one.
+    """
+    present = set(payload)
+    expected = set(_REPORT_FIELDS) | {"limitation"}
+    if present != expected:
+        raise ValueError(
+            f"{path} has report keys {sorted(present)}, expected {sorted(expected)}. "
+            "Retrain rather than read a report whose provenance is unclear."
+        )
+    return {field: payload[field] for field in _REPORT_FIELDS}
 
 
 @lru_cache(maxsize=1)
 def trained_model() -> tuple[StormPeakIntensityModel, LeaveOneOutReport]:
-    """The fitted model, or the gate's own failure.
+    """The fitted model and its gate, as committed by the offline trainer.
+
+    **This loads the artefact. It does not train.** It used to call
+    `build_training_set()`, which reads the 27 MB IBTrACS archive — a file that
+    is *not* in git, is a required local input, and is ~0 bytes in any clone or
+    Vercel deploy. So `/risk-analyst`, which calls `baseline_estimate()` →
+    `trained_model()`, returned a bare `500` on every clean checkout: the one
+    endpoint whose whole output is an ML figure could not produce it. The
+    dependency was invisible locally because the archive happened to be sitting
+    in the working directory.
+
+    Training is an offline step with an artefact at the end of it:
+
+        python -m backend.data_pipeline.train_storm_peak_intensity
+
+    That command still needs the raw archive, still fits, still cross-validates,
+    and still writes `data/ml/storm_peak_intensity.json` — so the evidence
+    behind the gate is reproducible on a machine that has the archive. What it
+    no longer does is happen *during a request*.
+
+    **No silent refit fallback.** If the artefact is missing, this raises and
+    says how to produce it, rather than quietly re-deriving from the archive.
+    A fallback would restore the exact failure this removed, and would do it
+    invisibly — the endpoint would answer with a model that was never committed
+    and never reviewed.
 
     `beats_baseline` is carried on the estimate, not resolved here: a model that
     lost is still worth shipping as long as it says it lost, because the number
     is only ever shown next to the disclosure.
     """
-    rows = build_training_set()
-    model = StormPeakIntensityModel().fit(rows)
+    if not ARTEFACT_PATH.is_file():
+        raise RuntimeError(
+            f"storm-peak-intensity artefact missing at {ARTEFACT_PATH}. It is a "
+            "committed build product of the offline trainer, which needs the "
+            "untracked IBTrACS archive:\n"
+            "    python -m backend.data_pipeline.train_storm_peak_intensity\n"
+            "then commit data/ml/storm_peak_intensity.json. A running server "
+            "must not read the raw archive to answer a request."
+        )
+    model = StormPeakIntensityModel.from_json(ARTEFACT_PATH)
+    if model.report is None:  # pragma: no cover - from_json always sets it
+        raise RuntimeError(f"{ARTEFACT_PATH} loaded without a gate; refusing to serve it.")
     return model, model.report
 
 
