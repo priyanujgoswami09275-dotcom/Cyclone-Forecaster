@@ -680,6 +680,14 @@ def test_the_ingest_script_derives_the_track_from_the_same_parse(tmp_path):
 
     A derived artefact that can drift is a second source of truth wearing the
     first one's name, which is the defect this regeneration exists to remove.
+
+    The timestamp is pinned to the committed file's own `generated_at` first.
+    `build_catalogue` reads it from the input CSV's mtime, so without a pin
+    this compares a stamp taken now against one taken when the catalogue was
+    written — a check that passes only while nobody has moved the input. A
+    `git stash --include-untracked`, a fresh clone and a plain `cp` all move
+    that mtime, and none of them changes a single storm. Pinning makes the byte
+    comparison a statement about the parse instead of about the filesystem.
     """
     from backend.data_pipeline.ingest_ibtracs_ni import main as ingest
 
@@ -688,7 +696,20 @@ def test_the_ingest_script_derives_the_track_from_the_same_parse(tmp_path):
 
     out = tmp_path / "catalogue.json"
     track = tmp_path / "track.geojson"
-    assert ingest(["--out", str(out), "--track-out", str(track)]) == 0
+    committed_stamp = json.loads(catalogue_before)["generated_at"]
+    assert (
+        ingest(
+            [
+                "--out",
+                str(out),
+                "--track-out",
+                str(track),
+                "--generated-at",
+                committed_stamp,
+            ]
+        )
+        == 0
+    )
 
     assert track.read_bytes() == before, "the derived track changed on a re-run"
     assert out.read_bytes() == catalogue_before, "the catalogue changed on a re-run"
@@ -1525,7 +1546,22 @@ def test_committed_catalogue_matches_the_code():
     index = fresh_ids.index(REMAL_CYCLONE_ID)
     # Round-tripped through JSON so tuples from the dataclass compare equal to
     # the lists a parsed file holds.
-    assert json.loads(json.dumps(fresh["cyclones"][index])) == committed["cyclones"][index]
+    fresh_record = json.loads(json.dumps(fresh["cyclones"][index]))
+    committed_record = committed["cyclones"][index]
+
+    # `fetched_at` is the input CSV's mtime, which the docstring above already
+    # rules out of this comparison. It was compared anyway, so the test passed
+    # only while the local copy's mtime happened to equal the one the committed
+    # file was built with — and broke on any `git stash --include-untracked`
+    # or fresh clone, neither of which alters a storm. Exempting it here costs
+    # nothing: it is not content, `test_generated_at_...` owns it, and both
+    # sides are still required to carry it so a key cannot vanish by being
+    # exempted.
+    assert set(fresh_record) == set(committed_record), "a record key went missing"
+    assert fresh_record["fetched_at"] and committed_record["fetched_at"]
+    assert {k: v for k, v in fresh_record.items() if k != "fetched_at"} == {
+        k: v for k, v in committed_record.items() if k != "fetched_at"
+    }, "the committed Remal record no longer matches the code"
 
 
 # --- the invariant that closes the measured-number defect class --------------
