@@ -10,6 +10,8 @@
 
 **Spec:** `CLAUDE.md` (= project brief), `Architecture.md`, `Rules.md`, `Task.md` at repo root. This plan implements only the Module A section of `Task.md`.
 
+**Status (annotated 2026-10-02, historical note added after the fact):** the data-pipeline items in this plan were implemented; the **surge regression** portion was later found not traceable (trained on 4 points with no reliable source, needs features the API never has) and **abandoned 2026-09-28**. The shipped surge model is anchored quadratic scaling — see `backend/experiments/surge_regression/README.md` and README "Corrections".
+
 ## Global Constraints
 
 - Target bbox, verbatim: `(21.30, 87.80, 22.60, 89.20)` (min_lat, min_lon, max_lat, max_lon).

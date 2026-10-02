@@ -2,8 +2,9 @@
 
 Adapted from the Airtable-style reference (chosen for implementation ease)
 into an actual Expo/React Native system for this app's real screens: map +
-slider + exposure list + advisory modal. Not a marketing page — no hero,
-no logo bar, no announcement banner.
+strength chips + exposure list + advisory modal. Not a marketing page — no hero,
+no logo bar, no announcement banner. (The earlier intensity slider was replaced
+by four `StrengthChips`; the other surfaces are unchanged.)
 
 ## Why these choices
 
@@ -89,7 +90,7 @@ git history.
 | `text` | `#181d26` | Primary text (Onyx) |
 | `textMuted` | `#525965` | Secondary text, captions |
 | `border` | `#e0e2e6` | Card borders, dividers |
-| `primary` | `#1b61c9` | Cobalt Blue — "Generate Advisory" button, active slider thumb |
+| `primary` | `#1b61c9` | Cobalt Blue — "Generate Advisory" button, the selected chip fill |
 | `water` | `#254fad` | Sapphire — flood polygon stroke |
 | `waterFill` | `#c7e5f2` | Pale Sky — flood polygon fill, use at ~50% opacity |
 | `danger` | `#aa2d00` | Terracotta — compromised roads, CRITICAL priority chip |

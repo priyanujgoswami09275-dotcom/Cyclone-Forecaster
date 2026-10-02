@@ -17,9 +17,13 @@ current-state summary.
     and committed. (The design spec's Terrarium fallback is moot — GEE auth
     was obtained, so this is the better provenance.)
 - [x] Compile historical surge training table (≥4 verified real points to
-      start: Remal, Helen, Lehar, Mandous)
+      start: Remal, Helen, Lehar, Mandous) — **superseded**. The resulting
+      regression was abandoned 2026-09-28; see
+      `backend/experiments/surge_regression/`. The shipped surge model is the
+      anchored quadratic scaling in `backend/simulation/surge.py`.
 - [x] Train surge regression model with leave-one-out cross-validation,
-      serialize as `data/surge_model.pkl` (LOOCV MAE: 2.36 m)
+      serialize as `data/surge_model.pkl` (LOOCV MAE: 2.36 m) —
+      **superseded / abandoned**, kept only as a record; **do not revive**.
 - [ ] (Stretch) Add more historical points from the RSMC New Delhi
       bulletin archive to strengthen the model
 
@@ -84,7 +88,8 @@ current-state summary.
       three verified past cyclones, so `historical_context` cannot name an
       invented storm
 - [x] Wire the `google-genai` SDK call with `response_schema` against the
-      pinned `gemini-3.7-flash` string
+      pinned `gemini-3.8-flash` string (replaced `gemini-3.7-flash` after a
+      live 503 capacity block on 2026-09-28).
 - [x] Replace the `POST /advisory` 501 — takes `category` + `origin`, calls
       the three endpoint functions so the prose and the map share one set of
       numbers; 503 without a key, 502 on SDK failure
@@ -110,18 +115,21 @@ current-state summary.
       `Design .md` renamed to `Design.md` (the stray space is gone). The
       themed components still carry no `fontSize`; applying them is Module E
       work, deliberately not done in the Module C session.
-- [x] Set up `react-native-maps` with a hardcoded initial region (Sagar
-      Island) — no location permission. `SAGAR_REGION` in `mapStyles.ts`,
-      `rotateEnabled={false}` because `<Overlay>` takes a static bearing.
+- [x] Set up the native map with a hardcoded initial region (Sagar
+      Island) — no location permission. Started with `react-native-maps`;
+      replaced by `LeafletMap` (Leaflet in a `react-native-webview`) in
+      `2ea5037` because the former rendered black on Android.
 - [x] Render the cyclone track `Polyline` and infra `Marker`s from static
       data first, before wiring live API calls. Done the other way round: the
       track comes from `GET /track` (Stage A), not from a static file, because
-      five of the nineteen fixes have a blank USA_WIND that the fetch script
-      writes as `0.0` and only the endpoint can report as *not reported*.
-- [x] Wire the intensity `Slider` to `/surge-zone` and `/exposure`. **Partly
-      — deliberately.** The slider drives `/exposure`; the flood is drawn from
+      a couple of the fixes have a blank USA_WIND that the fetch script writes
+      as `0.0` and only the endpoint can report as *not reported*
+      (**2 of 40** fixes; the earlier "five of the nineteen" predated the
+      catalogue-derived track).
+- [x] Wire the intensity control to `/surge-zone` and `/exposure`. **Partly
+      — deliberately.** The chips drive `/exposure`; the flood is drawn from
       a pre-rendered raster `<Overlay>`, because `/surge-zone` at category 6
-      returns 7.0 MB raw of geometry that `react-native-maps` stutters on. The
+      returns 7.0 MB raw of geometry that the map stutters on. The
       picture is a shortcut, the numbers are not.
 - [x] Render the flood `Polygon` and exposure counts dynamically
 - [x] Style compromised-corridor roads (red dashed `Polyline`)
@@ -178,3 +186,50 @@ current-state summary.
 - [ ] Record a backup screen-capture video of the full demo flow
 - [ ] Rehearse the 3-minute pitch narrative (real event vs. what this
       would have flagged)
+
+## Dynamic Cyclone System — COMPLETE 2026-10-02
+
+Tracked in `docs/superpowers/plans/2026-10-01-dynamic-cyclone-system.md`
+(11 tasks). All eleven landed; this file used to be the only status source, so
+the outcomes are recorded here.
+
+- [x] Task 1 — `backend/cyclones/` normalized `Cyclone`/`Waypoint` record, one
+      RFC 3339 timestamp spelling (`78b343d`, `cc369b2`, `0cdaebf`, `0f576d2`)
+- [x] Task 2 — IBTrACS ingestion filtered strictly `BASIN == 'NI'`
+      (`ec72646`, `bb86d71`, `191019a`, `f9a261a`, `0c80700`, `3de8e87`),
+      `LANDFALL` documented as a *kilometre* distance (not a flag)
+- [x] Task 3 — real ATCF live provider, 4 configurable endpoints, honest
+      `live_unavailable` (`d433ec6`), with `backend/cyclones/live.py` plus
+      figure-guard commits (`f9a261a`, `0c80700`, `3de8e87`, `191019a`)
+- [x] Task 4 — Open-Meteo supplementary weather layer, documented, no route
+      (`4d96037`)
+- [x] Task 5 — cache isolation on `(cyclone_id, scenario_id)` (`7ea54da`)
+- [x] Task 6 — storm-peak-intensity ML; **gate FAILED** (LOOCV MAE 21.94 kt vs
+      21.03 kt flat median, R² 0.075, n=300), so the median ships labelled
+      `median_baseline` (`71634ab`)
+- [x] Task 7 — `/cyclones`, `/cyclones/{id}/track`, `/scenarios`,
+      `/live-cyclone`, `/comparison` (`b853406`); canon track from the same
+      parse (`e404e80` — `/track` takes no params)
+- [x] Task 8 — `POST /risk-analyst` Gemini layer on one shared quota ladder
+      (`3dcb661`, plus the `e9b02a8` gzip-race fix)
+- [x] Task 9 — `cycloneModel.ts`, `apiCyclones.ts`, `api.ts` scoped getters,
+      tests (`e7139d4`)
+- [x] Task 10 — `CyclonePicker` / `ScenarioComparePanel` / `RiskAnalystPanel`,
+      masthead follows the selection (`91783dc`)
+- Defects found by verification, each its own commit: `/track?cyclone_id=`
+  silently returning Remal (`db9f963`); two catalogue tests racing the input
+  CSV's mtime (`0b7d79e`)
+- Task 11 — documentation synchronization (this file, Architecture.md, PRD.md,
+  README/CLAUDE/Design/Rules/MEMORY) and final verification — **618 pytest +
+  328 mobile tests**, all green
+
+### Still NOT done (deliberate, human decisions)
+
+- The `DIST2LAND`-in-km unit defect in the ML features is measured and
+  documented (MEMORY.md §54) but **not fixed** — it requires the human's call
+  because correcting it moves the gate number.
+- The live ATCF feed has never returned a usable North Indian Ocean storm, so
+  real live mode is unproven.
+- The native app has never run on a physical phone.
+- The deployed backend (`cyclone-forecaster-chi.vercel.app`) predates Tasks
+  7–8 and must be redeployed before the production bundle works.

@@ -1,7 +1,10 @@
 # Design — Core Loop Slice: DEM → Flood Model → API → Advisory → Expo App
 
 **Date:** 2026-09-27
-**Status:** Approved in chat; awaiting written-spec review
+**Status:** Approved in chat; awaiting written-spec review.
+**Status (annotated 2026-10-02, historical note added after the fact):**
+implemented — the DEM→flood→API→advisory→Expo core loop is fully working and
+tested across `backend/` and `mobile/`.
 **Scope:** Completes Module A's last gap (DEM) and delivers Modules B, C, D, and E
 as one vertical slice that closes the PRD core loop.
 

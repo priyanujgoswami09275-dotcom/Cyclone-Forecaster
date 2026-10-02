@@ -240,12 +240,12 @@ The judge-facing version is live at
 chips, same numbers — one build for a browser instead of a handset.
 
 It is a **separate file, deliberately**: `mobile/components/MapScreen.web.tsx`
-rather than a platform branch inside `MapScreen.tsx`. `react-native-maps` is a
-native module, and imported into a browser bundle it throws
-`codegenNativeComponent is not a function` on first render — which is how the
-first Web attempt produced a blank page. Metro resolves the `.web.tsx` file in
-preference, so the native import never enters the browser graph. The native app
-still uses `react-native-maps` and is unchanged.
+rather than a platform branch inside `MapScreen.tsx`. The browser has no native
+runtime and no mapping library is used — the Web map is hand-rolled SVG. Metro
+resolves the `.web.tsx` file in preference, so the Web code never enters the
+native bundle. The native app is separate: it renders `LeafletMap` —
+Leaflet inside a `react-native-webview` (see `mobile/components/LeafletMap.tsx`),
+replacing `react-native-maps` in `2ea5037`.
 
 There is **no mapping library**. The browser has no Google Maps key and this
 project ships no tile server, so the Web map is a projected SVG over a basemap
@@ -310,13 +310,13 @@ These are on screen, not buried here.
   Gemini's free tier allows 20 requests/day and was exhausted while this was
   built, so the loading and error states were observed live and the success
   state is covered by tests with the model stubbed. The error states are the
-  real ones: a spent quota says so and does not pretend to have an advisory. Four things in particular need a real phone: whether the chips and
-  the Generate button stay above the fold at a 40% map floor, whether the white
-  map controls read against the pale basemap, whether the chip row scrolls or
-  clips, and whether the dashed storm path renders dashed —
-  `lineDashPattern` is **not honoured** by react-native-maps on Android, so on
-  Android the track and the cut-off roads draw solid while the legend shows them
-  dashed.
+  real ones: a spent quota says so and does not pretend to have an advisory. Four things in
+  particular need a real phone: whether the chips and the Generate button stay
+  above the fold at a 40% map floor, whether the white map controls read against
+  the pale basemap, whether the chip row scrolls or clips, and whether the
+  dashed storm path renders dashed. (Dashed lines render correctly in the
+  current Native Leaflet map; the earlier `react-native-maps` Android
+  `lineDashPattern` limitation no longer applies.)
 
 ---
 
@@ -339,8 +339,8 @@ road-graph size and advisory readiness.
 **`GEMINI_API_KEY` is optional.** Without it every endpoint except
 `POST /advisory` and `POST /risk-analyst` works normally, and `/health` reports
 `"advisory_ready": false` while both AI routes return 503. Put the key in your
-local `.env` (gitignored at any depth) or in the Render dashboard — never in a
-tracked file.
+local `.env` (gitignored at any depth) or in the Vercel project settings — never
+in a tracked file.
 
 `GET /live-cyclone` needs no key. It is expected to answer
 `live_unavailable` — see "The live provider" above before treating that as a
@@ -357,8 +357,8 @@ cp .env.example .env          # set EXPO_PUBLIC_API_URL
 npx expo start
 ```
 
-Then scan the QR with **Expo Go**. No custom dev client, no EAS build —
-`react-native-maps` works in Expo Go directly.
+Then scan the QR with **Expo Go**. No custom dev client, no EAS build — the
+Leaflet-in-a-WebView map runs in Expo Go directly.
 
 Two things that will bite:
 
@@ -450,7 +450,7 @@ data/
   basemap/           land/water raster + basemap.json (display only, Web only)
   *.geojson *.tif    track, DEM, OSM infra, shelters
 mobile/
-  components/MapScreen.tsx      native screen — react-native-maps
+  components/MapScreen.tsx      native screen — Leaflet map in a WebView
   components/MapScreen.web.tsx  Web screen — projected SVG, no map library
   components/CyclonePicker.tsx  storm selection + live-state banner
   components/ScenarioComparePanel.tsx  two scenarios side by side

@@ -71,8 +71,12 @@ Mobile app (Expo / React Native) — displays everything
 \* Open-Meteo is implemented and tested under `backend/weather/` but is
 **wired to no route** — see README "Weather context".
 
-Deployment: **Render** hosts the FastAPI backend (free tier — pre-warm
-before live demos, cold start is 30–50s after 15 min idle).
+Deployment: the live backend is **Vercel Hobby**, served as an `app.py`
+serverless function (`vercel.json`, ~300 s duration budget — see the pre-warm
+note below). A Render blueprint remains as a working alternative in
+`render.yaml`; **Railway was evaluated and rejected as not free** (its Hobby
+plan is paid). Pre-warm before live demos — cold `/exposure?category=6` takes
+over 100 s.
 
 ## Tech stack — what each piece is for
 
@@ -93,10 +97,10 @@ before live demos, cold start is 30–50s after 15 min idle).
 | AI | google-genai SDK + gemini-3.8-flash | Synthesizes the district advisory from all computed outputs |
 | AI | pydantic (`response_schema`) | Forces Gemini's output into a fixed, parseable schema |
 | Mobile | Expo (managed, TypeScript) | App shell, no native Xcode/Android Studio setup needed |
-| Mobile | react-native-maps | MapView, Polygon (flood), Polyline (track/routes), Marker (infra) — confirmed to work directly in Expo Go |
-| Mobile | @react-native-community/slider | Intensity control |
+| Mobile | Leaflet inside `react-native-webview` (`LeafletMap.tsx`) | The map layer — replaced `react-native-maps` in `2ea5037`, which rendered blank on Android |
+| Mobile | `StrengthChips.tsx` (four chips) | Intensity selection — this replaced the earlier seven-band `Slider` (the `@react-native-community/slider` dep is now transitional) |
 | Mobile | expo-clipboard | Copies the SMS advisory draft |
-| Deploy | Render | Hosts the FastAPI backend |
+| Deploy | Vercel Hobby | Hosts the FastAPI backend (`app.py` + `vercel.json`); `render.yaml` is a retained fallback |
 
 ## Data sources — how to pull them
 
@@ -169,10 +173,12 @@ to the same bbox, 30m scale, exported via `getDownloadURL`.
   capacity and full population coverage.
 
 ### C. Backend / API (FastAPI)
-- Wire modules A and B behind endpoints (`/surge-zone`, `/exposure`,
-  `/routes`, `/allocation`, `/advisory`).
+- Wire modules A and B behind endpoints: `/surge-zone`, `/exposure`,
+  `/routes`, `/allocation`, `/advisory`, plus the dynamic-cyclone surface
+  `/cyclones`, `/cyclones/{id}/track`, `/scenarios`, `/live-cyclone`,
+  `/comparison`, and `POST /risk-analyst`. Seventeen routes total.
 - `/advisory` calls Gemini with the combined structured output from B.
-- Deploy to Render.
+- Deploy to Vercel Hobby.
 
 ### D. AI advisory layer (Gemini)
 - `google-genai` SDK, model `gemini-3.8-flash`.
@@ -182,16 +188,20 @@ to the same bbox, 30m scale, exported via `getDownloadURL`.
   no separate data pipeline needed, this is generated from Gemini's own
   knowledge), `historical_context` (one-sentence comparison to a past
   cyclone).
+- `POST /risk-analyst` reuses the same SDK + retry-with-the
+  `_with_capacity_retry` ladder, returning a structured risk narrative. Both
+  AI routes share one Gemini quota/capacity code path.
 
 ### E. Mobile app (Expo / React Native)
 - Two screens total: map screen + advisory modal. No auth, no location
   permission (hardcode initial region to Sagar Island), no persisted
   history.
-- `react-native-maps` for the map layers; slider drives intensity; routes
-  from module B drawn as `Polyline`; advisory shown in a `Modal`.
+- Leaflet, rendered inside `react-native-webview` (`LeafletMap.tsx`), for the
+  map layers; intensity is selected via the four `StrengthChips`; advisory
+  shown in a `Modal`.
 
 ### F. Deployment & dev tooling
-- Backend → Render (free tier).
+- Backend → Vercel Hobby (live); `render.yaml` retained as a fallback blueprint.
 - Dev workflow: Gemini CLI + MCP tools (DesktopCommanderMCP,
   codebase-memory-mcp, Understand-Anything, GAAI-framework) for
   vibe-coding, and Microsoft's official `@playwright/mcp` for screenshotting
@@ -199,8 +209,9 @@ to the same bbox, 30m scale, exported via `getDownloadURL`.
 
 ## Corrections / gotchas found while planning — don't relitigate these
 
-- **Railway is not free** as of 2026 (requires a $5/mo Hobby plan) — use
-  **Render** or Hugging Face Spaces instead.
+- **Railway is not free** as of 2026 (requires a $5/mo Hobby plan) — the
+  backend runs on **Vercel Hobby**; `render.yaml` is retained as a working
+  alternative. Hugging Face Spaces is another option.
 - **`invisible_playwright_mcp`** is a real repo but it's a stealth/anti-bot-
   detection browser tool (built to defeat CAPTCHAs and fingerprinting), not
   a generic screenshot tool — use the official **`@playwright/mcp`** for UI
@@ -228,8 +239,8 @@ to the same bbox, 30m scale, exported via `getDownloadURL`.
   confirmed 3.7 was still valid and available to the key, so this was a
   capacity block rather than a wrong model name. See MEMORY.md "Flagged for
   review" #19.
-- `react-native-maps` works directly inside **Expo Go** — no custom dev
-  client or EAS build needed for development/demo.
+- The Leaflet-in-a-WebView map runs directly inside **Expo Go** (SDK 57) —
+  no custom dev client or EAS build needed for development/demo.
 - If reusing code drafted by another AI session, check for stray
   `[cite: N]` fragments left inside code blocks — these break Python/JS
   syntax and must be stripped before running.

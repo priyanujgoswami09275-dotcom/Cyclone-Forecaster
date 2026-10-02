@@ -46,9 +46,10 @@
   Pre-fetch once, commit the output to `/data`, serve from static files.
   The public Overpass instance rate-limits at 2 concurrent requests/IP —
   a live call during a demo will fail.
-- **Never call Gemini on slider `onChange`.** Gate every Gemini call
+- **Never call Gemini on intensity-chip `onChange`.** Gate every Gemini call
   behind an explicit user action ("Generate Advisory" button only) —
-  free-tier rate limits will exhaust in seconds otherwise.
+  free-tier rate limits will exhaust in seconds otherwise. (The intensity
+  control is the set of `StrengthChips`, which replaced the old slider.)
 - **Every historical number must be traceable to a real, named source**
   (IMD, INCOIS, IBTrACS, IFRC/BDRCS, Sphere India). If a number is
   estimated rather than observed, say so explicitly in code comments and

@@ -46,7 +46,7 @@ roads go underwater, and generate a ready-to-send evacuation advisory.
 
 ## Core loop
 
-1. Adjust intensity slider (Depression → Super Cyclonic Storm)
+1. Adjust the strength chips (Depression → Super Cyclonic Storm)
 2. Flood zone + exposed infrastructure update on the map
 3. Tap "Generate Advisory" → AI returns evacuation priorities + SMS draft
 4. Repeat with a different intensity to stress-test another scenario
@@ -78,11 +78,22 @@ This loop should close in under ~15 seconds — that's the demo's heartbeat.
 - User accounts / authentication
 - Live GPS / location permission — hardcode initial map region
 - Persisted history across app restarts
-- Multi-cyclone baseline comparison toggle (use a one-sentence AI-generated
-  comparison instead)
 - Push notifications (this is the retention hook — vision only, see below)
-- Real-time live meteorological data feeds — the case study uses a fixed,
-  real historical event
+
+### No longer out of scope, and now implemented
+
+Two items previously listed as out of scope have since been built, so they are
+**implemented, not out of scope**:
+
+- **Multi-cyclone baseline comparison** — the "Dynamic Cyclone System" adds a
+  610-storm historical IBTrACS catalogue, a `CyclonePicker`, and scenario
+  comparison. The one-sentence AI comparison for a *different* past cyclone is
+  still available inside the advisory's `historical_context`.
+- **Real-time live meteorological data feeds** — there is now a real ATCF live
+  provider (`/live-cyclone`) that probes configurable endpoints and reports an
+  honest `live_unavailable` state rather than substituting a historical storm.
+  Its availability for the North Indian Ocean basin is still unproven in
+  production — see "Known limitations" in README.md.
 
 ## Retention hook (vision, not part of this build)
 
@@ -94,7 +105,7 @@ something to build in this round.
 
 ## Success criteria for the demo
 
-- The core loop (slider → exposure → advisory) completes in under 15
+- The core loop (chips → exposure → advisory) completes in under 15
   seconds with no crashes.
 - Every historical number cited (wind speed, surge height, past-cyclone
   comparisons) traces to a real, named source — nothing fabricated.
@@ -102,3 +113,21 @@ something to build in this round.
   screen-capture video ready in case of WiFi failure.
 - Judges can be shown a clear "what really happened vs. what this would
   have flagged" comparison for Remal.
+
+## Status today (2026-10-02)
+
+**Implemented** — the case-study simulator (surge law, BFS flood, routing,
+shelter allocation, Gemini advisory), the dynamic-cyclone catalogue and
+scenario addressing, a real ATCF live provider, and a storm-peak-intensity ML
+layer whose gate failed (so the baseline ships).
+
+**Prototype / not on real data** — shelter capacities are demo placeholders;
+the surge and ML figures are estimates, not forecasts; the live ATCF feed has
+never returned a usable North Indian Ocean storm.
+
+**Prototype limitations** — the native app has never run on a physical phone,
+and the deployed backend predates the dynamic-cyclone backend, so it 404s on
+`/cyclones` and `/live-cyclone` until redeployed.
+
+**Unavailable external dependency** — a public North Indian Ocean ATCF source;
+until one exists, live mode answers `live_unavailable`.

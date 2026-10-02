@@ -11,6 +11,9 @@
 **Spec:** This document. Derived from a direct instruction to build the pipeline
 `historical/live cyclone provider → normalized cyclone record → ML storm-peak-intensity layer → existing surge/flood/exposure/routing/allocation → scenario comparison → Gemini NLP → AI Risk Analyst`.
 
+**Status (annotated 2026-10-02 — historical: this header was added *after* the work closed):** all eleven tasks below have been implemented on
+`feature/dynamic-cyclone-system` (`ec72646` … `3dcb661`, mobile tasks `e7139d4`/`91783dc`), with final verification in `323a92b`. The checkboxes in the task sections are unchanged from the original draft; treat every task as done. Two known-not-fixed findings are parked separately: the `DIST2LAND`-is-km unit discrepancy (MEMORY.md §54) and the stale deployed backend. Open-Meteo is implemented and disclosed but deliberately wired to no route.
+
 ---
 
 ## Global Constraints
