@@ -12,6 +12,7 @@
  * types are; this file adds only what the screen needs.
  */
 import type { LiveCycloneState, LiveStatus } from './cycloneModel.ts';
+import { wireScenarioId } from './cycloneModel.ts';
 import type { ChipId } from './strengthChips.ts';
 
 export { comparisonDeltas, mlEstimateLabel } from './cycloneModel.ts';
@@ -34,9 +35,14 @@ const BAND_ORDER = ['cat0', 'cat1', 'cat2', 'cat3', 'cat4', 'cat5', 'cat6'] as c
  * Deliberately total — every `ChipId` the app offers is covered, and adding a
  * chip without updating this is a compile error rather than a request for an
  * unknown scenario.
+ *
+ * **This is the presentation-side reading of one rule**, not the rule itself.
+ * `wireScenarioId` in `cycloneModel.ts` owns it and every request builder
+ * applies it; this exists so a screen reading a chip asks the same question the
+ * URL will. One definition, two callers.
  */
 export function scenarioForChip(chip: ChipId): string {
-  return chip === 'remal_observed' ? 'observed' : chip;
+  return wireScenarioId(chip);
 }
 
 /**

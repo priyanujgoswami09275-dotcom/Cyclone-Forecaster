@@ -36,6 +36,7 @@ import type {
   RiskAnalystResponse,
   ScenariosResponse,
 } from './cycloneModel.ts';
+import { wireScenarioId } from './cycloneModel.ts';
 
 /**
  * Every historical cyclone the app can address.
@@ -109,7 +110,9 @@ export function getComparison(
     `category=${category}`,
     `cyclone_ids=${cycloneIds.map(encodeURIComponent).join(',')}`,
   ];
-  if (scenarioId) parts.push(`scenario_id=${encodeURIComponent(scenarioId)}`);
+  if (scenarioId) {
+    parts.push(`scenario_id=${encodeURIComponent(wireScenarioId(scenarioId))}`);
+  }
   return request<ComparisonResponse>(`/comparison?${parts.join('&')}`, { method: 'GET' }, READ_TIMEOUT_MS);
 }
 
@@ -119,14 +122,23 @@ export function getComparison(
  * The one call in this module that spends Gemini quota, so it is POST and it
  * is only ever reached from an explicit user action — the same gate
  * `postAdvisory` sits behind.
+ *
+ * **The body's `scenario_id` is canonicalised on the way out, not left to the
+ * caller.** This is the endpoint that rejected the case-study chip outright —
+ * `_context` validates `scenario_id` before it looks at anything else, so
+ * `remal_observed` came back as a bare `400 unknown scenario` with no request
+ * body ever examined. The caller's copy of `body` is not mutated.
  */
 export function postRiskAnalysis(body: RiskAnalystRequest): Promise<RiskAnalystResponse> {
+  const wire = body.scenario_id
+    ? { ...body, scenario_id: wireScenarioId(body.scenario_id) }
+    : body;
   return request<RiskAnalystResponse>(
     '/risk-analyst',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(wire),
     },
     READ_TIMEOUT_MS,
   );

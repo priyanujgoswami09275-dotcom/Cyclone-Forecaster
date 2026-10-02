@@ -18,6 +18,8 @@
  * it is testable in plain Node and the map screen can stay presentational.
  */
 
+import { wireScenarioId } from './cycloneModel.ts';
+
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
@@ -987,11 +989,18 @@ export function getLocalities(): Promise<LocalitiesResponse> {
  * sent as `undefined`, so a request captured before the Dynamic Cyclone System
  * existed is byte-identical to the same request made now — a captured fixture
  * stays a fixture.
+ *
+ * **`scenarioId` is canonicalised here, and this is the whole of the fix.**
+ * Every scoped builder below routes through this one function, so a caller
+ * holding the app's own chip id (`remal_observed`) gets the wire's `observed`
+ * without knowing the difference. Putting it here rather than in each builder
+ * is the point: the four call sites that bypassed the mapping shipped with a
+ * `400` each, and four correct call sites do not stay correct on their own.
  */
 function scopeQuery(cycloneId?: string, scenarioId?: string): string {
   const parts: string[] = [];
   if (cycloneId) parts.push(`cyclone_id=${encodeURIComponent(cycloneId)}`);
-  if (scenarioId) parts.push(`scenario_id=${encodeURIComponent(scenarioId)}`);
+  if (scenarioId) parts.push(`scenario_id=${encodeURIComponent(wireScenarioId(scenarioId))}`);
   return parts.join('&');
 }
 

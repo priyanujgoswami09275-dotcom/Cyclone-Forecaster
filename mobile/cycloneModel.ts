@@ -75,6 +75,35 @@ export interface ScenariosResponse {
   limitation: string;
 }
 
+/**
+ * The scenario id as the backend spells it, given any id the app might hold.
+ *
+ * **The app's own chip id is not a wire id, and one of the two words apart is
+ * the whole bug.** The case-study chip is keyed `remal_observed` so the UI can
+ * tell it apart from a band chip at a glance; the backend registers that
+ * scenario as `observed` (see `backend/cyclones/scenarios.py`, where
+ * `observed_scenario` returns `scenario_id="observed"`). Sending the chip id
+ * straight to `/exposure` or `/risk-analyst` produced
+ * `400 unknown scenario 'remal_observed'`, and because the failure arrived
+ * through the normal error path it was rendered as *"Nothing is exposed at this
+ * strength"* — a confident claim about a request that never succeeded.
+ *
+ * **Why it lives here rather than in the screen.** This is the boundary where
+ * the app's vocabulary meets the wire's, so it belongs to the module that
+ * defines the wire types and to nothing that merely *renders* them. Every
+ * request builder in `api.ts` and `apiCyclones.ts` funnels its `scenario_id`
+ * through it, which is what makes the defect unrepeatable rather than fixed at
+ * four call sites and waiting for a fifth.
+ *
+ * **Total, and it fails closed.** Every other string is returned unchanged,
+ * including strings that are not scenarios at all — so an unrecognised id is
+ * still rejected by the backend with its list of valid ones, and never
+ * silently remapped onto a storm's own peak wind.
+ */
+export function wireScenarioId(id: string): string {
+  return id === 'remal_observed' ? 'observed' : id;
+}
+
 // ---------------------------------------------------------------------------
 // Live state — GET /live-cyclone
 // ---------------------------------------------------------------------------

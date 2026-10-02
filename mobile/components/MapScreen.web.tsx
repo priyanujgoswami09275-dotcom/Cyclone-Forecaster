@@ -323,7 +323,7 @@ export function MapScreen() {
     let cancelled = false;
     setExposureLoading(true);
     setExposureFailed(false);
-    getExposure(requestCategory, cycloneId, chipId)
+    getExposure(requestCategory, cycloneId, scenarioForChip(chipId))
       .then((next) => {
         if (!cancelled) setExposure(next);
       })
@@ -453,7 +453,7 @@ export function MapScreen() {
     postRiskAnalysis({
       category,
       cyclone_id: selectedCycloneId ?? undefined,
-      scenario_id: chipId,
+      scenario_id: scenarioForChip(chipId),
       origin: originId,
     })
       .then((result) => {
