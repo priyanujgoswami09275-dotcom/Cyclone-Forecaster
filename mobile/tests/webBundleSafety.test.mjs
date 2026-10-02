@@ -34,12 +34,15 @@ const MOBILE = resolve(HERE, '..');
 const WEB_GRAPH = [
   'App.tsx',
   'api.ts',
+  'apiCyclones.ts',
   'advisoryFlow.ts',
   'basemap.ts',
+  'cycloneModel.ts',
   'exposureTiles.ts',
   'legend.ts',
   'mapProjection.ts',
   'sampleAdvisory.ts',
+  'scenarioCompare.ts',
   'strengthChips.ts',
   'theme.ts',
   'trackFacts.ts',
@@ -48,7 +51,10 @@ const WEB_GRAPH = [
   'components/MapScreen.web.tsx',
   'components/WebImpactMap.tsx',
   'components/AdvisoryPanel.tsx',
+  'components/CyclonePicker.tsx',
   'components/LocalitySearch.tsx',
+  'components/RiskAnalystPanel.tsx',
+  'components/ScenarioComparePanel.tsx',
 ];
 
 /**

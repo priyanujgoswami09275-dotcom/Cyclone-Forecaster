@@ -32,6 +32,21 @@ import {
   type SurgePreset,
   type TrackResponse,
 } from '../api';
+import {
+  getComparison,
+  getCyclones,
+  getLiveCyclone,
+  getScenarios,
+  postRiskAnalysis,
+} from '../apiCyclones';
+import type {
+  ComparisonEntry,
+  Cyclone,
+  LiveCycloneState,
+  RiskAnalystResponse,
+} from '../cycloneModel';
+import { cycloneDisplayName } from '../cycloneModel';
+import { pickSecondScenario, scenarioForChip } from '../scenarioCompare';
 import { describeAdvisoryError, isAdvisoryStale } from '../advisoryFlow';
 import { SAMPLE_ADVISORY } from '../sampleAdvisory';
 import { theme } from '../theme';
@@ -39,16 +54,21 @@ import { DEFAULT_CHIP, advisoryEnabled, resolveChip, type ChipId } from '../stre
 import { totalExposed } from '../exposureTiles';
 import { countUnreported, peakReportedWindKmph } from '../trackFacts';
 import { AdvisoryContent, type AdvisoryOutcome } from './AdvisoryContent';
+import { AdvisoryModal } from './AdvisoryModal';
 import { LeafletMap, type LeafletAsset } from './LeafletMap';
 import { AboutSheet } from './AboutSheet';
+import { CyclonePicker } from './CyclonePicker';
 import { ExposureTiles } from './ExposureTiles';
 import { FirstRunCard } from './FirstRunCard';
+import { GhostButton } from './GhostButton';
 import { LocalityPicker } from './LocalityPicker';
 import { MapControl } from './MapControl';
 import { MapLegend } from './MapLegend';
 import { OriginLine } from './OriginLine';
 import { PanelStep } from './PanelStep';
 import { PrimaryButton } from './PrimaryButton';
+import { RiskAnalystPanel } from './RiskAnalystPanel';
+import { ScenarioComparePanel } from './ScenarioComparePanel';
 import { StrengthChips } from './StrengthChips';
 import {
   SAGAR_REGION,
@@ -101,7 +121,9 @@ type Boot =
       categories: CategoriesResponse;
       overlayIndex: OverlayEntry[];
       localities: Locality[];
-      track: TrackResponse;
+      cyclones: Cyclone[];
+      defaultCycloneId: string;
+      live: LiveCycloneState | null;
     };
 
 export function MapScreen() {
@@ -142,6 +164,44 @@ export function MapScreen() {
    * request time, which is the only place that mapping now exists.
    */
   const [chipId, setChipId] = useState<ChipId>(DEFAULT_CHIP);
+
+  /**
+   * The cyclone the app is addressing, and the catalogue it is chosen from.
+   *
+   * `selectedCycloneId` is the address every scoped request is made against.
+   * `null` means the catalogue has not loaded yet, and a `null` address makes
+   * no request — the same rule `requestCategory === null` already follows for
+   * the strength. The default comes from `/cyclones`' own
+   * `default_cyclone_id`, so the picker and the backend cannot disagree about
+   * what "no selection" means.
+   */
+  const [cyclones, setCyclones] = useState<Cyclone[]>([]);
+  const [defaultCycloneId, setDefaultCycloneId] = useState<string>('');
+  const [selectedCycloneId, setSelectedCycloneId] = useState<string | null>(null);
+
+  /**
+   * The live feed's state.
+   *
+   * Fetched once at boot and never substituted: when the status is not
+   * `available` the banner says so and names no storm. A historical cyclone
+   * must never be placed in the live slot by a caller who found one
+   * convenient.
+   */
+  const [live, setLive] = useState<LiveCycloneState | null>(null);
+  const [liveLoading, setLiveLoading] = useState(false);
+
+  // --- comparison --------------------------------------------------------
+  const [showCompare, setShowCompare] = useState(false);
+  const [compareRows, setCompareRows] = useState<ComparisonEntry[] | null>(null);
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareError, setCompareError] = useState<ApiError | null>(null);
+
+  // --- risk analyst ------------------------------------------------------
+  // The second call that spends Gemini quota, behind its own explicit press.
+  const [showRisk, setShowRisk] = useState(false);
+  const [riskResult, setRiskResult] = useState<RiskAnalystResponse | null>(null);
+  const [riskLoading, setRiskLoading] = useState(false);
+  const [riskError, setRiskError] = useState<ApiError | null>(null);
   /**
    * The default origin. **Namkhana, not Sagar**, and the reason is measured
    * rather than chosen.
@@ -211,24 +271,32 @@ export function MapScreen() {
     let cancelled = false;
     (async () => {
       try {
-        // Parallel: four cold requests in series is four round trips before
-        // anything paints, and none depends on another. `/track` is in the same
-        // `all` rather than caught separately on purpose — if the committed
-        // file is missing the endpoint says exactly that, and a boot error
-        // naming the file beats a map with a hole in a real cyclone's track.
-        const [categories, overlays, localities, track] = await Promise.all([
+        // Parallel: five cold requests in series is five round trips before
+        // anything paints, and none depends on another. `/track` is NOT in
+        // this list on purpose — it is fetched by the cyclone-keyed effect
+        // below, because a cyclone switch has to refetch it and a boot-time
+        // fetch would be a second request for the same default storm.
+        const [categories, overlays, localities, cycloneList, liveState] = await Promise.all([
           getCategories(),
           getOverlays(),
           getLocalities(),
-          getTrack(),
+          getCyclones(),
+          getLiveCyclone(),
         ]);
         if (cancelled) return;
+        const defaultId = cycloneList.default_cyclone_id;
+        setCyclones(cycloneList.cyclones);
+        setDefaultCycloneId(defaultId);
+        setSelectedCycloneId(defaultId);
+        setLive(liveState);
         setBoot({
           status: 'ready',
           categories,
           overlayIndex: overlays.overlays,
           localities: localities.localities,
-          track,
+          cyclones: cycloneList.cyclones,
+          defaultCycloneId: defaultId,
+          live: liveState,
         });
       } catch (err) {
         if (cancelled) return;
@@ -243,7 +311,49 @@ export function MapScreen() {
   const categories = boot.status === 'ready' ? boot.categories.categories : [];
   const overlayIndex = boot.status === 'ready' ? boot.overlayIndex : [];
   const localities = boot.status === 'ready' ? boot.localities : [];
-  const track = boot.status === 'ready' ? boot.track : null;
+
+  /**
+   * The selected cyclone's track.
+   *
+   * Fetched by an effect rather than at boot because the track is a property
+   * of the *selected cyclone*, and selecting a different one has to refetch
+   * it. The ref guards the initial fetch: boot already set
+   * `selectedCycloneId` to the default, so without the guard the effect
+   * would fetch the default storm's track twice.
+   */
+  const [track, setTrack] = useState<TrackResponse | null>(null);
+  const trackCycloneId = useRef<string | null>(null);
+  useEffect(() => {
+    const id = selectedCycloneId;
+    if (id === null) return undefined;
+    if (trackCycloneId.current === id) return undefined;
+    trackCycloneId.current = id;
+    let cancelled = false;
+    getTrack(id)
+      .then((next) => {
+        if (!cancelled) setTrack(next);
+      })
+      .catch(() => {
+        // Left null on purpose: a track that will not load is a map with a
+        // hole, which the existing `track ?` guards already handle.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCycloneId]);
+
+  /**
+   * The cyclone currently on screen, taken from the catalogue so the title
+   * does not wait on the track request (and does not flash a different storm
+   * while it is in flight).
+   *
+   * The header names this. It was the literal "Cyclone Remal impact
+   * simulator", which held while the map drew whichever storm was selected —
+   * a case-study name over a different storm.
+   */
+  const selectedCyclone = cyclones.find((c) => c.cyclone_id === selectedCycloneId) ?? null;
+  /** Whether what is selected is the documented case study. */
+  const isCaseStudy = selectedCyclone === null || selectedCyclone.is_case_study;
 
   const preset: SurgePreset | null = useMemo(() => {
     if (boot.status !== 'ready') return null;
@@ -303,10 +413,11 @@ export function MapScreen() {
   // --- exposure: one request per committed chip --------------------------
   useEffect(() => {
     if (requestCategory === null) return undefined;
+    const cycloneId = selectedCycloneId ?? undefined;
     let cancelled = false;
     setExposureLoading(true);
     setExposureError(null);
-    getExposure(requestCategory)
+    getExposure(requestCategory, cycloneId, chipId)
       .then((next) => {
         if (cancelled) return;
         setExposure(next);
@@ -321,7 +432,7 @@ export function MapScreen() {
     return () => {
       cancelled = true;
     };
-  }, [requestCategory]);
+  }, [requestCategory, selectedCycloneId, chipId]);
 
   /**
    * On a chip press the previous exposure is dropped immediately.
@@ -334,6 +445,99 @@ export function MapScreen() {
   const onSelectChip = useCallback((id: ChipId) => {
     setChipId(id);
     setExposure(null);
+  }, []);
+
+  /**
+   * Selecting a cyclone refetches the track and drops the current exposure.
+   *
+   * The exposure is dropped for the same reason a chip press drops it: the
+   * counts on screen would belong to the *previous* storm under a heading that
+   * already names the new one.
+   */
+  const onSelectCyclone = useCallback((id: string) => {
+    setSelectedCycloneId(id);
+    setExposure(null);
+  }, []);
+
+  /**
+   * The comparison: this storm at the chosen scenario, against a second
+   * scenario of the same storm.
+   *
+   * **The second scenario is looked up, never assumed.** `observed` is
+   * registered only for cyclones whose track is committed locally — the case
+   * study. Asking the backend for `scenario_id=observed` on any of the other
+   * 609 is a `400 unknown scenario`. So the catalogue is consulted first and
+   * `pickSecondScenario` chooses from what it actually reports.
+   *
+   * Two scenarios of one storm rather than two storms at one scenario, because
+   * at a band the exposure figures are identical across cyclones — the surge
+   * comes from the band's wind, not the storm. A cyclone-vs-cyclone table at
+   * `cat6` would show `4.4719` in every row and teach a reader that the
+   * comparison means nothing.
+   */
+  const onOpenCompare = useCallback(() => {
+    const id = selectedCycloneId;
+    const category = requestCategory;
+    if (!id || category === null) return;
+    setShowCompare(true);
+    setCompareLoading(true);
+    setCompareError(null);
+    (async () => {
+      const current = scenarioForChip(chipId);
+      const catalogue = await getScenarios(id);
+      const second = pickSecondScenario(
+        current,
+        catalogue.scenarios.map((s) => s.scenario_id),
+      );
+      const requests = [getComparison([id], category, current)];
+      if (second !== null) requests.push(getComparison([id], category, second));
+      const results = await Promise.all(requests);
+      setCompareRows(results.flatMap((r) => r.cyclones));
+      setCompareLoading(false);
+    })().catch((err) => {
+      setCompareRows(null);
+      setCompareError(err as ApiError);
+      setCompareLoading(false);
+    });
+  }, [selectedCycloneId, requestCategory, chipId]);
+
+  const onCloseCompare = useCallback(() => {
+    setShowCompare(false);
+  }, []);
+
+  /**
+   * The risk analyst, behind its own explicit press.
+   *
+   * The same gate `onGenerateAdvisory` sits behind: this spends Gemini quota,
+   * so it is never reached from a chip press or a slider drag. The request
+   * carries the current cyclone, scenario and origin, so the prose and the map
+   * are describing the same thing.
+   */
+  const onGenerateRisk = useCallback(() => {
+    const category = requestCategory;
+    if (category === null) return;
+    setShowRisk(true);
+    setRiskLoading(true);
+    setRiskError(null);
+    postRiskAnalysis({
+      category,
+      cyclone_id: selectedCycloneId ?? undefined,
+      scenario_id: chipId,
+      origin: originId,
+    })
+      .then((result) => {
+        setRiskResult(result);
+        setRiskLoading(false);
+      })
+      .catch((err) => {
+        setRiskResult(null);
+        setRiskError(err as ApiError);
+        setRiskLoading(false);
+      });
+  }, [requestCategory, selectedCycloneId, chipId, originId]);
+
+  const onCloseRisk = useCallback(() => {
+    setShowRisk(false);
   }, []);
 
   // --- map layers, as Leaflet's data shapes -------------------------------
@@ -554,7 +758,17 @@ export function MapScreen() {
   return (
     <View style={styles.screen}>
       <View style={styles.header}>
-        <Text style={styles.title}>Cyclone Remal impact simulator</Text>
+        {/*
+          The header names what is selected. It was the literal "Cyclone Remal
+          impact simulator", which stayed while the map drew another storm's
+          track — a case-study name over a different storm. The case study keeps
+          its original wording so the default screen is unchanged.
+        */}
+        <Text style={styles.title}>
+          {isCaseStudy
+            ? 'Cyclone Remal impact simulator'
+            : `Cyclone ${cycloneDisplayName(selectedCyclone?.name)} ${selectedCyclone?.season} impact simulator`}
+        </Text>
         <Text style={styles.subtitle}>What would a storm like this hit today?</Text>
       </View>
 
@@ -605,7 +819,21 @@ export function MapScreen() {
 
       <View style={styles.panel}>
         <ScrollView contentContainerStyle={styles.panelContent} showsVerticalScrollIndicator={false}>
-          <PanelStep index={1} title="Pick a storm strength">
+          <PanelStep index={1} title="Pick a storm">
+            {/*
+              The cyclone picker above the strength chips, not beside them. The
+              chips answer "how strong"; the picker answers "which storm". The
+              chips are a superset of what they were — `cat4`/`cat5`/`cat6` are
+              all still there and `cat6` is still the default — and the picker
+              is the new axis.
+            */}
+            <CyclonePicker
+              cyclones={cyclones}
+              selectedId={selectedCycloneId ?? ''}
+              onSelect={onSelectCyclone}
+              live={live}
+              liveLoading={liveLoading}
+            />
             <StrengthChips
               selected={chipId}
               onSelect={onSelectChip}
@@ -635,6 +863,22 @@ export function MapScreen() {
               disabled={!canGenerate}
               busy={advisoryBusy}
             />
+
+            {/*
+              The comparison and the risk analyst, as GhostButtons rather than
+              primary actions. Both are secondary to the evacuation plan, and
+              both are reached from an explicit press — the risk analyst spends
+              Gemini quota, and the comparison is a "what if" layered on top of
+              the answer, not a replacement for it.
+            */}
+            <View style={styles.secondaryActions}>
+              <GhostButton label="Compare scenarios" onPress={onOpenCompare} disabled={!canGenerate} />
+              <GhostButton
+                label="Generate analysis"
+                onPress={onGenerateRisk}
+                disabled={!canGenerate}
+              />
+            </View>
 
             {!canGenerate && !exposureLoading ? (
               <Text style={styles.disabledHint}>
@@ -727,6 +971,19 @@ export function MapScreen() {
         onLoadCached={onLoadCachedAdvisory}
         onClose={() => setAdvisory(null)}
       />
+
+      {/*
+        The comparison sheet and the risk analyst, in `AdvisoryModal` shells.
+        Both are content-only panels — see their own notes — so the native
+        screen wraps them here and the Web screen renders them inline.
+      */}
+      <AdvisoryModal visible={showCompare} onClose={onCloseCompare} title="Scenario comparison">
+        <ScenarioComparePanel rows={compareRows ?? []} loading={compareLoading} error={compareError} />
+      </AdvisoryModal>
+
+      <AdvisoryModal visible={showRisk} onClose={onCloseRisk} title="Risk analysis">
+        <RiskAnalystPanel result={riskResult} loading={riskLoading} error={riskError} />
+      </AdvisoryModal>
     </View>
   );
 }
@@ -854,6 +1111,10 @@ const styles = StyleSheet.create({
     marginTop: theme.spacing.xs / 2,
   },
   originBlock: {
+    marginTop: theme.spacing.xs,
+  },
+  secondaryActions: {
+    flexDirection: 'row',
     marginTop: theme.spacing.xs,
   },
   disclosure: {

@@ -50,7 +50,7 @@
  *    intersection is not impassability.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import {
@@ -73,6 +73,21 @@ import {
   type RoutesResponse,
   type TrackResponse,
 } from '../api';
+import {
+  getComparison,
+  getCyclones,
+  getLiveCyclone,
+  getScenarios,
+  postRiskAnalysis,
+} from '../apiCyclones';
+import type {
+  ComparisonEntry,
+  Cyclone,
+  LiveCycloneState,
+  RiskAnalystResponse,
+} from '../cycloneModel';
+import { cycloneDisplayName } from '../cycloneModel';
+import { pickSecondScenario, scenarioForChip } from '../scenarioCompare';
 import { describeAdvisoryError } from '../advisoryFlow';
 import { totalExposed } from '../exposureTiles';
 import {
@@ -108,7 +123,10 @@ import {
   windLabel,
 } from '../webViewModel';
 import { AdvisoryPanel, type WebAdvisoryOutcome } from './AdvisoryPanel';
+import { CyclonePicker } from './CyclonePicker';
 import { LocalitySearch } from './LocalitySearch';
+import { RiskAnalystPanel } from './RiskAnalystPanel';
+import { ScenarioComparePanel } from './ScenarioComparePanel';
 import { WebImpactMap } from './WebImpactMap';
 
 /**
@@ -128,13 +146,40 @@ type Boot =
       categories: CategoriesResponse;
       overlayIndex: OverlayEntry[];
       localities: LocalitiesResponse;
-      track: TrackResponse;
+      cyclones: Cyclone[];
+      defaultCycloneId: string;
+      live: LiveCycloneState | null;
     };
 
 export function MapScreen() {
   const [boot, setBoot] = useState<Boot>({ status: 'loading' });
 
   const [chipId, setChipId] = useState<ChipId>(DEFAULT_CHIP);
+
+  /**
+   * The cyclone the app is addressing, and the catalogue it is chosen from.
+   * Same reasoning as the native screen — see `MapScreen.tsx`.
+   */
+  const [cyclones, setCyclones] = useState<Cyclone[]>([]);
+  const [defaultCycloneId, setDefaultCycloneId] = useState<string>('');
+  const [selectedCycloneId, setSelectedCycloneId] = useState<string | null>(null);
+
+  /** The live feed's state. Never substituted with a historical cyclone. */
+  const [live, setLive] = useState<LiveCycloneState | null>(null);
+  const [liveLoading, setLiveLoading] = useState(false);
+
+  // --- comparison --------------------------------------------------------
+  const [showCompare, setShowCompare] = useState(false);
+  const [compareRows, setCompareRows] = useState<ComparisonEntry[] | null>(null);
+  const [compareLoading, setCompareLoading] = useState(false);
+  const [compareError, setCompareError] = useState<ApiError | null>(null);
+
+  // --- risk analyst ------------------------------------------------------
+  const [showRisk, setShowRisk] = useState(false);
+  const [riskResult, setRiskResult] = useState<RiskAnalystResponse | null>(null);
+  const [riskLoading, setRiskLoading] = useState(false);
+  const [riskError, setRiskError] = useState<ApiError | null>(null);
+
   /**
    * The default origin: **Namkhana**, with the same measured reasoning as the
    * native screen — see `MapScreen.tsx` for the full reachability table.
@@ -171,21 +216,30 @@ export function MapScreen() {
     let cancelled = false;
     (async () => {
       try {
-        // Parallel: four cold requests in series is four round trips before
-        // anything paints, and none depends on another.
-        const [categories, overlays, localities, track] = await Promise.all([
+        // Parallel: five cold requests in series is five round trips before
+        // anything paints, and none depends on another. `/track` is fetched by
+        // the cyclone-keyed effect below, because a cyclone switch refetches it.
+        const [categories, overlays, localities, cycloneList, liveState] = await Promise.all([
           getCategories(),
           getOverlays(),
           getLocalities(),
-          getTrack(),
+          getCyclones(),
+          getLiveCyclone(),
         ]);
         if (cancelled) return;
+        const defaultId = cycloneList.default_cyclone_id;
+        setCyclones(cycloneList.cyclones);
+        setDefaultCycloneId(defaultId);
+        setSelectedCycloneId(defaultId);
+        setLive(liveState);
         setBoot({
           status: 'ready',
           categories,
           overlayIndex: overlays.overlays,
           localities,
-          track,
+          cyclones: cycloneList.cyclones,
+          defaultCycloneId: defaultId,
+          live: liveState,
         });
       } catch (err) {
         if (cancelled) return;
@@ -200,9 +254,44 @@ export function MapScreen() {
   const categories = boot.status === 'ready' ? boot.categories.categories : [];
   const overlayIndex = boot.status === 'ready' ? boot.overlayIndex : [];
   const localitiesResponse = boot.status === 'ready' ? boot.localities : null;
-  const track = boot.status === 'ready' ? boot.track : null;
+
+  /**
+   * The selected cyclone's track, fetched by an effect for the same reason as
+   * the native screen: the track is a property of the selected cyclone.
+   */
+  const [track, setTrack] = useState<TrackResponse | null>(null);
+  const trackCycloneId = useRef<string | null>(null);
+  useEffect(() => {
+    const id = selectedCycloneId;
+    if (id === null) return undefined;
+    if (trackCycloneId.current === id) return undefined;
+    trackCycloneId.current = id;
+    let cancelled = false;
+    getTrack(id)
+      .then((next) => {
+        if (!cancelled) setTrack(next);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedCycloneId]);
 
   const preset = boot.status === 'ready' ? (boot.categories.presets[0] ?? null) : null;
+
+  /**
+   * The cyclone currently on screen, from the catalogue rather than the track
+   * (the track arrives a moment later, and the masthead must not flash a
+   * different storm in between).
+   *
+   * The H1 is derived from this. It used to be the literal string
+   * "Cyclone Remal, May 2024", which stayed put while the map drew a 1970
+   * storm's track — a case-study name sitting over whatever was actually
+   * selected. Naming the selection is the whole point of the picker.
+   */
+  const selectedCyclone = cyclones.find((c) => c.cyclone_id === selectedCycloneId) ?? null;
+  /** Whether what is selected is the documented case study. */
+  const isCaseStudy = selectedCyclone === null || selectedCyclone.is_case_study;
 
   /**
    * The single place `chipId` becomes a category index, via the shared
@@ -230,10 +319,11 @@ export function MapScreen() {
   // --- exposure: one request per committed chip --------------------------
   useEffect(() => {
     if (requestCategory === null) return undefined;
+    const cycloneId = selectedCycloneId ?? undefined;
     let cancelled = false;
     setExposureLoading(true);
     setExposureFailed(false);
-    getExposure(requestCategory)
+    getExposure(requestCategory, cycloneId, chipId)
       .then((next) => {
         if (!cancelled) setExposure(next);
       })
@@ -248,7 +338,7 @@ export function MapScreen() {
     return () => {
       cancelled = true;
     };
-  }, [requestCategory]);
+  }, [requestCategory, selectedCycloneId, chipId]);
 
   // --- routes: changes with both the chip and the origin -----------------
   useEffect(() => {
@@ -302,6 +392,83 @@ export function MapScreen() {
   const onSelectChip = useCallback((id: ChipId) => {
     setChipId(id);
     setExposure(null);
+  }, []);
+
+  /**
+   * Selecting a cyclone refetches the track and drops the current exposure.
+   * Same reasoning as the native screen — see `MapScreen.tsx`.
+   */
+  const onSelectCyclone = useCallback((id: string) => {
+    setSelectedCycloneId(id);
+    setExposure(null);
+  }, []);
+
+  /**
+   * The comparison: this storm at the chosen scenario, against a second
+   * scenario of the same storm. The second scenario is looked up from the
+   * catalogue, never assumed — see `MapScreen.tsx` for the full reasoning
+   * (only the case study has an `observed` scenario; assuming it is a 400 for
+   * the other 609 cyclones).
+   */
+  const onOpenCompare = useCallback(() => {
+    const id = selectedCycloneId;
+    const category = requestCategory;
+    if (!id || category === null) return;
+    setShowCompare(true);
+    setCompareLoading(true);
+    setCompareError(null);
+    (async () => {
+      const current = scenarioForChip(chipId);
+      const catalogue = await getScenarios(id);
+      const second = pickSecondScenario(
+        current,
+        catalogue.scenarios.map((s) => s.scenario_id),
+      );
+      const requests = [getComparison([id], category, current)];
+      if (second !== null) requests.push(getComparison([id], category, second));
+      const results = await Promise.all(requests);
+      setCompareRows(results.flatMap((r) => r.cyclones));
+      setCompareLoading(false);
+    })().catch((err) => {
+      setCompareRows(null);
+      setCompareError(err as ApiError);
+      setCompareLoading(false);
+    });
+  }, [selectedCycloneId, requestCategory, chipId]);
+
+  const onCloseCompare = useCallback(() => {
+    setShowCompare(false);
+  }, []);
+
+  /**
+   * The risk analyst, behind its own explicit press — the same gate
+   * `onGenerateAdvisory` sits behind, because this spends Gemini quota.
+   */
+  const onGenerateRisk = useCallback(() => {
+    const category = requestCategory;
+    if (category === null) return;
+    setShowRisk(true);
+    setRiskLoading(true);
+    setRiskError(null);
+    postRiskAnalysis({
+      category,
+      cyclone_id: selectedCycloneId ?? undefined,
+      scenario_id: chipId,
+      origin: originId,
+    })
+      .then((result) => {
+        setRiskResult(result);
+        setRiskLoading(false);
+      })
+      .catch((err) => {
+        setRiskResult(null);
+        setRiskError(err as ApiError);
+        setRiskLoading(false);
+      });
+  }, [requestCategory, selectedCycloneId, chipId, originId]);
+
+  const onCloseRisk = useCallback(() => {
+    setShowRisk(false);
   }, []);
 
   // --- advisory ----------------------------------------------------------
@@ -409,7 +576,21 @@ export function MapScreen() {
         <View style={styles.masthead}>
           <View style={styles.mastheadText}>
             <Text style={styles.eyebrow}>Cyclone impact & infrastructure forecaster</Text>
-            <Text style={styles.title}>Cyclone Remal, May 2024</Text>
+            {/*
+              The title names **what is selected**, not the case study. It was
+              the literal "Cyclone Remal, May 2024" while the map could be
+              drawing a 1970 storm's track — a case-study name sitting over a
+              different storm, which is the mislabel the picker exists to make
+              possible in the first place.
+              The case study keeps its exact original wording, month included:
+              the catalogue carries a season but not a landfall month, and that
+              sentence is the documented anchor.
+            */}
+            <Text style={styles.title}>
+              {isCaseStudy
+                ? 'Cyclone Remal, May 2024'
+                : `Cyclone ${cycloneDisplayName(selectedCyclone?.name)}, ${selectedCyclone?.season}`}
+            </Text>
             {/*
               No landfall sentence here. It used to sit in this subtitle *and*
               in `caseStudyLine`'s anchor line directly below, so the same fact
@@ -424,7 +605,16 @@ export function MapScreen() {
               roads the flood reaches across the Sundarbans delta, and drafts the
               evacuation advisory.
             </Text>
-            <Text style={styles.anchorLine}>{caseStudy.anchor}</Text>
+            {/*
+              The anchor is the case study's own fact, so it is labelled as
+              such the moment something else is selected. Left unlabelled it
+              would read as a description of the storm on screen — a Remal
+              landfall sentence under a RUTH heading.
+            */}
+            <Text style={styles.anchorLine}>
+              {isCaseStudy ? '' : 'Case study — '}
+              {caseStudy.anchor}
+            </Text>
           </View>
           <View style={styles.mastheadBadges}>
             <Badge label="Case study" value="Remal 2024" />
@@ -459,7 +649,20 @@ export function MapScreen() {
 
           <View style={styles.controlColumn}>
             {/* Step 1 — scenario */}
-            <Step index={1} title="Pick a storm strength">
+            <Step index={1} title="Pick a storm">
+              {/*
+                The cyclone picker above the strength chips, as on the native
+                screen. The chips answer "how strong"; the picker answers "which
+                storm". `cat4`/`cat5`/`cat6` are all still there and `cat6` is
+                still the default.
+              */}
+              <CyclonePicker
+                cyclones={cyclones}
+                selectedId={selectedCycloneId ?? ''}
+                onSelect={onSelectCyclone}
+                live={live}
+                liveLoading={liveLoading}
+              />
               <View style={styles.chips}>
                 {STRENGTH_CHIP_IDS.map((id) => {
                   const chip = resolveChip(id, categories, overlayIndex).chip;
@@ -639,6 +842,40 @@ export function MapScreen() {
                 )}
               </Pressable>
 
+              {/*
+                The comparison and the risk analyst, as secondary actions below
+                the primary one. Both are reached from an explicit press — the
+                risk analyst spends Gemini quota.
+              */}
+              <View style={styles.secondaryActions}>
+                <Pressable
+                  onPress={onOpenCompare}
+                  disabled={!canGenerate}
+                  accessibilityRole="button"
+                  accessibilityLabel="Compare scenarios"
+                  style={({ pressed }) => [
+                    styles.secondary,
+                    !canGenerate && styles.generateDisabled,
+                    pressed && canGenerate && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.secondaryLabel}>Compare scenarios</Text>
+                </Pressable>
+                <Pressable
+                  onPress={onGenerateRisk}
+                  disabled={!canGenerate}
+                  accessibilityRole="button"
+                  accessibilityLabel="Generate analysis"
+                  style={({ pressed }) => [
+                    styles.secondary,
+                    !canGenerate && styles.generateDisabled,
+                    pressed && canGenerate && styles.pressed,
+                  ]}
+                >
+                  <Text style={styles.secondaryLabel}>Generate analysis</Text>
+                </Pressable>
+              </View>
+
               {availability.reason !== null ? (
                 <Text style={styles.generateHint}>{availability.reason}</Text>
               ) : (
@@ -673,6 +910,31 @@ export function MapScreen() {
                 onClose={() => setAdvisory(null)}
               />
             </Step>
+
+            {/*
+              The comparison sheet and the risk analyst, rendered **inline** on
+              Web. A modal over a map would hide the map the panel is
+              describing — the same reason `AdvisoryPanel` renders inline
+              rather than in a `Modal`. The native screen wraps the same
+              content-only components in `AdvisoryModal`.
+            */}
+            {showCompare ? (
+              <View style={styles.inlinePanel}>
+                <Text style={styles.inlineHeading}>Scenario comparison</Text>
+                <ScenarioComparePanel
+                  rows={compareRows ?? []}
+                  loading={compareLoading}
+                  error={compareError}
+                />
+              </View>
+            ) : null}
+
+            {showRisk ? (
+              <View style={styles.inlinePanel}>
+                <Text style={styles.inlineHeading}>Risk analysis</Text>
+                <RiskAnalystPanel result={riskResult} loading={riskLoading} error={riskError} />
+              </View>
+            ) : null}
 
             {/* --- disclosures ------------------------------------------- */}
             <View style={styles.disclosureBlock}>
@@ -1262,6 +1524,41 @@ const styles = StyleSheet.create({
     fontFamily: theme.fonts.bodySemibold,
     fontSize: theme.typography.emphasis,
     color: theme.colors.background,
+  },
+  secondaryActions: {
+    flexDirection: 'row',
+    marginTop: 8,
+  },
+  secondary: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: theme.radius.button,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.xs,
+    marginRight: theme.spacing.xs,
+  },
+  secondaryLabel: {
+    fontFamily: theme.fonts.bodyMedium,
+    fontSize: theme.typography.caption,
+    color: theme.colors.text,
+  },
+  inlinePanel: {
+    marginTop: theme.spacing.sm,
+    padding: theme.spacing.sm,
+    borderRadius: theme.radius.card,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.card,
+  },
+  inlineHeading: {
+    fontFamily: theme.fonts.heading,
+    fontSize: theme.typography.body,
+    color: theme.colors.text,
+    marginBottom: theme.spacing.xs,
   },
   generateHint: {
     fontFamily: theme.fonts.body,

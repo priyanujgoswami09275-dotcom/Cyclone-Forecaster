@@ -300,6 +300,29 @@ export interface RiskAnalystResponse {
 // ---------------------------------------------------------------------------
 
 /**
+ * A cyclone's name, rendered for a human.
+ *
+ * IBTrACS stores names uppercase and may carry a paired name separated by `:`
+ * or `-` for storms named differently by two agencies (`BESS:BONNIE`,
+ * `KHAI-MUK`). Both separators are treated as word boundaries, so each half is
+ * title-cased on its own rather than the second half being left shouting.
+ *
+ * `null` or `''` renders as `Unnamed`, never `undefined` or an empty heading —
+ * **482 of the 610 catalogued storms are unnamed** (measured from
+ * `data/cyclones/catalogue.json`), so the absence is the common case and it
+ * has to be a word.
+ */
+export function cycloneDisplayName(name: string | null | undefined): string {
+  if (!name || !name.trim()) return 'Unnamed';
+  return name
+    .split(/([:\-\s])/)
+    .map((part) =>
+      /^[:\-\s]$/.test(part) ? part : part.charAt(0).toUpperCase() + part.slice(1).toLowerCase(),
+    )
+    .join('');
+}
+
+/**
  * The one-line live-state label.
  *
  * **The rule, in prose, because it is the reason this function exists:** an
@@ -363,6 +386,11 @@ export function mlEstimateLabel(estimate: {
  * **Right minus left, matching the arrow in the label.** See
  * `ComparisonDeltas` for why this is the opposite of the server's convention.
  *
+ * **The label names whichever axis the two rows differ on.** A comparison can
+ * run along either: two scenarios of one storm (`cat4 → cat5`) or two storms
+ * at one scenario (`Remal 2024 → Dana 2023`). Labelling by scenario when the
+ * scenarios are equal would print `cat5 → cat5`, which is not a comparison.
+ *
  * Rounded to 4 dp, the same precision the backend rounds to: `3.41 - 1.83` is
  * `1.5800000000000003` in binary floating point, and a strict-equality test
  * against `1.58` is exactly the kind of failure that teaches a team to stop
@@ -373,14 +401,24 @@ export function mlEstimateLabel(estimate: {
  * was never made.
  */
 export function comparisonDeltas(
-  rows: { scenario_id: string; surge_m: number; exposed: number }[],
+  rows: {
+    cyclone_id: string;
+    scenario_id: string;
+    surge_m: number;
+    exposed: number;
+    name?: string | null;
+  }[],
 ): { label: string; surge_delta_m: number; exposed_delta: number }[] {
   const out: { label: string; surge_delta_m: number; exposed_delta: number }[] = [];
   for (let i = 1; i < rows.length; i += 1) {
     const left = rows[i - 1];
     const right = rows[i];
+    const label =
+      left.scenario_id !== right.scenario_id
+        ? `${left.scenario_id} → ${right.scenario_id}`
+        : `${left.name ?? left.cyclone_id} → ${right.name ?? right.cyclone_id}`;
     out.push({
-      label: `${left.scenario_id} → ${right.scenario_id}`,
+      label,
       surge_delta_m: round4(right.surge_m - left.surge_m),
       exposed_delta: right.exposed - left.exposed,
     });

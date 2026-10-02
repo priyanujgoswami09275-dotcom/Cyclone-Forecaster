@@ -29,6 +29,7 @@ import assert from 'node:assert/strict';
 
 import {
   comparisonDeltas,
+  cycloneDisplayName,
   freshnessNote,
   liveStateLabel,
   mlEstimateLabel,
@@ -89,6 +90,34 @@ test('freshness always carries the timestamp it was checked', () => {
 test('an ml estimate is never labelled a prediction when it lost to the baseline', () => {
   assert.doesNotMatch(mlEstimateLabel({ beats_baseline: false }), /predicted/i);
   assert.match(mlEstimateLabel({ beats_baseline: false }), /median/i);
+});
+
+// ---------------------------------------------------------------------------
+// The masthead title.
+//
+// The H1 used to be the literal string "Cyclone Remal, May 2024" while the map
+// could be showing a 1970 storm's track — a case-study name substituted over
+// whatever was actually selected, which is the mislabel this whole system
+// exists to avoid. The title now follows the selection, so it needs the
+// catalogue's uppercase IBTrACS name rendered for a human.
+// ---------------------------------------------------------------------------
+
+test('a cyclone name is title-cased for display', () => {
+  assert.equal(cycloneDisplayName('REMAL'), 'Remal');
+  assert.equal(cycloneDisplayName('UNNAMED'), 'Unnamed');
+  assert.equal(cycloneDisplayName('DANA'), 'Dana');
+});
+
+test('separator characters in a name are each title-cased', () => {
+  // IBTrACS carries paired names for storms named differently by two agencies.
+  assert.equal(cycloneDisplayName('BESS:BONNIE'), 'Bess:Bonnie');
+  assert.equal(cycloneDisplayName('KHAI-MUK'), 'Khai-Muk');
+  assert.equal(cycloneDisplayName('MAHASEN:VIYARU'), 'Mahasen:Viyaru');
+});
+
+test('an empty or missing name renders as an absence, not "undefined"', () => {
+  assert.equal(cycloneDisplayName(''), 'Unnamed');
+  assert.equal(cycloneDisplayName(null), 'Unnamed');
 });
 
 test('an ml estimate that actually beat the gate may say so', () => {
