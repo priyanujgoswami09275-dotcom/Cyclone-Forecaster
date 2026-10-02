@@ -6,13 +6,30 @@
 
 **Architecture:** A `CycloneSource` protocol with two implementations (IBTrACS historical, ATCF live) produces one normalized `CycloneRecord`. A `ScenarioContext` of `(cyclone_id, scenario_id)` keys every cache, so a cache entry can never be served for a different storm. The ML layer predicts storm peak intensity from real IBTrACS features and is reported *beside* the deterministic surge law, never in place of it. When no public NI-basin ATCF source is reachable the live provider returns an explicit `live_unavailable` state carrying source, HTTP status, timestamps and a plain-language limitation — and never substitutes historical or Remal data.
 
-**Tech Stack:** Python 3.13 + FastAPI (existing), scikit-learn + numpy (existing deps, already in `venv`), IBTrACS v04r01 NI CSV (in-repo, 27 MB), ATCF comma-delimited b-decks, Open-Meteo Forecast API (no key), Expo SDK 57 / React Native + TypeScript (existing), node:test, pytest.
+**Tech Stack:** Python 3.13 + FastAPI (existing), scikit-learn + numpy (existing deps, already in `venv`), IBTrACS v04r01 NI CSV (27 MB — **corrected 2026-10-02: this is a local input, NOT in-repo**, as written here originally), ATCF comma-delimited b-decks, Open-Meteo Forecast API (no key), Expo SDK 57 / React Native + TypeScript (existing), node:test, pytest.
 
 **Spec:** This document. Derived from a direct instruction to build the pipeline
 `historical/live cyclone provider → normalized cyclone record → ML storm-peak-intensity layer → existing surge/flood/exposure/routing/allocation → scenario comparison → Gemini NLP → AI Risk Analyst`.
 
 **Status (annotated 2026-10-02 — historical: this header was added *after* the work closed):** all eleven tasks below have been implemented on
 `feature/dynamic-cyclone-system` (`ec72646` … `3dcb661`, mobile tasks `e7139d4`/`91783dc`), with final verification in `323a92b`. The checkboxes in the task sections are unchanged from the original draft; treat every task as done. Two known-not-fixed findings are parked separately: the `DIST2LAND`-is-km unit discrepancy (MEMORY.md §54) and the stale deployed backend. Open-Meteo is implemented and disclosed but deliberately wired to no route.
+
+**Follow-up (2026-10-02, `59b6c98` + `55fc632`): two Critical review findings from
+the whole-branch review were fixed after this plan closed**, both consequences of
+assumptions this document made and did not check:
+
+- The plan's "in-repo, 27 MB" claim about the IBTrACS CSV (Tech Stack, above) was
+  wrong, and Task 7's ML layer inherited it. `trained_model()` refitted from that
+  untracked file on every request, so `/risk-analyst` returned a bare `500` on any
+  clean checkout. Fixed by loading the committed
+  `data/ml/storm_peak_intensity.json` artefact; the raw archive is now read only
+  by the offline trainer. Verified by running the endpoint in a clean
+  `git worktree`: `500` before, `200` after.
+- The plan introduced a scenario vocabulary on the client (`remal_observed` as a
+  chip id) that was never reconciled with the backend's (`observed`). Four request
+  sites shipped the chip id verbatim, producing `400 unknown scenario` on
+  `/exposure` and `/risk-analyst`. Fixed by canonicalising at the request
+  boundary rather than by teaching the backend a UI alias.
 
 ---
 

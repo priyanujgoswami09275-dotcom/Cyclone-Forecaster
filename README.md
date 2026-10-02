@@ -140,6 +140,16 @@ SRTM DEM, building footprints. **Nothing is fetched live from a request
 handler** — the public Overpass instance rate-limits at 2 concurrent
 requests/IP and a live call during a demo fails.
 
+**Nor does any request read a raw upstream input.** The 27 MB IBTrACS archive the
+catalogue and the ML model were both derived from is *not* in git — it is a
+local input for two offline commands (`ingest_ibtracs_ni` and
+`train_storm_peak_intensity`), and what the server reads instead is the
+committed artefacts they produce. That was not true of the ML model until
+2026-10-02: it was refitted from the archive on every request, so `/risk-analyst`
+returned a bare `500` on any clean checkout and worked only where the file
+happened to be lying around. Verified by running the endpoint in a clean
+`git worktree`: `500` before, `200` after.
+
 ### Weather context (Open-Meteo) — built, tested, not exposed
 
 `backend/weather/open_meteo.py` is a complete, tested client for Open-Meteo's

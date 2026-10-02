@@ -320,6 +320,59 @@ means in practice is listed under "Flagged for review" below.
 
 ## Known issues / blockers
 
+- **RESOLVED 2026-10-02 (`59b6c98`) — the case-study chip sent a scenario id the
+  backend does not have, and the 400 rendered as "nothing is exposed".** The
+  chip is keyed `remal_observed`; the backend registers that scenario as
+  `observed` (`backend/cyclones/scenarios.py::observed_scenario`). Four request
+  sites were handed the chip id verbatim, so selecting the case-study chip gave
+  `GET /exposure?category=3&scenario_id=remal_observed` → **400 unknown
+  scenario**, and `POST /risk-analyst {"scenario_id": "remal_observed"}` → **400
+  before it read anything else**. `/exposure`'s 400 then fell through to the
+  empty state and rendered **"Nothing is exposed at this strength"** — a
+  confident claim about a request that never ran. `scenarioForChip` already
+  existed and was correct; it was called from `onOpenCompare` and nowhere else.
+  Fixed at the boundary (`wireScenarioId` in `mobile/cycloneModel.ts`, applied
+  in `api.ts`'s `scopeQuery` — the single funnel — and in `apiCyclones.ts`'s
+  `getComparison`/`postRiskAnalysis`), **not** by teaching the backend a UI
+  alias. Measured in a clean checkout:
+  `/exposure?cyclone_id=REMAL&scenario_id=observed` → 200, 111.1 km/h, 1.12 m;
+  `scenario_id=remal_observed` → still 400 (pinned by a test, so the fix stays a
+  translation rather than a widened registry).
+
+- **RESOLVED 2026-10-02 (`55fc632`) — `/risk-analyst` returned a bare `500` on
+  every clean checkout, because it refitted the model from a file that is not in
+  git.** `baseline_estimate()` → `trained_model()` → `build_training_set()` →
+  `read_ni_rows()` → opens **`ibtracs.NI.list.v04r01.csv`**, a ~27 MB archive that
+  is deliberately untracked (it is what `data/cyclones/catalogue.json` was
+  generated from). So on any clone, CI runner or Vercel deploy the only endpoint
+  whose output *is* a model figure could not produce it, and the error named
+  nothing: the `FileNotFoundError` sits several layers below a route that
+  documents no failure mode. It worked locally only because the archive happened
+  to be in the working directory — the failure mode mocks cannot catch, and the
+  reason `tests/test_ml_runtime_artefact.py` traps `build_training_set` and
+  `read_ni_rows` and clears the `lru_cache` before asserting. Fixed by loading
+  the committed `data/ml/storm_peak_intensity.json`, shaped deliberately like the
+  catalogue beside it: a normalised build product of an offline ingestion step,
+  not a re-derivation on request. **No silent refit fallback** — a missing
+  artefact raises and names the trainer, because a fallback restores this exact
+  failure invisibly, serving a model that was never committed and never reviewed.
+  `from_json` now restores the report too (the gate is read to decide whether
+  `model_kt` may be the number on screen), and `LeaveOneOutReport.per_fold`
+  defaults to `()` since `to_dict()` omits the per-fold errors. Shipped figure
+  re-verified unchanged: 50.0 kt, `median_baseline`, `is_a_prediction=False`,
+  n=300, gate `beats_baseline=False`, MAE 21.944 vs baseline 21.027, r2 0.0753.
+
+- **NEW 2026-10-02, not fixed, deliberately out of scope for the two Critical
+  commits — an empty `scenario_id` produces a `500`, not a `400`.**
+  `GET /exposure?category=6&scenario_id=` reaches `_context`, which hands `""` to
+  `ScenarioContext`, whose `__post_init__` raises
+  `ValueError("scenario_id must be a non-empty string, got ''")` — and nothing
+  between there and the client turns it into a `4xx`. Measured in a clean
+  checkout; contrast `?scenario_id=Observed`, `cat9`, and `observed ` (trailing
+  space), which all correctly give `400`. A one-line guard in `_context` closes
+  it. Left alone so the two Critical commits stay independently revertible, and
+  **no test covers it**, so nothing will notice if it changes.
+
 - **RESOLVED 2026-09-30 — all eight committed overlay PNGs were invalid, and
   the test suite passed on them.** `encode_png_rgba` wrote IHDR colour type
   **9**; the PNG spec defines 0, 2, 3, 4 and 6 only, and Pillow
@@ -2237,6 +2290,115 @@ RUN_LIVE_CAPTURE=1 venv/bin/python -m backend.tools.capture_advisory
 ---
 
 ## Session log (newest entry first)
+
+### 2026-10-02 — OpenCode: the two Critical review findings (C1, C2)
+
+**Scope.** The whole-branch review returned "Ready to merge? **No**" — two
+Critical findings, both left unfixed, both now fixed in one commit each.
+`59b6c98` (C1) and `55fc632` (C2), independently revertible. No source outside
+those two concerns was touched, and **no existing test was edited** — the two
+supporting changes to `storm_peak_intensity.py` (a defaulted `per_fold`, a
+report restored by `from_json`) are what let the existing suite pass untouched.
+
+**C1 — `59b6c98`.** Traced end to end before touching anything: chip id
+(`remal_observed`, `mobile/strengthChips.ts`) → `getExposure`/`postRiskAnalysis`
+(`mobile/api.ts`, `mobile/apiCyclones.ts`) → `_context` → `ctx.resolve` →
+`resolve_scenario` (`backend/cyclones/scenarios.py`) → `compute_exposure`. **The
+canonical backend identifier for observed Remal is `observed`**;
+`remal_observed` is the app's private chip id. Confirmed by running the real
+endpoints, not by reading: `?scenario_id=remal_observed` → 400,
+`?scenario_id=observed` → 200 at 111.1 km/h / 1.12 m.
+
+Fixed **at the boundary**, not at the four call sites and not by widening the
+backend's scenario registry. `wireScenarioId` went into `mobile/cycloneModel.ts`
+— chosen over `strengthChips.ts` because `strengthChips.ts` already imports
+`api.ts`, so putting the mapping there would have been a cycle — and is applied
+inside `scopeQuery`, the one funnel all three scoped builders in `api.ts` pass
+through, plus `getComparison` and `postRiskAnalysis`. Four correct call sites do
+not stay correct; the fifth would have been the regression. Backwards
+compatibility is *asserted as bytes*: an unscoped URL is unchanged. Cache
+isolation is untouched and still travels as the pair `(cyclone_id,
+scenario_id)`.
+
+**A second defect found while fixing C1, by the guard itself.** The canonicaliser
+makes a chip id at a request boundary *invisible* — which is the point, and also
+why the four call sites can now be wrong with no test failing. So
+`screenScenarioComposition.test.mjs` pins the thing the canonicaliser cannot: no
+bare `chipId` may reach a request builder in either screen. Verified it has
+teeth by reverting one call site and watching it fail.
+
+**C2 — `55fc632`.** `trained_model()` now loads the committed
+`data/ml/storm_peak_intensity.json` rather than refitting from the untracked
+27 MB archive. Chose the committed artefact over a new normal catalogue because
+the registry already established that pattern — `_load_records()` prefers
+`catalogue.json` and only regenerates from the archive if the JSON is missing —
+and `data/ml/` was already committed. `backend/ml/` was excluded from the Vercel
+bundle; `data/` was not, and `data/cyclones/catalogue.json` already loads that
+way at runtime, so the deploy path is the one the catalogue already proves.
+
+Rejected three alternatives deliberately: **committing the 27 MB CSV** (hides the
+problem, bloats every clone), **silently regenerating at request time** (the
+defect with extra steps), and **a skip guard** (hides the endpoint, which is the
+thing that must work). A missing artefact raises and names the trainer.
+
+**The deployment-safety claim was verified for real, not mocked.** Mocked tests
+cannot catch this class: the archive was sitting in the working directory, so
+every path "succeeded". Used `git worktree add` (not `git stash
+--include-untracked`, which recreates untracked data files and resets their
+mtimes — the lesson from the `0b7d79e` mtime race). Results in the clean
+worktree, archive absent, artefact present:
+
+| | before (`59b6c98`) | after (`55fc632`) |
+|---|---|---|
+| `POST /risk-analyst` | **500, empty body** | **200**, `peak_estimate` 50.0 / `median_baseline` / `n=300` |
+| `GET /exposure` `scenario_id=observed` | 200 | 200, 111.1 km/h, 1.12 m |
+| `GET /exposure` `category=6` | 12/22/251/4.47189414/2680.22 | identical |
+| `GET /cyclones` | 610 | 610 |
+| `GET /live-cyclone` | `live_unavailable` | `live_unavailable` |
+
+The worktree also disproved a guess: I expected `POST /risk-analyst` with
+`scenario_id=observed` to fail because `_comparison_partner` picks a non-Remal
+storm that may have no observed scenario. It does not — the partner is the
+basin's strongest *other* storm, which has a reported peak, so the comparison
+resolves. Measured, not assumed.
+
+**Three of my first assertions in the new backend tests were wrong** about the
+real response shape and were corrected against measurement, not weakened:
+`hospitals` is `{"count": 12, …}` not `12`; `scenario_kind` is `"category"` at
+cat6 and `"band_midpoint"` at cat5; and `wind_is_band_midpoint` is **False** at
+cat6 — IMD documents no upper bound for the top band, so its 222 km/h is the
+weakest qualifying wind rather than a midpoint. That last one is now asserted
+explicitly so the flag is not mistaken for a dead field.
+
+**Verification.** `venv/bin/python -m pytest -q` → **644 passed, 3 skipped**
+(was 618/3; +26 new). `cd mobile && node --test 'tests/*.test.mjs'` → **348
+passed, 0 fail** (was 328; +20). `cd mobile && npx tsc --noEmit` → exit 0.
+Focused first: `tests/test_observed_scenario_flow.py` 16 passed;
+`tests/test_ml_runtime_artefact.py` 10 passed; ML cluster 72 passed.
+`data/cyclones/catalogue.json` byte-identical (md5 `f4437321…` at `89927ee`,
+at `HEAD` and on disk); **no file under `data/` changed** by either commit.
+
+Both new test files were verified to *fail* when their defect is reintroduced —
+4 of 10 in the ML file (including the endpoint test), 1 of 5 in the screen guard —
+because a regression test that cannot fail asserts nothing.
+
+**Not verified.** Live Gemini rendering is still **NOT VERIFIED** for both
+`/advisory` and `/risk-analyst`: the local key returned `503 UNAVAILABLE`
+(capacity) on every attempt during this work, so the risk-analyst endpoint was
+exercised with a stubbed `generate_risk_analysis` and nothing else. A real phone
+and Expo Go remain unverified. The deployed backend
+(`cyclone-forecaster-chi.vercel.app`) is still stale and still 404s on
+`/cyclones` and `/live-cyclone`; **C2 is a prerequisite for redeploying it, and
+the redeploy has still not happened.**
+
+**Deliberately not done, still open.** The six Important review items (I1–I6:
+Web `exposureFailed`, `/advisory` context mixing, `/advisory`'s missing cyclone
+dimension, `no_active_storm`'s inaccurate reason, two hardcoded "the gate failed"
+sentences, the fabricated live record id) are untouched, as is
+`finishing-a-development-branch`. MEMORY.md §54's `DIST2LAND`-is-km discrepancy
+still needs a human decision, and is *not* fixed here because changing it moves
+the gate number — the artefact's MAE is a recorded measurement, not something to
+quietly recompute inside a bug fix.
 
 ### 2026-10-02 — OpenCode: Dynamic Cyclone System — Tasks 9, 10 and 11 (docs)
 

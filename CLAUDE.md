@@ -117,8 +117,21 @@ corrected URL with a comment; the dataset and version are unchanged. Don't
 
 **IBTrACS full catalogue (all North Indian Ocean storms)**
 ```
-ibtracs.NI.list.v04r01.csv     # local, NOT in git — required input
+ibtracs.NI.list.v04r01.csv     # local, NOT in git — required OFFLINE input
 ```
+**Offline only. No request reads it.** It is the required input for
+`backend/data_pipeline/ingest_ibtracs_ni.py` and for
+`python -m backend.data_pipeline.train_storm_peak_intensity`, both of which
+produce a committed artefact under `data/` that the server reads instead. The
+catalogue and the ML artefact are both committed, so a clean clone and a Vercel
+deploy have everything a route needs. Until 2026-10-02 this was not true:
+`trained_model()` rebuilt the model from this file on every request, so
+`/risk-analyst` returned a bare `500` on any checkout that did not already have
+it — while working fine on the machine that did. Don't reintroduce a request-time
+read of it, and don't add a silent refit fallback; a missing artefact must raise
+and name the trainer. See `Architecture.md` "The runtime/offline data boundary"
+and `tests/test_ml_runtime_artefact.py`.
+
 Built by `backend/data_pipeline/ingest_ibtracs_ni.py`, which filters
 **strictly `BASIN == 'NI'`** and produces `data/cyclones/catalogue.json`:
 **610 storms, 1970–2026**, Remal first and flagged `is_case_study`. The filter

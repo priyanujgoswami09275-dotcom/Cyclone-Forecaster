@@ -37,12 +37,65 @@ Mobile app (Expo / React Native) — map screen + advisory modal, both
   wired to no route — see README "Weather context".
 ```
 
+## The runtime/offline data boundary
+
+**No request reads a raw upstream input.** Everything a route needs is a
+committed, normalised file under `/data`, and everything that needs a raw input
+is an offline ingestion step that produces one.
+
+| Stage | Reads | Produces | Runs |
+|---|---|---|---|
+| Catalogue ingestion | `ibtracs.NI.list.v04r01.csv` (~27 MB, **not in git**) | `data/cyclones/catalogue.json` | offline, explicit |
+| ML training | the same archive | `data/ml/storm_peak_intensity.json` | offline, explicit |
+| Infra/DEM fetchers | Overpass, Google Earth Engine | `data/*.geojson`, `data/dem.tif` | offline, explicit |
+| Overlay/basemap render | `data/` | `data/overlays/`, `data/basemap/` | offline, explicit |
+| **Every route** | **`/data` only** | — | **request time** |
+
+This is load-bearing for deployment, not a style preference. The archive is a
+required *local* input precisely because it is untracked — it is what the
+catalogue was generated from, and no clone or deploy contains it. When
+`trained_model()` re-derived the model from it per request, `/risk-analyst`
+returned a bare `500` on every clean checkout and worked only on the machine
+that happened to have the file in its directory. It now loads the committed
+artefact, and a missing artefact raises and names the command that produces it
+rather than quietly rebuilding — a fallback would restore the same failure
+invisibly, serving a model that was never committed and never reviewed.
+
+`tests/test_ml_runtime_artefact.py` traps `build_training_set` and
+`read_ni_rows` and asserts the estimate is unaffected, so a reintroduced refit
+fails. The deployment claim itself was verified separately by running the
+endpoint in a clean `git worktree` (see MEMORY.md).
+
+## Scenario id vocabulary
+
+Two vocabularies for one concept, and they are not interchangeable:
+
+- **`observed`** — the backend's spelling, registered by
+  `observed_scenario()` in `backend/cyclones/scenarios.py`. `cat0`–`cat6` are
+  already band ids and need no translation.
+- **`remal_observed`** — the app's *chip id*, so the UI can tell the case study
+  apart from a band chip at a glance.
+
+The translation lives in `wireScenarioId()` (`mobile/cycloneModel.ts`, the
+module that owns the wire types) and is applied by `scopeQuery()` in
+`mobile/api.ts` — the single funnel for all three scoped builders — and by
+`getComparison()` / `postRiskAnalysis()` in `mobile/apiCyclones.ts`. Screens
+read the same rule through `scenarioForChip()`, which delegates rather than
+restating it. The mapping is **total and fails closed**: only that one alias is
+rewritten, so an unrecognised id still reaches the backend and is still rejected
+with its list of valid scenarios, never silently remapped onto a storm's peak
+wind.
+
+The backend deliberately does *not* accept `remal_observed` as an alias. Adding
+it would put the UI's private vocabulary into the backend's public API; the fix
+belongs at the boundary that already knows both spellings.
+
 ## Layers
 
 | Layer | Component | Responsibility |
 |---|---|---|
 | Data | IBTrACS (v04r00 fetcher, v04r01 catalogue), OSM (Overpass), GEE (SRTM DEM), ATCF, Open-Meteo | Raw inputs, pre-fetched once and committed as static files; ATCF/Open-Meteo are live probes |
-| ML | Storm-peak-intensity linear model + flat-median baseline | Predicts each storm's peak `USA_WIND`. **Gate FAILED** — the baseline ships; see `backend/ml/` and `data/ml/` |
+| ML | Storm-peak-intensity linear model + flat-median baseline | Predicts each storm's peak `USA_WIND`. **Gate FAILED** — the baseline ships; see `backend/ml/` and `data/ml/`. Loaded from the committed artefact at request time, never refitted — see "The runtime/offline data boundary" |
 | Simulation | BFS flood propagation, `osmnx`/`networkx` routing, `scipy.optimize` LP | The actual computation — flood spread over time, safe routes, shelter assignment |
 | Backend | FastAPI | Orchestrates the above behind a REST API |
 | AI | google-genai SDK + Gemini (`gemini-3.8-flash`) | Synthesizes the district advisory and the risk analysis from structured outputs |
