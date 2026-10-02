@@ -24,9 +24,10 @@
  */
 import {
   READ_TIMEOUT_MS,
+  getTrack,
   request,
   type TrackResponse,
-} from './api';
+} from './api.ts';
 import type {
   ComparisonResponse,
   CyclonesResponse,
@@ -34,7 +35,7 @@ import type {
   RiskAnalystRequest,
   RiskAnalystResponse,
   ScenariosResponse,
-} from './cycloneModel';
+} from './cycloneModel.ts';
 
 /**
  * Every historical cyclone the app can address.
@@ -49,16 +50,17 @@ export function getCyclones(): Promise<CyclonesResponse> {
 /**
  * One cyclone's track, in the same shape `/track` returns.
  *
- * Remal is served from the committed GeoJSON, which is the same payload `/track`
+ * Delegates to `api.ts`'s `getTrack` rather than building the URL again: one
+ * place decides which route an id goes to. Two would be two chances for the
+ * endpoint to drift, and the failure mode of getting it wrong is a `200` with
+ * the wrong storm's track — which is exactly how the original defect shipped.
+ *
+ * Remal is served from the committed GeoJSON, the same payload `/track`
  * returns, so the two endpoints are literally the same code path for the case
  * study and cannot disagree.
  */
 export function getCycloneTrack(cycloneId: string): Promise<TrackResponse> {
-  return request<TrackResponse>(
-    `/cyclones/${encodeURIComponent(cycloneId)}/track`,
-    { method: 'GET' },
-    READ_TIMEOUT_MS,
-  );
+  return getTrack(cycloneId);
 }
 
 /**
@@ -92,13 +94,23 @@ export function getLiveCyclone(): Promise<LiveCycloneState> {
  * The point is the delta, and a delta is only meaningful between figures that
  * were computed the same way — so every entry is built by one helper from one
  * `(cyclone_id, scenario_id)` pair.
+ *
+ * `scenarioId` is optional because the endpoint's default is the category
+ * band, which is what a caller asking "what does cat5 do" wants. Passing it
+ * explicitly is how a caller compares two *scenarios* of one storm: two calls,
+ * one per scenario, zipped by the client.
  */
 export function getComparison(
   cycloneIds: string[],
   category: number,
+  scenarioId?: string,
 ): Promise<ComparisonResponse> {
-  const q = `category=${category}&cyclone_ids=${cycloneIds.map(encodeURIComponent).join(',')}`;
-  return request<ComparisonResponse>(`/comparison?${q}`, { method: 'GET' }, READ_TIMEOUT_MS);
+  const parts = [
+    `category=${category}`,
+    `cyclone_ids=${cycloneIds.map(encodeURIComponent).join(',')}`,
+  ];
+  if (scenarioId) parts.push(`scenario_id=${encodeURIComponent(scenarioId)}`);
+  return request<ComparisonResponse>(`/comparison?${parts.join('&')}`, { method: 'GET' }, READ_TIMEOUT_MS);
 }
 
 /**

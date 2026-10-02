@@ -1001,16 +1001,27 @@ function scopeQuery(cycloneId?: string, scenarioId?: string): string {
  * Not a slider endpoint: the track is a historical fact, so it is fetched once
  * at boot and never refetched when the intensity changes.
  *
- * `cycloneId` addresses another storm. Absent is Remal, and the URL is
- * unchanged.
+ * `cycloneId` addresses another storm, and **it routes to a different
+ * endpoint** rather than appending a query parameter. `GET /track` is
+ * `def get_track() -> dict` — it declares no parameters, and FastAPI ignores an
+ * unrecognised query string, so `GET /track?cyclone_id=…` returned `200` and
+ * Remal's track for every id, including nonsense. The request looked correct
+ * and the map quietly showed the wrong storm after a switch. `/cyclones/{id}/track`
+ * is the endpoint built for this, and for the case study it serves a
+ * byte-identical payload (7868 bytes, same name, season and 40 waypoints), so
+ * both paths agree where they overlap.
+ *
+ * Absent `cycloneId` is Remal via `/track`, and that URL is unchanged.
  */
 export function getTrack(cycloneId?: string): Promise<TrackResponse> {
-  const scope = scopeQuery(cycloneId);
-  return request<TrackResponse>(
-    `/track${scope ? `?${scope}` : ''}`,
-    { method: 'GET' },
-    READ_TIMEOUT_MS,
-  );
+  if (cycloneId) {
+    return request<TrackResponse>(
+      `/cyclones/${encodeURIComponent(cycloneId)}/track`,
+      { method: 'GET' },
+      READ_TIMEOUT_MS,
+    );
+  }
+  return request<TrackResponse>('/track', { method: 'GET' }, READ_TIMEOUT_MS);
 }
 
 export function getSurgeZone(category: number): Promise<SurgeZoneResponse> {
