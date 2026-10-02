@@ -537,6 +537,12 @@ def root() -> dict:
             "GET /routes?category={0-6}&origin={block_id}",
             "GET /allocation?category={0-6}",
             "POST /advisory?category={0-6}&origin={locality_id}  (Module D, Gemini)",
+            "GET /cyclones",
+            "GET /cyclones/{id}/track",
+            "GET /scenarios?cyclone_id={id}",
+            "GET /live-cyclone",
+            "GET /comparison?cyclone_ids={a},{b}",
+            "POST /risk-analyst",
         ],
     }
 

@@ -66,14 +66,24 @@ import math
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
-from sklearn.linear_model import RidgeCV
-from sklearn.model_selection import LeaveOneOut
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
 
 from backend.cyclones.historical import DEFAULT_IBTRACS_PATH, ibtracs_number, read_ni_rows
+
+if TYPE_CHECKING:
+    # Import definitions here for the type checker only. At runtime, sklearn is
+    # a *training* dependency, not a runtime one: `requirements-dev.txt` carries
+    # scikit-learn, the deployed Vercel bundle (requirements.txt only) does not,
+    # and importing it at module top level makes every route fail with
+    # ModuleNotFoundError on that host. Runtime import-time construction only
+    # occurs inside the training/evaluation paths, each of which imports its own
+    # sklearn pieces locally — never in the baseline-figure path.
+    from sklearn.linear_model import RidgeCV
+    from sklearn.model_selection import LeaveOneOut
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
 
 #: The study area's centre, for the "how far from here" feature. Same point the
 #: map opens on, so the feature means what a reader would expect.
@@ -232,6 +242,8 @@ def median_baseline_mae(rows: tuple[TrainingRow, ...]) -> float:
     """
     if len(rows) < 2:
         return float("nan")
+    from sklearn.model_selection import LeaveOneOut
+
     y = np.array([r.target_kt for r in rows], dtype=float)
     errors = []
     for train_index, test_index in LeaveOneOut().split(y.reshape(-1, 1)):
@@ -281,6 +293,11 @@ def evaluate(rows: tuple[TrainingRow, ...]) -> LeaveOneOutReport:
     """
     if len(rows) < 3:
         raise ValueError(f"need at least 3 storms to evaluate, got {len(rows)}")
+    from sklearn.linear_model import RidgeCV
+    from sklearn.model_selection import LeaveOneOut
+    from sklearn.pipeline import Pipeline
+    from sklearn.preprocessing import StandardScaler
+
     X = np.array([r.features for r in rows], dtype=float)
     y = np.array([r.target_kt for r in rows], dtype=float)
 
@@ -368,6 +385,10 @@ class StormPeakIntensityModel:
         self._median = float("nan")
 
     def fit(self, rows: tuple[TrainingRow, ...]) -> "StormPeakIntensityModel":
+        from sklearn.linear_model import RidgeCV
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+
         X = np.array([r.features for r in rows], dtype=float)
         y = np.array([r.target_kt for r in rows], dtype=float)
         self._pipeline = Pipeline(
@@ -438,6 +459,10 @@ class StormPeakIntensityModel:
                 f"{path} was written for features {payload['feature_names']}, but this "
                 f"code expects {list(FEATURE_NAMES)}. Retrain rather than guess."
             )
+        from sklearn.linear_model import RidgeCV
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+
         model = cls()
         scaler = StandardScaler()
         scaler.mean_ = np.array(payload["scaler_mean"], dtype=float)
@@ -618,6 +643,41 @@ def _baseline_estimate(
     )
 
 
+_ARTEFACT_BASELINE_CACHE = None
+
+
+def _artefact_baseline() -> tuple[LeaveOneOutReport, float]:
+    """(report, median_kt) read straight from the committed artefact.
+
+    This is what the endpoint's figure actually needs, and it cannot need a
+    sklearn object: the shipped number is a constant no feature can move, so it
+    must not require a fitted pipeline. `trained_model()` stays on the ML paths
+    (`estimate_for`, tests) where a pipeline is needed to produce a number — it
+    is the off-by-one the deployment learned when the two were conflated and
+    every route failed with ModuleNotFoundError.
+    """
+    global _ARTEFACT_BASELINE_CACHE
+    if _ARTEFACT_BASELINE_CACHE is not None:
+        return _ARTEFACT_BASELINE_CACHE
+    if not ARTEFACT_PATH.is_file():
+        raise RuntimeError(
+            f"storm-peak-intensity artefact missing at {ARTEFACT_PATH}. It is a "
+            "committed build product of the offline trainer, which needs the "
+            "untracked IBTrACS archive:\n"
+            "    python -m backend.data_pipeline.train_storm_peak_intensity\n"
+            "then commit data/ml/storm_peak_intensity.json."
+        )
+    payload = json.loads(ARTEFACT_PATH.read_text())
+    if tuple(payload["feature_names"]) != FEATURE_NAMES:
+        raise ValueError(
+            f"{ARTEFACT_PATH} was written for features {payload['feature_names']}, but this "
+            f"code expects {list(FEATURE_NAMES)}. Retrain rather than guess."
+        )
+    report = LeaveOneOutReport(**_report_fields(payload["report"], ARTEFACT_PATH))
+    _ARTEFACT_BASELINE_CACHE = (report, float(payload["median_kt"]))
+    return _ARTEFACT_BASELINE_CACHE
+
+
 def baseline_estimate() -> StormPeakEstimate:
     """The shipped figure, obtained **without** features — because there aren't any.
 
@@ -640,8 +700,8 @@ def baseline_estimate() -> StormPeakEstimate:
     starts being merely the baseline — which is still the honest answer for a
     request with no track in it, and is labelled as the baseline either way.
     """
-    model, report = trained_model()
-    return _baseline_estimate(report, model.median_kt, model_kt=None)
+    report, median_kt = _artefact_baseline()
+    return _baseline_estimate(report, median_kt, model_kt=None)
 
 
 __all__ = [
