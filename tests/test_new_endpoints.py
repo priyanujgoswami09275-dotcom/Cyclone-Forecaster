@@ -29,6 +29,22 @@ client = TestClient(app)
 OTHER_CYCLONE_ID = "1970324N05143"
 
 
+@pytest.fixture(autouse=True)
+def _reset_live_status_ttl():
+    """Forget the cached live status between tests.
+
+    `CycloneRegistry.live_status` is TTL-cached by design (two opens of the app
+    within a minute must not probe NOAA/NRL twice). That means a test that
+    monkeypatches the source and a test that wants the real one would otherwise
+    receive each other's answer — and leaked availability would make
+    `assert live_unavailable` quietly pointless. Reset it before and after so
+    every test sees its own probe.
+    """
+    registry()._live_cache = None  # type: ignore[attr-defined]
+    yield
+    registry()._live_cache = None  # type: ignore[attr-defined]
+
+
 # --------------------------------------------------------------------------
 # GET /cyclones
 # --------------------------------------------------------------------------

@@ -9,15 +9,20 @@ when a cyclone is added, and the two would eventually disagree.
 `data/cyclones/catalogue.json` is generated from the IBTrACS archive by
 `backend/data_pipeline/ingest_ibtracs_ni.py` and committed, so the historical
 list is available offline and identical on every machine. The live status is
-probed on every call and never cached: a stale "no cyclone running" is worse
-than a slow one, because a reader who was told the basin was quiet an hour ago
-has no way to know the feed has since gone down.
+cached for 60 s per registry: opening the app twice in a row must not probe the
+feed twice, but a state is never served past that window — a stale "no cyclone
+running" is worse than a slow one, and a reader must never read a century-old
+probe as current. The whole `LiveStatus` is cached, including the
+`live_unavailable` case, and the probe is never re-run until the window lapses.
 """
 
 from __future__ import annotations
 
+import time
+
 import json
 import logging
+from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 
@@ -98,8 +103,19 @@ def _catalogue() -> tuple[CycloneRecord, ...]:
 class CycloneRegistry:
     """Cyclone lookup and the live probe, in one place."""
 
-    def __init__(self, source: AtcfLiveSource | None = None) -> None:
+    def __init__(
+        self,
+        source: AtcfLiveSource | None = None,
+        now: Callable[[], float] | None = None,
+        live_ttl_seconds: float = 60.0,
+    ) -> None:
         self._source = source
+        # Injectable clock so a test can advance time without sleeping; monotonic
+        # by default so a wall-clock jump cannot make a cached status look
+        # eternally fresh or eternally stale.
+        self._now = now or time.monotonic
+        self._live_ttl_seconds = live_ttl_seconds
+        self._live_cache: tuple[float, LiveStatus] | None = None
 
     @property
     def source(self) -> AtcfLiveSource:
@@ -129,25 +145,42 @@ class CycloneRegistry:
         return DEFAULT_CYCLONE_ID
 
     def live_status(self) -> LiveStatus:
-        """Probe now. Never cached — see the module note."""
+        """Probe, but cache the whole `LiveStatus` for `live_ttl_seconds`.
+
+        **Cached for 60 s, including the unavailable case.** Opening the app
+        twice within a minute is the common case, and a repeat probe would hit
+        the network for the same answer. Past the window the probe runs again;
+        a stale status must never be served as current. Passing a and `now` and
+        `live_ttl_seconds` through to the constructor lets a test advance the
+        clock without waiting.
+        """
+        now = self._now()
+        if self._live_cache is not None:
+            expires, status = self._live_cache
+            if now < expires:
+                return status
+
         import asyncio
 
         try:
-            return asyncio.run(self.source.probe())
+            status = asyncio.run(self.source.probe())
         except Exception as exc:  # noqa: BLE001 - any failure is "unavailable"
             log.warning("live probe raised: %s", exc)
             from backend.cyclones.base import live_unavailable_reason
             from datetime import UTC, datetime
 
-            now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-            return LiveStatus(
+            checked = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+            status = LiveStatus(
                 status="live_unavailable",
                 source=self.source.identifier,
                 http_status=None,
-                reason=f"{live_unavailable_reason(now)} The probe itself failed.",
-                checked_at=now,
+                reason=f"{live_unavailable_reason(checked)} The probe itself failed.",
+                checked_at=checked,
                 endpoints=self.source.endpoints,
             )
+
+        self._live_cache = (now + self._live_ttl_seconds, status)
+        return status
 
     def describe(self) -> dict:
         """What `GET /cyclones` reports about where its list came from."""
