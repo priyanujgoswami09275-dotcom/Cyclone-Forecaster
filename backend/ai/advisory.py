@@ -138,6 +138,7 @@ def build_prompt(
 ) -> str:
     localities = [row["node"] for row in allocation["allocation"]]
     prompt = (
+        "=== COMPUTED FIGURES ===\n"
         f"CATEGORY: {surge_zone['imd_category']} ({surge_zone['wind_kmph']} kmph)\n"
         # Rounded for legibility: the raw float is 3.8625000000000043, which
         # reads as a defect and invites the model to quote it verbatim.
@@ -152,7 +153,7 @@ def build_prompt(
         f"CAPACITY BASIS: {allocation['capacity_basis']}\n"
     )
     if context:
-        prompt += f"\n{context}\n"
+        prompt += f"\n=== REQUESTING LOCALITY ===\n{context}\n"
     if corrections:
         prompt += (
             "\nYour previous draft failed these checks. Fix every one and "

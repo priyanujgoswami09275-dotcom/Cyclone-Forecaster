@@ -500,6 +500,12 @@ class TestServiceContract:
         )
         assert response.json()["generated_for"]["scenario_id"] == "observed"
         assert response.json()["generated_for"]["cyclone_id"] == "2024145N14087"
+        # The prompt's data must be scoped too, not just the response metadata:
+        # the captured payloads must carry the REQUEST's pair, not the defaults.
+        assert captured["exposure"]["scenario_id"] == "observed"
+        assert captured["exposure"]["cyclone_id"] == "2024145N14087"
+        assert captured["allocation"]["scenario_id"] == "observed"
+        assert captured["allocation"]["cyclone_id"] == "2024145N14087"
 
     def test_no_handler_calls_a_network_service(self, monkeypatch):
         """Rules.md: Overpass/IBTrACS/GEE are pre-fetch scripts, never runtime.

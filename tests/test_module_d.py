@@ -360,6 +360,29 @@ class TestPrompt:
         assert "CAPACITY BASIS" in prompt
         assert "DERIVED" in prompt
 
+    def test_the_prompt_delimits_the_origin_block(self, payloads):
+        """`context` arrives as pre-rendered prose about the requesting
+        locality; without a `===` header it reads as more district-wide
+        numbers, and the two scopes mix."""
+        context = "REQUESTING LOCALITY: Kakdwip\nIT has a flood-free route."
+        prompt = build_prompt(
+            payloads["surge"], payloads["exposure"], payloads["allocation"],
+            context=context,
+        )
+        header = prompt.index("=== REQUESTING LOCALITY ===")
+        body = prompt.index("REQUESTING LOCALITY: Kakdwip")
+        counts = prompt.index("HOSPITALS AFFECTED")
+        assert counts < header < body
+
+    def test_the_prompt_labels_the_district_figures_block(self, payloads):
+        prompt = build_prompt(
+            payloads["surge"], payloads["exposure"], payloads["allocation"]
+        )
+        header = prompt.find("=== COMPUTED FIGURES ===")
+        counts = prompt.index("HOSPITALS AFFECTED")
+        assert header != -1
+        assert header < counts
+
     def test_corrections_are_appended_only_when_supplied(self, payloads):
         args = (payloads["surge"], payloads["exposure"], payloads["allocation"])
         assert "failed these checks" not in build_prompt(*args)
