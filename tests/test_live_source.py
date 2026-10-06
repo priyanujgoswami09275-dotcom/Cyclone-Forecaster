@@ -336,3 +336,29 @@ def test_a_working_second_source_is_found() -> None:
     status = run(source.probe())
     assert status.status == "available"
     assert "b.test" in status.source
+
+def test_the_live_record_id_comes_from_the_storm_number() -> None:
+    """The probe must not invent an id like IO-live-2025 for a real storm."""
+    body = "IO, 05, 2025062218, 01, CARQ, 0, 152N, 845E, 45, 990, TS,\n"
+    status = run(
+        AtcfLiveSource(
+            endpoints=("https://example.test/x",),
+            transport=fake_transport(status=200, body=body),
+        ).probe()
+    )
+    assert status.status == "available"
+    assert status.cyclone["cyclone_id"] == "IO052025"
+    assert "-live-" not in status.cyclone["cyclone_id"]
+
+
+def test_a_fix_without_a_storm_number_yields_no_record() -> None:
+    """An honest absence over a fabricated identity."""
+    body = "IO, , 2025062218, 01, CARQ, 0, 152N, 845E, 45, 990, TS,\n"
+    status = run(
+        AtcfLiveSource(
+            endpoints=("https://example.test/x",),
+            transport=fake_transport(status=200, body=body),
+        ).probe()
+    )
+    assert status.status != "available"
+    assert status.cyclone is None

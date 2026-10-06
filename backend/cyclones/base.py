@@ -215,11 +215,24 @@ class CycloneWaypoint:
     #: publish two schemes, and a mapping that silently preferred one would let
     #: a caller believe a label means something it does not.
     nature: str | None
+    #: The source's storm number (ATCF field 1), e.g. "05". `None` when the
+    #: source does not publish one — IBTrACS has no such column, so the
+    #: historical record stays `None` and its serialized form keeps no key for
+    #: it.
+    storm_number: str | None = None
 
     def to_dict(self) -> dict:
-        """Plain, JSON-serializable dict of the seven fields. T2 and T7 both
-        serialize waypoints; neither should re-derive this."""
-        return asdict(self)
+        """Plain, JSON-serializable dict of its fields. T2 and T7 both
+        serialize waypoints; neither should re-derive this.
+
+        `storm_number` is dropped when `None`: the historical source never
+        published one, and a permanent `null` key would change every IBTrACS
+        waypoint's JSON for a column that does not exist there.
+        """
+        data = asdict(self)
+        if data["storm_number"] is None:
+            del data["storm_number"]
+        return data
 
 
 def iso_time_to_rfc3339(iso_time: str) -> str:
@@ -293,8 +306,16 @@ class CycloneRecord:
 
     def to_dict(self) -> dict:
         """Plain, JSON-serializable dict. Waypoints become plain dicts one level
-        deep — no dataclass instance survives into a payload a client parses."""
-        return asdict(self)
+        deep — no dataclass instance survives into a payload a client parses.
+
+        Delegates each waypoint to its own `to_dict()` rather than `asdict`'s
+        recursion, because `asdict` ignores `CycloneWaypoint.to_dict()`'s
+        omission of `storm_number: None` — which would change every at-rest
+        waypoint for a column the historical source never published.
+        """
+        data = asdict(self)
+        data["waypoints"] = [w.to_dict() for w in self.waypoints]
+        return data
 
 
 def peak_wind_kmph(waypoints: Iterable[CycloneWaypoint]) -> float | None:

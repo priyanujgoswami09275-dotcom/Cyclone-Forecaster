@@ -170,15 +170,28 @@ class AtcfLiveSource(CycloneSource):
         # "live feed unavailable" whenever there is genuinely nothing to report.
         return status, (parse_atcf(body, basin=TARGET_BASIN) or None), spoke_atcf or not body.strip()
 
-    def _record(self, waypoints: Sequence[CycloneWaypoint]) -> CycloneRecord:
-        """Wrap fixes in a record. Only called when there are fixes to wrap."""
+    def _record(self, waypoints: Sequence[CycloneWaypoint]) -> CycloneRecord | None:
+        """Wrap fixes in a record. Only called when there are fixes to wrap.
+
+        `None` (no record) when the feed gave us no storm number: the record
+        id would have to be invented otherwise, and a fabricated id is worse
+        than no record.
+        """
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         head = waypoints[0]
-        storm_id = atcf_storm_id([TARGET_BASIN, head.iso_time[:4], head.nature or ""])
+        storm_number = head.storm_number
+        year = head.iso_time[:4]
+        if not storm_number:
+            log.warning("live source %s produced fixes with no storm number", self.identifier)
+            return None
+        storm_id = atcf_storm_id([TARGET_BASIN, f"{storm_number}{year}"])
+        if storm_id is None:
+            log.warning("live source %s storm id failed to build", self.identifier)
+            return None
         return CycloneRecord(
-            cyclone_id=f"{TARGET_BASIN}-live-{head.iso_time[:4]}",
-            name=storm_id or f"{TARGET_BASIN} live",
-            season=int(head.iso_time[:4]),
+            cyclone_id=storm_id,
+            name=storm_id,
+            season=int(year),
             basin=TARGET_BASIN,
             subbasin=None,
             source=self.identifier,
@@ -212,6 +225,10 @@ class AtcfLiveSource(CycloneSource):
             spoke += 1 if spoke_atcf else 0
             if waypoints:
                 record = self._record(waypoints)
+                if record is None:
+                    # Fixes arrived but carried no usable identity to build an
+                    # honest id from — the same principle as no waypoints at all.
+                    continue
                 head, tail = record.waypoints[0], record.waypoints[-1]
                 return LiveStatus(
                     status="available",
