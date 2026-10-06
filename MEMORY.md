@@ -2004,8 +2004,15 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     | cat6            | 2680.2    | 4947.7      | 1.85       |
 
     The app reports the smaller reach-limited figure (`run_flood_model`) on
-    every surface; the bathtub is the unrestricted reference. A sentence to
-    that disclose it has been added to the About sheet (native), the web's
+    every surface; the bathtub is the unrestricted reference. Correlation note:
+    `cat4` and `Remal observed` bathtub areas are equal (440.7 km²) because the
+    DEM is discrete, not because the model matches — `data/dem.tif` holds whole
+    metres only (80 distinct values, none strictly between 1 and 2; verified
+    with `np.unique`), so every surge from 1.0 to 1.99 m selects the same
+    cells (`elevation <= 1`). That DEM-quantisation step function is also why
+    flooded area has a cliff near 1 m of surge (≈105 km/h). It is not a nodata
+    or an ocean-connectivity effect. A sentence to that disclose it has been
+    added to the About sheet (native), the web's
     data-provenance disclosure block, and `GET /surge-zone`'s
     `area_disclosure`, and the numbers live beside the script. **Decision for a
     human, not taken in this disclosure-only pass: whether to move to the

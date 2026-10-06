@@ -1298,9 +1298,9 @@ def surge_zone(
             "the polygon below actually renders. SRTM quantises elevation to "
             "whole metres, so the 0-4 m delta shatters into fragments and those "
             "below 0.5 km2 are dropped. Report the modelled figure, and say it "
-            "is modelled. The flood spreads at most about 0.5 km inland per run, "
-            "a conservative limit of the reference algorithm, so the exposure "
-            "counts may understate."
+            "is modelled. The flood model spreads water at most about 0.5 km inland "
+            "from the water's edge, a limit of the algorithm it follows, so flooded "
+            "area and exposure counts are likely understated."
         ),
         "frame_count": len(result.frames),
         "definitions": {

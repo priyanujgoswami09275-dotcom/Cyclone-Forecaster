@@ -35,9 +35,13 @@ Notes:
 - Ratios grow with surge because higher water reaches terrain that a short
   reach never had a chance to enter — the cost of the limit is largest exactly
   when the scenario is largest.
-- `cat4` bathtub equals `Remal observed` bathtub: the extra cells in the 1.12–
-  1.83 m window are not ocean-connected (or are nodata), not because they cost
-  the same by design.
+- `cat4` bathtub equals `Remal observed` because the terrain is discrete, not
+  because the extra cells cost the same by design: `data/dem.tif` stores whole
+  metres only (80 distinct values, none strictly between 1 and 2 — verified with
+  `np.unique`), so every surge from 1.0 to 1.99 m selects the same set of cells
+  (`elevation <= 1`). It is a DEM-quantisation step function, which is also why
+  flooded area has a cliff near 1 m of surge (≈105 km/h). It is not a nodata or
+  an ocean-connectivity effect.
 - These are precisely the model's own building blocks; no figures were hand
   re-counted. If a number drifts, the computation that produced it is the fix,
   not this table.

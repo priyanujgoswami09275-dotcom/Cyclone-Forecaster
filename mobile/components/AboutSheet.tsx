@@ -124,8 +124,9 @@ export function AboutSheet({
 
           <Block heading="How wide the flood can spread">
             <Text style={styles.para}>
-              The flood spreads at most about 0.5 km inland per run, a conservative limit
-              of the reference algorithm — so the exposure counts may understate.
+              The flood model spreads water at most about 0.5 km inland from the
+              water's edge, a limit of the algorithm it follows, so flooded area
+              and exposure counts are likely understated.
             </Text>
           </Block>
 
