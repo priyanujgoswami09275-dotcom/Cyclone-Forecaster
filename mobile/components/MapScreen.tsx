@@ -297,11 +297,16 @@ export function MapScreen() {
         defaultCycloneId: defaultId,
         live: null,
       });
+      // The live feed is in flight from here, so the picker says so. Without
+      // this the live panel sat on a null live and a false liveLoading — an
+      // empty slot where the answer was merely not back yet.
+      setLiveLoading(true);
       // Never block the map on the live feed. It settles on its own; a
       // rejection or timeout lands in the truthful unavailable state and, at
       // most, re-ticks this banner — never the boot error screen.
       void outcome.livePromise.then((live) => {
         if (cancelled) return;
+        setLiveLoading(false);
         setLive(live);
         setBoot((current) =>
           current.status === 'ready' ? { ...current, live } : current,

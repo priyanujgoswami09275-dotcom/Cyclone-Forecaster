@@ -150,7 +150,7 @@ class CycloneRegistry:
         **Cached for 60 s, including the unavailable case.** Opening the app
         twice within a minute is the common case, and a repeat probe would hit
         the network for the same answer. Past the window the probe runs again;
-        a stale status must never be served as current. Passing a and `now` and
+        a stale status must never be served as current. Passing `now` and
         `live_ttl_seconds` through to the constructor lets a test advance the
         clock without waiting.
         """
