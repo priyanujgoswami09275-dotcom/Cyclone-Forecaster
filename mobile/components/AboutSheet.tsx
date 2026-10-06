@@ -122,6 +122,13 @@ export function AboutSheet({
             </Text>
           </Block>
 
+          <Block heading="How wide the flood can spread">
+            <Text style={styles.para}>
+              The flood spreads at most about 0.5 km inland per run, a conservative limit
+              of the reference algorithm — so the exposure counts may understate.
+            </Text>
+          </Block>
+
           <Block heading="The storm path">
             <Text style={styles.para}>
               {trackLabel ?? 'This track'}

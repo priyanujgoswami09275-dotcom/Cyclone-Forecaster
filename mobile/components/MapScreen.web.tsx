@@ -975,6 +975,11 @@ export function MapScreen() {
               <Disclosure label="Study area is scoped, not an administrative boundary">
                 {SCOPING_DISCLOSURE_PLAIN}
               </Disclosure>
+              <Disclosure label="The flood spreads at most about 0.5 km inland per run">
+                This is a conservative limit of the reference algorithm rather than a
+                prediction of where water will not reach, so the exposure counts may
+                understate.
+              </Disclosure>
               <Pressable
                 onPress={() => setShowAbout((on) => !on)}
                 accessibilityRole="button"
