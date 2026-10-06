@@ -123,6 +123,7 @@ from .simulation.surge import (
     IMD_BANDS,
     SURGE_LIMITATION,
     SURGE_METHOD,
+    imd_category,
     predict_surge,
     surge_for_wind,
 )
@@ -475,12 +476,23 @@ def _category_header(
     if band_index is None:
         band_index = index
         scenario = ctx.resolve(registry().get(ctx.cyclone_id))
-        if scenario.wind_is_band_midpoint:
+        if scenario.kind == "observed":
+            # A non-band scenario names a real storm's wind. The reported label
+            # and bounds must describe the band that wind actually falls in, not
+            # the separately chosen category index — otherwise the header can
+            # call a 120.4 kmph wind "Severe" (the requested cat3 band) while
+            # surge.imd_category correctly calls it Very Severe.
+            matches = [
+                i for i, b in enumerate(IMD_BANDS) if b.label == imd_category(wind_kmph)
+            ]
+        else:
+            # A band scenario names its own band; report *that* one, even when
+            # the requested index points elsewhere (e.g. ?category=3&scenario_id=cat6).
             matches = [
                 i for i, b in enumerate(IMD_BANDS) if b.label == scenario.imd_category
             ]
-            if matches:
-                band_index = matches[0]
+        if matches:
+            band_index = matches[0]
 
     label, lower, upper, _band_wind = category_band(band_index)
     surge = predict_surge(wind_kmph)
@@ -628,7 +640,14 @@ def categories(
                 # same number seven times and silently empty the dead-zone note
                 # that categories 0-3 exist to carry. Passed explicitly so the
                 # intent is in the call rather than in a default.
-                **_category_header(index, ctx, wind_kmph=category_band(index)[3]),
+                **_category_header(
+                    index, ctx,
+                    wind_kmph=category_band(index)[3],
+                    # Each row is its own band even when the request names a
+                    # (different) scenario — otherwise the scenario's label
+                    # would relabel all seven rows.
+                    band_index=index,
+                ),
                 "note": (
                     "this band produces less surge than the DEM's 1 m vertical "
                     "resolution can represent, so the flood model returns no "
