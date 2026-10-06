@@ -135,9 +135,25 @@ def build_prompt(
     allocation: dict,
     context: str = "",
     corrections: str = "",
+    cyclone: dict | None = None,
 ) -> str:
     localities = [row["node"] for row in allocation["allocation"]]
+    storm = ""
+    if cyclone:
+        storm_lines = ["=== STORM AND SCENARIO ==="]
+        name, season = cyclone.get("name"), cyclone.get("season")
+        basin = cyclone.get("basin")
+        if name and season and basin:
+            storm_lines.append(f"storm: {name} {season} ({basin} basin)")
+        if cyclone.get("cyclone_id"):
+            storm_lines.append(f"storm id: {cyclone['cyclone_id']}")
+        peak, fixes = cyclone.get("peak_wind_kmph"), cyclone.get("waypoint_count")
+        if peak is not None:
+            suffix = f" across {fixes} track fixes" if fixes else ""
+            storm_lines.append(f"observed peak: {peak} kmph{suffix}")
+        storm = "\n".join(storm_lines) + "\n\n"
     prompt = (
+        f"{storm}=== COMPUTED FIGURES ===\n"
         f"CATEGORY: {surge_zone['imd_category']} ({surge_zone['wind_kmph']} kmph)\n"
         # Rounded for legibility: the raw float is 3.8625000000000043, which
         # reads as a defect and invites the model to quote it verbatim.
@@ -152,7 +168,7 @@ def build_prompt(
         f"CAPACITY BASIS: {allocation['capacity_basis']}\n"
     )
     if context:
-        prompt += f"\n{context}\n"
+        prompt += f"\n=== REQUESTING LOCALITY ===\n{context}\n"
     if corrections:
         prompt += (
             "\nYour previous draft failed these checks. Fix every one and "
@@ -167,17 +183,18 @@ def generate_advisory(
     allocation: dict,
     context: str = "",
     corrections: str = "",
+    cyclone: dict | None = None,
 ) -> DistrictAdvisory:
     """Call Gemini and return a schema-validated DistrictAdvisory.
 
-    `context` and `corrections` are optional and additive: with neither, this
-    is a single clean call. `corrections` exists so the caller can re-ask once
-    with the output of `validate_advisory` instead of surfacing a violation to
-    the user — see the retry policy in main.py.
+    `context`, `corrections` and `cyclone` are optional and additive: with
+    none of them, this is a single clean call. `cyclone` lets the prompt say
+    which storm it is advising about — without it the prose can only infer a
+    generic district, which is the missing cyclone dimension I3 was about.
     """
     return _generate_content(
         model=ADVISORY_MODEL,
-        prompt=build_prompt(surge_zone, exposure, allocation, context, corrections),
+        prompt=build_prompt(surge_zone, exposure, allocation, context, corrections, cyclone),
         system_instruction=SYSTEM_PROMPT,
         schema=DistrictAdvisory,
     )
@@ -438,11 +455,16 @@ def build_risk_prompt(
     )
     lines.append(
         "GATE VERDICT: beats_baseline is "
-        f"{peak_estimate.beats_baseline}. The model did NOT beat the flat "
-        "median baseline under leave-one-out cross-validation, so the shipped "
-        "estimate_source is median_baseline and is_a_prediction is False. Treat "
-        "this as a labelled reference point, never as a forecast and never as a "
-        "surge value."
+        f"{peak_estimate.beats_baseline}. "
+        + (
+            "The model did NOT beat the flat median baseline under leave-one-out cross-validation, "
+            "so the shipped estimate_source is median_baseline and is_a_prediction is False. "
+            "Treat this as a labelled reference point, never as a forecast and never as a surge value."
+            if not peak_estimate.beats_baseline
+            else "The model beat the flat median baseline under leave-one-out cross-validation, "
+            "so the shipped estimate_source is model and is_a_prediction is True. "
+            "Treat this as a real estimate, and still never as the surge figure."
+        )
     )
     lines.append(f"limitation: {peak_estimate.limitation}")
     lines.append("")

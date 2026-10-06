@@ -340,9 +340,14 @@ export function MapScreen() {
         if (!cancelled) setExposure(next);
       })
       // A failed exposure drops to the empty state rather than leaving the
-      // previous chip's counts on screen under the new chip's heading.
+      // previous chip's counts on screen under the new chip's heading — and
+      // raises the flag, or the failure note in the render below is dead code
+      // and the zero-count empty state poses as "nothing exposed".
       .catch(() => {
-        if (!cancelled) setExposure(null);
+        if (!cancelled) {
+          setExposure(null);
+          setExposureFailed(true);
+        }
       })
       .finally(() => {
         if (!cancelled) setExposureLoading(false);

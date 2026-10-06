@@ -207,3 +207,17 @@ def test_the_storm_id_is_built_from_the_basin_and_number() -> None:
     assert atcf_storm_id("AL, 01, 2025062218".split(",")) == "AL01"
     assert atcf_storm_id("ZZ, 01, 2025062218".split(",")) is None
     assert atcf_storm_id(["IO"]) is None
+
+
+def test_the_waypoint_carries_the_storm_number() -> None:
+    waypoint = parse_atcf_line("IO, 05, 2025062218, 01, X, 0, 152N, 845E, 40, 0, TS,")
+    assert waypoint is not None
+    assert waypoint.storm_number == "05"
+
+
+def test_ibtracs_waypoints_do_not_carry_a_storm_number() -> None:
+    """`/track` payloads must not grow a NULLed storm-number key."""
+    from backend.cyclones.registry import registry
+
+    waypoint = registry().get("2024145N14087").waypoints[0]
+    assert "storm_number" not in waypoint.to_dict()

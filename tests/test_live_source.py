@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from backend.cyclones.base import LIVE_UNAVAILABLE_REASON
+from backend.cyclones.base import LIVE_UNAVAILABLE_REASON, NO_ACTIVE_STORM_REASON
 from backend.cyclones.live import DEFAULT_ATCF_ENDPOINTS, AtcfLiveSource
 
 FIXTURE = Path(__file__).parent / "fixtures" / "aal012025_sample.dat"
@@ -78,7 +78,6 @@ def test_every_failure_state_carries_the_promise() -> None:
         dict(status=404),
         dict(status=0),
         dict(raises=TimeoutError("timed out")),
-        dict(status=200, body=""),
     ):
         status = run(
             AtcfLiveSource(
@@ -86,7 +85,16 @@ def test_every_failure_state_carries_the_promise() -> None:
             ).probe()
         )
         assert LIVE_UNAVAILABLE_REASON in status.reason, kwargs
-        assert status.status in ("live_unavailable", "no_active_storm"), kwargs
+        assert status.status == "live_unavailable", kwargs
+    # The quiet-basin state is a different promise, not the unavailable one.
+    status = run(
+        AtcfLiveSource(
+            endpoints=("https://example.test/x",),
+            transport=fake_transport(status=200, body=""),
+        ).probe()
+    )
+    assert NO_ACTIVE_STORM_REASON in status.reason
+    assert LIVE_UNAVAILABLE_REASON not in status.reason
 
 
 # --- the states themselves --------------------------------------------------
@@ -137,6 +145,28 @@ def test_no_active_storm_is_distinct_from_unavailable() -> None:
         ).probe()
     )
     assert status.status == "no_active_storm"
+
+
+def test_no_active_storm_reason_does_not_claim_the_feed_was_unreachable() -> None:
+    """The feed answered; the basin is quiet — two different sentences.
+
+    The reason used to open with the `live_unavailable` claim — "could not be
+    reached" — because it reused that constant verbatim. A quiet basin told the
+    reader the working feed was broken.
+    """
+    status = run(
+        AtcfLiveSource(
+            endpoints=("https://example.test/x",),
+            transport=fake_transport(status=200, body=""),
+        ).probe()
+    )
+    assert status.status == "no_active_storm"
+    assert "could not be reached" not in status.reason
+    # The same guarantees the unavailable reason carries, still delivered:
+    assert status.checked_at in status.reason, "the attempt's time must travel with it"
+    assert "No historical or case-study cyclone is being substituted" in status.reason
+    # And the diagnostic rides alongside, not instead of.
+    assert "Every source answered in ATCF" in status.reason
 
 
 def test_a_200_that_is_not_atcf_is_unavailable_not_a_fabricated_storm() -> None:
@@ -306,3 +336,34 @@ def test_a_working_second_source_is_found() -> None:
     status = run(source.probe())
     assert status.status == "available"
     assert "b.test" in status.source
+
+
+def test_the_live_record_id_comes_from_the_storm_number() -> None:
+    """The probe must not invent an id like IO-live-2025 for a real storm."""
+    body = "IO, 05, 2025062218, 01, CARQ, 0, 152N, 845E, 45, 990, TS,\n"
+    status = run(
+        AtcfLiveSource(
+            endpoints=("https://example.test/x",),
+            transport=fake_transport(status=200, body=body),
+        ).probe()
+    )
+    assert status.status == "available"
+    assert status.cyclone["cyclone_id"] == "IO052025"
+    assert "-live-" not in status.cyclone["cyclone_id"]
+
+
+def test_a_fix_without_a_storm_number_yields_no_record() -> None:
+    """An honest absence over a fabricated identity — and the reason says what
+    actually happened, never 'feed could not be reached' nor 'basin is quiet'."""
+    body = "IO, , 2025062218, 01, CARQ, 0, 152N, 845E, 45, 990, TS,\n"
+    status = run(
+        AtcfLiveSource(
+            endpoints=("https://example.test/x",),
+            transport=fake_transport(status=200, body=body),
+        ).probe()
+    )
+    assert status.status == "live_unavailable"
+    assert status.cyclone is None
+    assert "no usable storm number" in status.reason
+    assert "could not be reached" not in status.reason
+    assert "none listed a storm" not in status.reason

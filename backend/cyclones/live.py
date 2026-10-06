@@ -59,6 +59,7 @@ from backend.cyclones.base import (
     LiveStatus,
     iso_time_to_rfc3339,
     live_unavailable_reason,
+    no_active_storm_reason,
 )
 
 log = logging.getLogger(__name__)
@@ -169,15 +170,28 @@ class AtcfLiveSource(CycloneSource):
         # "live feed unavailable" whenever there is genuinely nothing to report.
         return status, (parse_atcf(body, basin=TARGET_BASIN) or None), spoke_atcf or not body.strip()
 
-    def _record(self, waypoints: Sequence[CycloneWaypoint]) -> CycloneRecord:
-        """Wrap fixes in a record. Only called when there are fixes to wrap."""
+    def _record(self, waypoints: Sequence[CycloneWaypoint]) -> CycloneRecord | None:
+        """Wrap fixes in a record. Only called when there are fixes to wrap.
+
+        `None` (no record) when the feed gave us no storm number: the record
+        id would have to be invented otherwise, and a fabricated id is worse
+        than no record.
+        """
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         head = waypoints[0]
-        storm_id = atcf_storm_id([TARGET_BASIN, head.iso_time[:4], head.nature or ""])
+        storm_number = head.storm_number
+        year = head.iso_time[:4]
+        if not storm_number:
+            log.warning("live source %s produced fixes with no storm number", self.identifier)
+            return None
+        storm_id = atcf_storm_id([TARGET_BASIN, f"{storm_number}{year}"])
+        if storm_id is None:
+            log.warning("live source %s storm id failed to build", self.identifier)
+            return None
         return CycloneRecord(
-            cyclone_id=f"{TARGET_BASIN}-live-{head.iso_time[:4]}",
-            name=storm_id or f"{TARGET_BASIN} live",
-            season=int(head.iso_time[:4]),
+            cyclone_id=storm_id,
+            name=storm_id,
+            season=int(year),
             basin=TARGET_BASIN,
             subbasin=None,
             source=self.identifier,
@@ -194,8 +208,9 @@ class AtcfLiveSource(CycloneSource):
     async def probe(self) -> LiveStatus:
         """Try every endpoint and report what actually happened.
 
-        The reason always carries `live_unavailable_reason()` — the promise that
-        nothing is being substituted — with the per-endpoint statuses appended.
+        The reason always carries the state's pinned promise —
+        `live_unavailable_reason()` (feed down) or `no_active_storm_reason()`
+        (feed answered, basin quiet) — with the per-endpoint statuses appended.
         A diagnostic alone ("tried 4 sources: 403, 403, 404, 200") tells a
         reader nothing about what is *not* being shown, which is the part that
         matters.
@@ -204,12 +219,19 @@ class AtcfLiveSource(CycloneSource):
         observed: list[str] = []
 
         spoke = 0
+        rejected_record = False
         for url in self.endpoints:
             status, waypoints, spoke_atcf = self._attempt(url)
             observed.append(str(status))
             spoke += 1 if spoke_atcf else 0
             if waypoints:
                 record = self._record(waypoints)
+                if record is None:
+                    # The feed listed a storm, but its fixes lacked any usable
+                    # identity we can certify. That must not be reported as
+                    # "the basin is quiet" — it was not.
+                    rejected_record = True
+                    continue
                 head, tail = record.waypoints[0], record.waypoints[-1]
                 return LiveStatus(
                     status="available",
@@ -248,6 +270,42 @@ class AtcfLiveSource(CycloneSource):
         # "No active storm" only when every source answered *in ATCF* and none
         # listed this basin. Anything else is a source we could not read.
         all_spoke = bool(self.endpoints) and spoke == len(self.endpoints)
+        if rejected_record:
+            # The feed reached us and DID list fixes — but none could be turned
+            # into an honest identity. "Unavailable" would say the feed was
+            # down; "no active storm" would say the basin was quiet. Neither is
+            # true, so describe what actually happened.
+            status = "live_unavailable"
+            detail = (
+                "Fixes were listed, but none carried a usable storm number "
+                "(ATCF field 1), so no live record could be built. "
+                + (
+                    "Every source answered in ATCF."
+                    if all_spoke
+                    else "Sources tried: "
+                    + "; ".join(
+                        f"{s} for {u.split('/')[2]}"
+                        for s, u in zip(observed, self.endpoints)
+                    )
+                    + "."
+                )
+            )
+            reason = (
+                "The live cyclone feed answered, but its fixes had no usable "
+                "storm number, so no live cyclone could be identified from them. "
+                "No historical or case-study cyclone is being substituted for "
+                "live data. The historical cyclone list and the deterministic "
+                "storm-surge simulation are unaffected. Attempt made at "
+                f"{now}. {detail}"
+            )
+            return LiveStatus(
+                status=status,
+                source=self.endpoints[0] if self.endpoints else "(none configured)",
+                http_status=None if not observed else int(observed[-1]),
+                reason=reason,
+                checked_at=now,
+                endpoints=self.endpoints,
+            )
         status = "no_active_storm" if all_spoke else "live_unavailable"
         detail = (
             "Every source answered in ATCF and none listed a storm for this basin."
@@ -256,11 +314,19 @@ class AtcfLiveSource(CycloneSource):
             + ", ".join(f"{s} for {u.split('/')[2]}" for s, u in zip(observed, self.endpoints))
             + "."
         )
+        # The promise must match the outcome: `live_unavailable_reason()`
+        # claims the feed was unreachable, which is the one thing we know
+        # is FALSE when every source answered and simply listed nothing.
+        reason = (
+            f"{no_active_storm_reason(now)} {detail}"
+            if all_spoke
+            else f"{live_unavailable_reason(now)} {detail}"
+        )
         return LiveStatus(
             status=status,
             source=self.endpoints[0] if self.endpoints else "(none configured)",
             http_status=None if not observed else int(observed[-1]),
-            reason=f"{live_unavailable_reason(now)} {detail}",
+            reason=reason,
             checked_at=now,
             endpoints=self.endpoints,
         )

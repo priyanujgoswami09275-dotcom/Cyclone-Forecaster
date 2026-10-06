@@ -178,6 +178,9 @@ def parse_atcf_line(line: str) -> CycloneWaypoint | None:
 
     wind_kmph = _wind_to_kmph(fields[8])
     nature = fields[10].strip() or None
+    # Field 1 is ATCF's own storm number. The record id is built from it —
+    # discarding it is what once made the live record carry a fabricated id.
+    storm_number = fields[1].strip() or None
 
     return CycloneWaypoint(
         iso_time=iso_time,
@@ -187,6 +190,7 @@ def parse_atcf_line(line: str) -> CycloneWaypoint | None:
         wind_reported=wind_kmph is not None,
         pressure_hpa=_pressure_to_hpa(fields[9]),
         nature=nature,
+        storm_number=storm_number,
     )
 
 

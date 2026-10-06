@@ -360,6 +360,45 @@ class TestPrompt:
         assert "CAPACITY BASIS" in prompt
         assert "DERIVED" in prompt
 
+    def test_the_prompt_delimits_the_origin_block(self, payloads):
+        """`context` arrives as pre-rendered prose about the requesting
+        locality; without a `===` header it reads as more district-wide
+        numbers, and the two scopes mix."""
+        context = "REQUESTING LOCALITY: Kakdwip\nIT has a flood-free route."
+        prompt = build_prompt(
+            payloads["surge"], payloads["exposure"], payloads["allocation"],
+            context=context,
+        )
+        header = prompt.index("=== REQUESTING LOCALITY ===")
+        body = prompt.index("REQUESTING LOCALITY: Kakdwip")
+        counts = prompt.index("HOSPITALS AFFECTED")
+        assert counts < header < body
+
+    def test_the_prompt_labels_the_district_figures_block(self, payloads):
+        prompt = build_prompt(
+            payloads["surge"], payloads["exposure"], payloads["allocation"]
+        )
+        header = prompt.find("=== COMPUTED FIGURES ===")
+        counts = prompt.index("HOSPITALS AFFECTED")
+        assert header != -1
+        assert header < counts
+
+    def test_the_prompt_names_the_storm(self, payloads):
+        cyclone = main._cyclone_block(main.registry().get("2024145N14087"))
+        prompt = build_prompt(
+            payloads["surge"], payloads["exposure"], payloads["allocation"],
+            cyclone=cyclone,
+        )
+        assert "=== STORM AND SCENARIO ===" in prompt
+        assert "REMAL" in prompt
+        assert "2024145N14087" in prompt
+
+    def test_the_prompt_omits_the_storm_block_without_cyclone(self, payloads):
+        prompt = build_prompt(
+            payloads["surge"], payloads["exposure"], payloads["allocation"]
+        )
+        assert "=== STORM AND SCENARIO ===" not in prompt
+
     def test_corrections_are_appended_only_when_supplied(self, payloads):
         args = (payloads["surge"], payloads["exposure"], payloads["allocation"])
         assert "failed these checks" not in build_prompt(*args)
@@ -482,7 +521,7 @@ class TestHandlerFailures:
         monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
         calls = []
 
-        def fake(surge, exposure, allocation, context="", corrections=""):
+        def fake(surge, exposure, allocation, context="", corrections="", cyclone=None):
             calls.append(1)
             return a_valid_advisory([r["node"] for r in allocation["allocation"]])
 
@@ -508,7 +547,7 @@ class TestHandlerFailures:
         with a disclaimer would still be shipping the invention."""
         monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
 
-        def always_invents(surge, exposure, allocation, context="", corrections=""):
+        def always_invents(surge, exposure, allocation, context="", corrections="", cyclone=None):
             draft = a_valid_advisory([r["node"] for r in allocation["allocation"]])
             draft.evacuation_plan.append(
                 EvacuationPriority(
@@ -561,7 +600,7 @@ class TestOriginAlwaysPresent:
         # rather than inherited from whichever rows the allocation happens to
         # hold. A test that does not set it gets the full plan, which is the
         # "the model did mention it" case.
-        def generate(surge, exposure, allocation, context="", corrections=""):
+        def generate(surge, exposure, allocation, context="", corrections="", cyclone=None):
             return a_valid_advisory(
                 [r["node"] for r in allocation["allocation"]], omit=self._omit
             )
@@ -651,7 +690,7 @@ class TestOriginAlwaysPresent:
         re-applied. Missing this is invisible until a retry actually fires."""
         monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
 
-        def bad_first_pass(surge, exposure, allocation, context="", corrections=""):
+        def bad_first_pass(surge, exposure, allocation, context="", corrections="", cyclone=None):
             result = a_valid_advisory(
                 [r["node"] for r in allocation["allocation"]], omit="Sagar"
             )
@@ -749,7 +788,7 @@ class TestRetry:
         monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
         seen: list[tuple[str, int]] = []
 
-        def recovers(surge, exposure, allocation, context="", corrections=""):
+        def recovers(surge, exposure, allocation, context="", corrections="", cyclone=None):
             names = [r["node"] for r in allocation["allocation"]]
             draft = a_valid_advisory(names)
             if not corrections:
@@ -770,7 +809,7 @@ class TestRetry:
         monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
         calls = []
 
-        def fine(surge, exposure, allocation, context="", corrections=""):
+        def fine(surge, exposure, allocation, context="", corrections="", cyclone=None):
             calls.append(corrections)
             return a_valid_advisory([r["node"] for r in allocation["allocation"]])
 
@@ -784,7 +823,7 @@ class TestRetry:
         monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
         calls = []
 
-        def bad(surge, exposure, allocation, context="", corrections=""):
+        def bad(surge, exposure, allocation, context="", corrections="", cyclone=None):
             calls.append(1)
             draft = a_valid_advisory([r["node"] for r in allocation["allocation"]])
             draft.sms_dispatch_draft = "q" * 400
@@ -804,7 +843,7 @@ class TestHandlerPayload:
         _CAPTURED.clear()
         _CAPTURED.update(captured)
 
-        def fake(surge, exposure, allocation, context="", corrections=""):
+        def fake(surge, exposure, allocation, context="", corrections="", cyclone=None):
             _CAPTURED.clear()
             _CAPTURED.update(
                 {
@@ -881,7 +920,7 @@ class TestCapacityRetry:
     def test_two_capacity_failures_then_success_is_a_200(self, client, monkeypatch):
         calls: list[int] = []
 
-        def flaky(surge, exposure, allocation, context="", corrections=""):
+        def flaky(surge, exposure, allocation, context="", corrections="", cyclone=None):
             calls.append(1)
             if len(calls) <= 2:
                 raise capacity_error()
@@ -899,7 +938,7 @@ class TestCapacityRetry:
         does not fire at this ceiling; the test pins the two that do, so a
         raised cap cannot silently reuse one of them."""
 
-        def flaky(surge, exposure, allocation, context="", corrections=""):
+        def flaky(surge, exposure, allocation, context="", corrections="", cyclone=None):
             raise capacity_error()
 
         monkeypatch.setattr(main, "generate_advisory", flaky)
@@ -914,7 +953,7 @@ class TestCapacityRetry:
         """A busy model must not turn one button press into an unbounded loop."""
         calls: list[int] = []
 
-        def always_busy(surge, exposure, allocation, context="", corrections=""):
+        def always_busy(surge, exposure, allocation, context="", corrections="", cyclone=None):
             calls.append(1)
             raise capacity_error()
 
@@ -951,7 +990,7 @@ class TestCapacityRetry:
         the response has to admit that."""
         calls: list[int] = []
 
-        def flaky(surge, exposure, allocation, context="", corrections=""):
+        def flaky(surge, exposure, allocation, context="", corrections="", cyclone=None):
             calls.append(1)
             if len(calls) <= 2:
                 raise capacity_error()
@@ -967,7 +1006,7 @@ class TestCapacityRetry:
     def test_gemini_calls_includes_the_correction_pass(self, client, monkeypatch):
         calls: list[int] = []
 
-        def needs_correction(surge, exposure, allocation, context="", corrections=""):
+        def needs_correction(surge, exposure, allocation, context="", corrections="", cyclone=None):
             calls.append(1)
             names = [r["node"] for r in allocation["allocation"]]
             if corrections:
@@ -995,7 +1034,7 @@ class TestCapacityRetry:
         """A 500 is ours to fix. Retrying it just spends quota on a bug."""
         calls: list[int] = []
 
-        def broken(surge, exposure, allocation, context="", corrections=""):
+        def broken(surge, exposure, allocation, context="", corrections="", cyclone=None):
             calls.append(1)
             raise ServerError(500, {"error": {"code": 500, "message": "INTERNAL"}})
 
@@ -1014,7 +1053,7 @@ class TestCapacityRetry:
         user still deserves the capacity story and a Retry-After, not a bare
         upstream error."""
 
-        def busy_on_correction(surge, exposure, allocation, context="", corrections=""):
+        def busy_on_correction(surge, exposure, allocation, context="", corrections="", cyclone=None):
             if corrections:
                 raise capacity_error()
             draft = a_valid_advisory([r["node"] for r in allocation["allocation"]])
@@ -1063,7 +1102,7 @@ class TestReasoningPunctuation:
         monkeypatch.setattr(
             main,
             "generate_advisory",
-            lambda surge, exposure, allocation, context="", corrections="": (
+            lambda surge, exposure, allocation, context="", corrections="", cyclone=None: (
                 a_valid_advisory(
                     [r["node"] for r in allocation["allocation"]], omit="Sagar"
                 )
@@ -1164,7 +1203,7 @@ class TestPlanCoverage:
         monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
         seen: list[int] = []
 
-        def half_covers(surge, exposure, allocation, context="", corrections=""):
+        def half_covers(surge, exposure, allocation, context="", corrections="", cyclone=None):
             seen.append(1)
             names = [r["node"] for r in allocation["allocation"]]
             return a_valid_advisory(names[:-1])
@@ -1185,7 +1224,7 @@ class TestPlanCoverage:
     ):
         corrections_seen: list[str] = []
 
-        def half_then_full(surge, exposure, allocation, context="", corrections=""):
+        def half_then_full(surge, exposure, allocation, context="", corrections="", cyclone=None):
             names = [r["node"] for r in allocation["allocation"]]
             if not corrections:
                 return a_valid_advisory(names[:-1])
@@ -1212,7 +1251,7 @@ class TestPlanCoverage:
         monkeypatch.setattr(
             main,
             "generate_advisory",
-            lambda surge, exposure, allocation, context="", corrections="": (
+            lambda surge, exposure, allocation, context="", corrections="", cyclone=None: (
                 a_valid_advisory([r["node"] for r in allocation["allocation"]])
             ),
         )
@@ -1225,7 +1264,7 @@ class TestPlanCoverage:
         monkeypatch.setattr(
             main,
             "generate_advisory",
-            lambda surge, exposure, allocation, context="", corrections="": (
+            lambda surge, exposure, allocation, context="", corrections="", cyclone=None: (
                 a_valid_advisory([r["node"] for r in allocation["allocation"]])
             ),
         )

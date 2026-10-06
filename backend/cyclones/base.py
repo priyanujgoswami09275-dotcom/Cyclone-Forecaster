@@ -140,6 +140,36 @@ def live_unavailable_reason(checked_at: str) -> str:
     return f"{LIVE_UNAVAILABLE_REASON} Attempt made at {checked_at}."
 
 
+#: Shown when every live source answered and none listed a storm for the North
+#: Indian Ocean. Same five jobs as `LIVE_UNAVAILABLE_REASON`, but the first one
+#: is different: the feed WAS reached, and it said nothing is running. Reusing
+#: the unavailable sentence would claim the working feed was broken — the
+#: judge signing off would be making a call on a false fact.
+NO_ACTIVE_STORM_REASON = (
+    "The live cyclone feed was reached and answered, but no active storm was "
+    "listed for this basin, so no live cyclone is being shown. No historical "
+    "or case-study cyclone is being substituted for live data. The historical "
+    "cyclone list and the deterministic storm-surge simulation are unaffected. "
+    "The time of this attempt is reported with this message."
+)
+
+
+def no_active_storm_reason(checked_at: str) -> str:
+    """`NO_ACTIVE_STORM_REASON` with the time of the attempt appended.
+
+    Same composition rule as `live_unavailable_reason` — the promise and its
+    timestamp are one message — and the same empty-timestamp rejection.
+    """
+    if not checked_at or not checked_at.strip():
+        raise ValueError(
+            "checked_at must be a non-empty UTC timestamp such as "
+            f"'2026-10-01T00:00:00Z'; got {checked_at!r}. An empty value would "
+            'render as "Attempt made at ." — a sentence that looks complete and '
+            "carries no time."
+        )
+    return f"{NO_ACTIVE_STORM_REASON} Attempt made at {checked_at}."
+
+
 @dataclass(frozen=True)
 class CycloneWaypoint:
     """One position along a cyclone's track — a best-track fix or an ATCF fix.
@@ -185,11 +215,24 @@ class CycloneWaypoint:
     #: publish two schemes, and a mapping that silently preferred one would let
     #: a caller believe a label means something it does not.
     nature: str | None
+    #: The source's storm number (ATCF field 1), e.g. "05". `None` when the
+    #: source does not publish one — IBTrACS has no such column, so the
+    #: historical record stays `None` and its serialized form keeps no key for
+    #: it.
+    storm_number: str | None = None
 
     def to_dict(self) -> dict:
-        """Plain, JSON-serializable dict of the seven fields. T2 and T7 both
-        serialize waypoints; neither should re-derive this."""
-        return asdict(self)
+        """Plain, JSON-serializable dict of its fields. T2 and T7 both
+        serialize waypoints; neither should re-derive this.
+
+        `storm_number` is dropped when `None`: the historical source never
+        published one, and a permanent `null` key would change every IBTrACS
+        waypoint's JSON for a column that does not exist there.
+        """
+        data = asdict(self)
+        if data["storm_number"] is None:
+            del data["storm_number"]
+        return data
 
 
 def iso_time_to_rfc3339(iso_time: str) -> str:
@@ -263,8 +306,16 @@ class CycloneRecord:
 
     def to_dict(self) -> dict:
         """Plain, JSON-serializable dict. Waypoints become plain dicts one level
-        deep — no dataclass instance survives into a payload a client parses."""
-        return asdict(self)
+        deep — no dataclass instance survives into a payload a client parses.
+
+        Delegates each waypoint to its own `to_dict()` rather than `asdict`'s
+        recursion, because `asdict` ignores `CycloneWaypoint.to_dict()`'s
+        omission of `storm_number: None` — which would change every at-rest
+        waypoint for a column the historical source never published.
+        """
+        data = asdict(self)
+        data["waypoints"] = [w.to_dict() for w in self.waypoints]
+        return data
 
 
 def peak_wind_kmph(waypoints: Iterable[CycloneWaypoint]) -> float | None:
@@ -336,13 +387,14 @@ class LiveStatus:
     a later task is then a type error rather than a string that reaches a client
     unlabelled.
 
-    `reason` carries the rule a judge-facing screen depends on: **a
-    `live_unavailable` status must state that nothing is being substituted for
-    the live feed.** Build it with `live_unavailable_reason(checked_at)`, which
-    is the sentence plus the time of the attempt; a probe that also wants to
-    report what it tried can add that detail, but not instead of the promise.
-    The other two states have no such obligation — `no_active_storm` is a
-    working feed with nothing to report, and `available` has a storm.
+    `reason` carries the rule a judge-facing screen depends on: **a failing
+    status must state that nothing is being substituted for the live feed.**
+    Build it with `live_unavailable_reason(checked_at)` when the feed could
+    not be reached, or `no_active_storm_reason(checked_at)` when it was
+    reached and answered but listed nothing — the sentence plus the time of
+    the attempt; a probe that also wants to report what it tried can add
+    that detail, but not instead of the promise. `available` has a storm and
+    no such obligation.
     """
 
     status: Literal["available", "live_unavailable", "no_active_storm"]
