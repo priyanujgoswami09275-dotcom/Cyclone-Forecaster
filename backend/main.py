@@ -1806,7 +1806,8 @@ def advisory(
 
     try:
         result, gemini_calls = _generate_with_capacity_retry(
-            surge_payload, exposure_payload, allocation_payload, context=context
+            surge_payload, exposure_payload, allocation_payload, context=context,
+            cyclone=_cyclone_block(registry().get(ctx.cyclone_id)),
         )
     except GeminiQuotaError as exc:
         # Before the capacity handler and the blanket `except Exception`. A
@@ -1851,6 +1852,7 @@ def advisory(
                 allocation_payload,
                 context=context,
                 corrections="\n".join(f"- {v}" for v in violations),
+                cyclone=_cyclone_block(registry().get(ctx.cyclone_id)),
             )
             gemini_calls += correction_calls
         except GeminiQuotaError as exc:

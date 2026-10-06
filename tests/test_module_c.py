@@ -461,10 +461,11 @@ class TestServiceContract:
         """?category=3&scenario_id=observed must use Remal's observed wind, not cat3."""
         captured: dict = {}
 
-        def generate(surge, exposure, allocation, context="", corrections=""):
+        def generate(surge, exposure, allocation, context="", corrections="", cyclone=None):
             captured["surge"] = surge
             captured["exposure"] = exposure
             captured["allocation"] = allocation
+            captured["cyclone"] = cyclone
             nodes = [row["node"] for row in allocation["allocation"]]
             return DistrictAdvisory(
                 executive_summary=(
@@ -506,6 +507,11 @@ class TestServiceContract:
         assert captured["exposure"]["cyclone_id"] == "2024145N14087"
         assert captured["allocation"]["scenario_id"] == "observed"
         assert captured["allocation"]["cyclone_id"] == "2024145N14087"
+        # The storm identity must reach the prompt, not just the response's
+        # generated_for: the client can label the advisory without a second
+        # lookup only if both sides name the storm.
+        assert captured["cyclone"] is not None
+        assert captured["cyclone"]["cyclone_id"] == "2024145N14087"
 
     def test_no_handler_calls_a_network_service(self, monkeypatch):
         """Rules.md: Overpass/IBTrACS/GEE are pre-fetch scripts, never runtime.
