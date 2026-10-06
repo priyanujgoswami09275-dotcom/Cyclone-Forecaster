@@ -438,11 +438,16 @@ def build_risk_prompt(
     )
     lines.append(
         "GATE VERDICT: beats_baseline is "
-        f"{peak_estimate.beats_baseline}. The model did NOT beat the flat "
-        "median baseline under leave-one-out cross-validation, so the shipped "
-        "estimate_source is median_baseline and is_a_prediction is False. Treat "
-        "this as a labelled reference point, never as a forecast and never as a "
-        "surge value."
+        f"{peak_estimate.beats_baseline}. "
+        + (
+            "The model did NOT beat the flat median baseline under leave-one-out cross-validation, "
+            "so the shipped estimate_source is median_baseline and is_a_prediction is False. "
+            "Treat this as a labelled reference point, never as a forecast and never as a surge value."
+            if not peak_estimate.beats_baseline
+            else "The model beat the flat median baseline under leave-one-out cross-validation, "
+            "so the shipped estimate_source is model and is_a_prediction is True. "
+            "Treat this as a real estimate, and still never as the surge figure."
+        )
     )
     lines.append(f"limitation: {peak_estimate.limitation}")
     lines.append("")

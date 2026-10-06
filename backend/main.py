@@ -104,7 +104,7 @@ from .locations import (
     population_methodology,
     scoping,
 )
-from .ml.storm_peak_intensity import baseline_estimate
+from .ml.storm_peak_intensity import StormPeakEstimate, baseline_estimate
 from .simulation.allocation import DemandNode, allocate_shelters
 from .simulation.dem import load_dem
 from .simulation.exposure import compute_exposure
@@ -2114,11 +2114,31 @@ def risk_analyst(body: RiskAnalystRequest) -> dict:
             "presented as one. The storm-surge figure inside it comes from the "
             "deterministic law 1.2 x (wind/115)^2 — a screening estimate scaled "
             "from one observed event, omitting tide, pressure, bathymetry and "
-            "storm size — and stays authoritative. The machine-learning figure "
-            "is a flat-median baseline that did not beat its own baseline "
-            "gate, is not a prediction, and is not the surge figure."
-        ),
-    }
+            "storm size — and stays authoritative. "
+        + _ml_figure_disclosure(peak)
+    ),
+}
+
+
+def _ml_figure_disclosure(peak: StormPeakEstimate) -> str:
+    """The ML-figure sentence, derived from the artefact's own gate verdict.
+
+    Hardcoding "did not beat its own gate" would be true today and a lie the
+    day a real training table makes the gate pass — the sentence must move
+    with `beats_baseline`, whatever that becomes.
+    """
+    if not peak.beats_baseline:
+        return (
+            "The machine-learning figure is a flat-median baseline that did "
+            "not beat its own baseline gate, is not a prediction, and is not "
+            "the surge figure."
+        )
+    return (
+        "The machine-learning figure comes from the fitted model and beat "
+        "its baseline gate under leave-one-out cross-validation, so it is a "
+        "genuine estimate rather than a labelled baseline. It is still not "
+        "the surge figure."
+    )
 
 
 # --------------------------------------------------------------------------
