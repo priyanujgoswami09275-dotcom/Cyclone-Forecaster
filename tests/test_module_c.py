@@ -25,6 +25,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend import main
+from backend.ai.advisory import DistrictAdvisory, EvacuationPriority
 from backend.locations import all_localities, localities, scoping
 
 
@@ -455,6 +456,50 @@ class TestServiceContract:
         response = client.post("/advisory?category=6&origin=kakdwip")
         assert response.status_code == 503
         assert "GEMINI_API_KEY" in response.json()["detail"]
+
+    def test_advisory_scopes_to_the_request_not_the_default_band(self, client, monkeypatch):
+        """?category=3&scenario_id=observed must use Remal's observed wind, not cat3."""
+        captured: dict = {}
+
+        def generate(surge, exposure, allocation, context="", corrections=""):
+            captured["surge"] = surge
+            captured["exposure"] = exposure
+            captured["allocation"] = allocation
+            nodes = [row["node"] for row in allocation["allocation"]]
+            return DistrictAdvisory(
+                executive_summary=(
+                    "Super Cyclonic Storm conditions over the delta. Shelter figures are "
+                    "provisional placeholders, not surveyed."
+                ),
+                evacuation_plan=[
+                    EvacuationPriority(
+                        locality_name=name,
+                        priority_level="CRITICAL",
+                        reasoning="In the flood extent.",
+                    )
+                    for name in nodes
+                ],
+                sms_dispatch_draft=(
+                    "Cyclone alert: evacuate low-lying areas now. Figures provisional."
+                ),
+                post_landfall_risks="Salinisation expected.",
+                historical_context="Comparable in wind to Cyclone Amphan (2020).",
+            )
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+        monkeypatch.setattr(main, "generate_advisory", generate)
+
+        response = client.post("/advisory?category=3&scenario_id=observed&origin=kakdwip")
+        assert response.status_code == 200, response.text
+
+        assert "surge" in captured
+        assert captured["surge"]["wind_kmph"] == pytest.approx(111.1, abs=0.05)
+        assert captured["surge"]["wind_kmph"] != pytest.approx(103.0, abs=0.01)
+        assert response.json()["generated_for"]["wind_kmph"] == pytest.approx(
+            captured["surge"]["wind_kmph"], abs=0.001
+        )
+        assert response.json()["generated_for"]["scenario_id"] == "observed"
+        assert response.json()["generated_for"]["cyclone_id"] == "2024145N14087"
 
     def test_no_handler_calls_a_network_service(self, monkeypatch):
         """Rules.md: Overpass/IBTrACS/GEE are pre-fetch scripts, never runtime.

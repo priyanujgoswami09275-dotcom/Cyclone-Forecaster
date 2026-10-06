@@ -187,8 +187,13 @@ export function describeAdvisoryError(error: ApiError): AdvisoryFailure {
  * for the intensity but written for the wrong town; origin alone misses one
  * that is right for the town and wrong for the storm.
  */
-export function advisoryKey(category: number, origin: string): string {
-  return `${category}:${origin}`;
+export function advisoryKey(
+  category: number,
+  origin: string,
+  cycloneId?: string,
+  scenarioId?: string,
+): string {
+  return `${category}:${origin}:${cycloneId ?? ''}:${scenarioId ?? ''}`;
 }
 
 /**
@@ -203,11 +208,14 @@ export function isAdvisoryStale(
   response: AdvisoryResponse,
   category: number,
   origin: string,
+  cycloneId?: string,
+  scenarioId?: string,
 ): boolean {
   const generated = response.generated_for;
-  return (
-    advisoryKey(generated.category, generated.origin.id) !== advisoryKey(category, origin)
-  );
+  if (generated.category !== category || generated.origin.id !== origin) return true;
+  if (cycloneId !== undefined && generated.cyclone_id !== cycloneId) return true;
+  if (scenarioId !== undefined && generated.scenario_id !== scenarioId) return true;
+  return false;
 }
 
 /**

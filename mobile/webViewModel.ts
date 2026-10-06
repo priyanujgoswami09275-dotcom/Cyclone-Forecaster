@@ -456,9 +456,16 @@ export function advisoryStaleNote(
   response: AdvisoryResponse,
   category: number,
   originId: string,
+  cycloneId?: string,
+  scenarioId?: string,
 ): string | null {
   const generated = response.generated_for;
-  if (generated.category === category && generated.origin.id === originId) return null;
+  const unchanged =
+    generated.category === category &&
+    generated.origin.id === originId &&
+    (cycloneId === undefined || generated.cyclone_id === cycloneId) &&
+    (scenarioId === undefined || generated.scenario_id === scenarioId);
+  if (unchanged) return null;
   return (
     `Generated for ${generated.imd_category} at ${generated.origin.name}. ` +
     'The scenario or origin has changed since — close this and generate again.'

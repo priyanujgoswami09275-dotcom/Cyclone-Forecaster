@@ -56,9 +56,18 @@ function responseFor(category, originId) {
     },
     generated_for: {
       category,
+      cyclone_id: '2024145N14087',
+      scenario_id: `cat${category}`,
       origin: { id: originId, name: originId },
     },
   };
+}
+
+function responseForScenario(category, originId, cycloneId, scenarioId) {
+  const r = responseFor(category, originId);
+  r.generated_for.cyclone_id = cycloneId;
+  r.generated_for.scenario_id = scenarioId;
+  return r;
 }
 
 test('every ApiErrorKind has a branch, and each returns a full failure', () => {
@@ -181,6 +190,28 @@ test('staleness is judged by the server\'s echo, not the request', () => {
   // The response says it was written for 6/sagar. If the screen now shows
   // 5/kakdwip, the prose in hand is for something else entirely.
   assert.equal(isAdvisoryStale(responseFor(6, 'sagar'), 5, 'kakdwip'), true);
+});
+
+test('the stale guard fires when the scenario changes at a constant category', () => {
+  // Generated for category 6, Remal, observed. The screen stays on category 6
+  // and the same town but asks for a band — the open advisory is not the one
+  // for what the screen now shows.
+  const generatedForRemalObserved = responseForScenario(
+    6, 'sagar', '2024145N14087', 'observed',
+  );
+  assert.equal(
+    isAdvisoryStale(generatedForRemalObserved, 6, 'sagar', '2024145N14087', 'observed'),
+    false,
+  );
+  assert.equal(
+    isAdvisoryStale(generatedForRemalObserved, 6, 'sagar', '2024145N14087', 'cat6'),
+    true,
+  );
+  // And the cyclone axis alone.
+  assert.equal(
+    isAdvisoryStale(generatedForRemalObserved, 6, 'sagar', '1970324N05143', 'observed'),
+    true,
+  );
 });
 
 test('an SMS at the limit is not over', () => {

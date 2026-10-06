@@ -487,7 +487,7 @@ export function MapScreen() {
     setAdvisoryBusy(true);
     setAdvisory({ status: 'loading' });
 
-    postAdvisory(requestCategory, originId)
+    postAdvisory(requestCategory, originId, selectedCycloneId ?? undefined, scenarioForChip(chipId))
       .then((response) => setAdvisory({ status: 'ready', response, capturedAt: null }))
       .catch((err: unknown) => {
         const error = err as ApiError;
@@ -555,7 +555,7 @@ export function MapScreen() {
 
   const staleNote =
     advisory?.status === 'ready' && requestCategory !== null
-      ? advisoryStaleNote(advisory.response, requestCategory, originId)
+      ? advisoryStaleNote(advisory.response, requestCategory, originId, selectedCycloneId ?? undefined, scenarioForChip(chipId))
       : null;
 
   // --- render ------------------------------------------------------------

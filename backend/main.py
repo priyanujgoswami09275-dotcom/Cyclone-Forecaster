@@ -1772,9 +1772,15 @@ def advisory(
     # The endpoint functions, not the raw helpers: advisory.py is written
     # against the response shapes, and feeding it the same dicts the client
     # already has is what guarantees the prose and the map cannot disagree.
-    surge_payload = surge_zone(category)
-    exposure_payload = exposure(category)
-    allocation_payload = allocation(category)
+    surge_payload = surge_zone(
+        category, cyclone_id=ctx.cyclone_id, scenario_id=ctx.scenario_id
+    )
+    exposure_payload = exposure(
+        category, cyclone_id=ctx.cyclone_id, scenario_id=ctx.scenario_id
+    )
+    allocation_payload = allocation(
+        category, cyclone_id=ctx.cyclone_id, scenario_id=ctx.scenario_id
+    )
 
     facts = _origin_facts(ctx, locality)
     context = _origin_context(facts)
@@ -1879,6 +1885,8 @@ def advisory(
             "category": category,
             "imd_category": surge_payload["imd_category"],
             "wind_kmph": surge_payload["wind_kmph"],
+            "cyclone_id": ctx.cyclone_id,
+            "scenario_id": ctx.scenario_id,
             "origin": locality.to_dict(),
             "origin_context": context,
             # The computed facts behind the origin's plan entry, so a client can

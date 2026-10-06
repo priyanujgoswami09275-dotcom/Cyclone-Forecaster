@@ -698,7 +698,7 @@ export function MapScreen() {
     setAdvisoryBusy(true);
     setAdvisory({ status: 'loading' });
 
-    postAdvisory(requestCategory, originId)
+    postAdvisory(requestCategory, originId, selectedCycloneId ?? undefined, scenarioForChip(chipId))
       .then((response) => {
         setAdvisory({ status: 'ready', response, capturedAt: null });
       })
@@ -901,7 +901,7 @@ export function MapScreen() {
               as the answer to the current settings.
             */}
             {advisory?.status === 'ready' &&
-            isAdvisoryStale(advisory.response, requestCategory ?? 0, originId) ? (
+            isAdvisoryStale(advisory.response, requestCategory ?? 0, originId, selectedCycloneId ?? undefined, scenarioForChip(chipId)) ? (
               <View style={styles.staleNotice}>
                 <Text style={styles.staleText}>
                   Generated for {advisory.response.generated_for.imd_category} at{' '}
