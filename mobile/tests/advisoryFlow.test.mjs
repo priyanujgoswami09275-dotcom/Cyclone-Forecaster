@@ -192,6 +192,25 @@ test('staleness is judged by the server\'s echo, not the request', () => {
   assert.equal(isAdvisoryStale(responseFor(6, 'sagar'), 5, 'kakdwip'), true);
 });
 
+test('a saved advisory with no cyclone_id/scenario_id is not stale on missing fields', () => {
+  // Generated before cyclone_id/scenario_id were recorded: the axes are
+  // absent, so they cannot be a mismatch. Category and origin still gate.
+  const saved = {
+    generated_for: {
+      category: 6,
+      imd_category: 'Super Cyclonic Storm',
+      origin: { id: 'sagar', name: 'Sagar' },
+    },
+  };
+  assert.equal(
+    isAdvisoryStale(saved, 6, 'sagar', '2024145N14087', 'observed'),
+    false,
+  );
+  // But if the visible axis changed, it is still stale.
+  assert.equal(isAdvisoryStale(saved, 5, 'sagar', '2024145N14087', 'observed'), true);
+  assert.equal(isAdvisoryStale(saved, 6, 'kakdwip', '2024145N14087', 'observed'), true);
+});
+
 test('the stale guard fires when the scenario changes at a constant category', () => {
   // Generated for category 6, Remal, observed. The screen stays on category 6
   // and the same town but asks for a band — the open advisory is not the one

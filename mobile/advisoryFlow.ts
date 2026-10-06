@@ -213,8 +213,16 @@ export function isAdvisoryStale(
 ): boolean {
   const generated = response.generated_for;
   if (generated.category !== category || generated.origin.id !== origin) return true;
-  if (cycloneId !== undefined && generated.cyclone_id !== cycloneId) return true;
-  if (scenarioId !== undefined && generated.scenario_id !== scenarioId) return true;
+  // Missing-field rule: an axis that the stored advisory does not record (a
+  // response from before cyclone_id / scenario_id existed) is not evidence the
+  // prose was written for a different scenario. Only a field present on *both*
+  // sides and *differing* counts as stale.
+  if (cycloneId !== undefined && generated.cyclone_id !== undefined && generated.cyclone_id !== cycloneId) {
+    return true;
+  }
+  if (scenarioId !== undefined && generated.scenario_id !== undefined && generated.scenario_id !== scenarioId) {
+    return true;
+  }
   return false;
 }
 

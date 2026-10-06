@@ -460,11 +460,22 @@ export function advisoryStaleNote(
   scenarioId?: string,
 ): string | null {
   const generated = response.generated_for;
+  // Missing-field rule: an axis the stored advisory does not record (a response
+  // from before cyclone_id / scenario_id existed) cannot be a mismatch. Only a
+  // field present on *both* sides and *differing* counts as stale.
+  const cycloneMatches =
+    cycloneId === undefined ||
+    generated.cyclone_id === undefined ||
+    generated.cyclone_id === cycloneId;
+  const scenarioMatches =
+    scenarioId === undefined ||
+    generated.scenario_id === undefined ||
+    generated.scenario_id === scenarioId;
   const unchanged =
     generated.category === category &&
     generated.origin.id === originId &&
-    (cycloneId === undefined || generated.cyclone_id === cycloneId) &&
-    (scenarioId === undefined || generated.scenario_id === scenarioId);
+    cycloneMatches &&
+    scenarioMatches;
   if (unchanged) return null;
   return (
     `Generated for ${generated.imd_category} at ${generated.origin.name}. ` +
