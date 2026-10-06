@@ -51,3 +51,4 @@ ibtracs.NI.list.v04r01.csv
 mobile/dist/
 .vscode/
 opencode.json
+.env*
