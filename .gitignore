@@ -44,3 +44,11 @@ project.zip
 /fetch_dem.py
 /test_gee.py
 
+.vercel
+
+# local-only
+ibtracs.NI.list.v04r01.csv
+mobile/dist/
+.vscode/
+opencode.json
+.env*

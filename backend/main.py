@@ -537,6 +537,12 @@ def root() -> dict:
             "GET /routes?category={0-6}&origin={block_id}",
             "GET /allocation?category={0-6}",
             "POST /advisory?category={0-6}&origin={locality_id}  (Module D, Gemini)",
+            "GET /cyclones",
+            "GET /cyclones/{id}/track",
+            "GET /scenarios?cyclone_id={id}",
+            "GET /live-cyclone",
+            "GET /comparison?cyclone_ids={a},{b}",
+            "POST /risk-analyst",
         ],
     }
 
@@ -1292,7 +1298,9 @@ def surge_zone(
             "the polygon below actually renders. SRTM quantises elevation to "
             "whole metres, so the 0-4 m delta shatters into fragments and those "
             "below 0.5 km2 are dropped. Report the modelled figure, and say it "
-            "is modelled."
+            "is modelled. The flood model spreads water at most about 0.5 km inland "
+            "from the water's edge, a limit of the algorithm it follows, so flooded "
+            "area and exposure counts are likely understated."
         ),
         "frame_count": len(result.frames),
         "definitions": {
@@ -1764,9 +1772,15 @@ def advisory(
     # The endpoint functions, not the raw helpers: advisory.py is written
     # against the response shapes, and feeding it the same dicts the client
     # already has is what guarantees the prose and the map cannot disagree.
-    surge_payload = surge_zone(category)
-    exposure_payload = exposure(category)
-    allocation_payload = allocation(category)
+    surge_payload = surge_zone(
+        category, cyclone_id=ctx.cyclone_id, scenario_id=ctx.scenario_id
+    )
+    exposure_payload = exposure(
+        category, cyclone_id=ctx.cyclone_id, scenario_id=ctx.scenario_id
+    )
+    allocation_payload = allocation(
+        category, cyclone_id=ctx.cyclone_id, scenario_id=ctx.scenario_id
+    )
 
     facts = _origin_facts(ctx, locality)
     context = _origin_context(facts)
@@ -1871,6 +1885,8 @@ def advisory(
             "category": category,
             "imd_category": surge_payload["imd_category"],
             "wind_kmph": surge_payload["wind_kmph"],
+            "cyclone_id": ctx.cyclone_id,
+            "scenario_id": ctx.scenario_id,
             "origin": locality.to_dict(),
             "origin_context": context,
             # The computed facts behind the origin's plan entry, so a client can

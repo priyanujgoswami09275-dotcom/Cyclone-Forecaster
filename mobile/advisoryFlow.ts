@@ -187,8 +187,13 @@ export function describeAdvisoryError(error: ApiError): AdvisoryFailure {
  * for the intensity but written for the wrong town; origin alone misses one
  * that is right for the town and wrong for the storm.
  */
-export function advisoryKey(category: number, origin: string): string {
-  return `${category}:${origin}`;
+export function advisoryKey(
+  category: number,
+  origin: string,
+  cycloneId?: string,
+  scenarioId?: string,
+): string {
+  return `${category}:${origin}:${cycloneId ?? ''}:${scenarioId ?? ''}`;
 }
 
 /**
@@ -203,11 +208,22 @@ export function isAdvisoryStale(
   response: AdvisoryResponse,
   category: number,
   origin: string,
+  cycloneId?: string,
+  scenarioId?: string,
 ): boolean {
   const generated = response.generated_for;
-  return (
-    advisoryKey(generated.category, generated.origin.id) !== advisoryKey(category, origin)
-  );
+  if (generated.category !== category || generated.origin.id !== origin) return true;
+  // Missing-field rule: an axis that the stored advisory does not record (a
+  // response from before cyclone_id / scenario_id existed) is not evidence the
+  // prose was written for a different scenario. Only a field present on *both*
+  // sides and *differing* counts as stale.
+  if (cycloneId !== undefined && generated.cyclone_id !== undefined && generated.cyclone_id !== cycloneId) {
+    return true;
+  }
+  if (scenarioId !== undefined && generated.scenario_id !== undefined && generated.scenario_id !== scenarioId) {
+    return true;
+  }
+  return false;
 }
 
 /**

@@ -3,12 +3,19 @@
 # Vercel function bundle carries only these. Dev-only packages live in
 # requirements-dev.txt.
 #
-# How this list is derived, not guessed: `backend/main.py`, `backend/locations.py`,
-# `backend/simulation/*.py` and `backend/ai/*.py` were walked with `ast` and
-# their non-stdlib, non-local imports collected. That yields the nine below
-# and nothing more. Re-run that walk before adding a line here — a package
-# that only a pre-fetch script needs belongs in requirements-dev.txt, and one
-# that nothing imports at all belongs in neither.
+# How this list is derived, not guessed: `tests/test_runtime_requirements.py`
+# AST-walks every runtime module under `backend/` (excluding experiments, tools
+# and data_pipeline, whose third-party deps live in requirements-dev.txt) plus
+# `app.py`, collects each module's top-level third-party imports, and fails if
+# any is absent here. scikit-learn appears in that walk only via a lazy,
+# offline-training import inside storm_peak_intensity's training/evaluate paths,
+# never at import time — see its docstring — so it stays out of this file and
+# out of the Vercel bundle. A package that only a pre-fetch script needs belongs
+# in requirements-dev.txt, and one that nothing imports at all belongs in neither.
+#
+# This walk is the source of truth for the count: it currently collects exactly
+# the nine runtime packages below, and the test keeps it that way by failing the
+# build the moment the two lists drift apart.
 #
 # Pinned 2026-09-28 (Stage 0). These were completely unpinned, which meant a
 # deploy resolved to whatever was newest on the day and could fail on a source

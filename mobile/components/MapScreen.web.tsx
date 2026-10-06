@@ -89,6 +89,7 @@ import type {
 import { cycloneDisplayName } from '../cycloneModel';
 import { pickSecondScenario, scenarioForChip } from '../scenarioCompare';
 import { describeAdvisoryError } from '../advisoryFlow';
+import { bootMap } from '../bootLive';
 import { totalExposed } from '../exposureTiles';
 import {
   DEFAULT_CHIP,
@@ -215,36 +216,47 @@ export function MapScreen() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      try {
-        // Parallel: five cold requests in series is five round trips before
-        // anything paints, and none depends on another. `/track` is fetched by
-        // the cyclone-keyed effect below, because a cyclone switch refetches it.
-        const [categories, overlays, localities, cycloneList, liveState] = await Promise.all([
-          getCategories(),
-          getOverlays(),
-          getLocalities(),
-          getCyclones(),
-          getLiveCyclone(),
-        ]);
-        if (cancelled) return;
-        const defaultId = cycloneList.default_cyclone_id;
-        setCyclones(cycloneList.cyclones);
-        setDefaultCycloneId(defaultId);
-        setSelectedCycloneId(defaultId);
-        setLive(liveState);
-        setBoot({
-          status: 'ready',
-          categories,
-          overlayIndex: overlays.overlays,
-          localities,
-          cyclones: cycloneList.cyclones,
-          defaultCycloneId: defaultId,
-          live: liveState,
-        });
-      } catch (err) {
-        if (cancelled) return;
-        setBoot({ status: 'error', error: err as ApiError });
+      if (cancelled) return;
+      const outcome = await bootMap({
+        getCategories,
+        getOverlays,
+        getLocalities,
+        getCyclones,
+        getLiveCyclone,
+      });
+      if (cancelled) return;
+      if (outcome.kind === 'error') {
+        setBoot({ status: 'error', error: outcome.error });
+        return;
       }
+      const defaultId = outcome.defaultCycloneId;
+      setCyclones(outcome.cyclones);
+      setDefaultCycloneId(defaultId);
+      setSelectedCycloneId(defaultId);
+      setBoot({
+        status: 'ready',
+        categories: outcome.categories,
+        overlayIndex: outcome.overlayIndex,
+        localities: outcome.localities,
+        cyclones: outcome.cyclones,
+        defaultCycloneId: defaultId,
+        live: null,
+      });
+      // The live feed is in flight from here, so the picker says so. Without
+      // this the live panel sat on a null live and a false liveLoading — an
+      // empty slot where the answer was merely not back yet.
+      setLiveLoading(true);
+      // Boot and the live feed are independent. The feed settles on its own; a
+      // rejection or timeout lands in the truthful unavailable state and never
+      // the boot error screen.
+      void outcome.livePromise.then((live) => {
+        if (cancelled) return;
+        setLiveLoading(false);
+        setLive(live);
+        setBoot((current) =>
+          current.status === 'ready' ? { ...current, live } : current,
+        );
+      });
     })();
     return () => {
       cancelled = true;
@@ -480,7 +492,7 @@ export function MapScreen() {
     setAdvisoryBusy(true);
     setAdvisory({ status: 'loading' });
 
-    postAdvisory(requestCategory, originId)
+    postAdvisory(requestCategory, originId, selectedCycloneId ?? undefined, scenarioForChip(chipId))
       .then((response) => setAdvisory({ status: 'ready', response, capturedAt: null }))
       .catch((err: unknown) => {
         const error = err as ApiError;
@@ -548,7 +560,7 @@ export function MapScreen() {
 
   const staleNote =
     advisory?.status === 'ready' && requestCategory !== null
-      ? advisoryStaleNote(advisory.response, requestCategory, originId)
+      ? advisoryStaleNote(advisory.response, requestCategory, originId, selectedCycloneId ?? undefined, scenarioForChip(chipId))
       : null;
 
   // --- render ------------------------------------------------------------
@@ -967,6 +979,11 @@ export function MapScreen() {
               </Disclosure>
               <Disclosure label="Study area is scoped, not an administrative boundary">
                 {SCOPING_DISCLOSURE_PLAIN}
+              </Disclosure>
+              <Disclosure label="The flood model spreads water at most about 0.5 km inland">
+                The flood model spreads water at most about 0.5 km inland from the
+                water's edge, a limit of the algorithm it follows, so flooded area and
+                exposure counts are likely understated.
               </Disclosure>
               <Pressable
                 onPress={() => setShowAbout((on) => !on)}

@@ -529,11 +529,17 @@ describe('advisoryAvailability', () => {
 
 describe('advisoryStaleNote', () => {
   const response = {
-    generated_for: { category: 6, imd_category: 'Super Cyclonic Storm', origin: { id: 'sagar', name: 'Sagar' } },
+    generated_for: {
+      category: 6,
+      imd_category: 'Super Cyclonic Storm',
+      origin: { id: 'sagar', name: 'Sagar' },
+      cyclone_id: '2024145N14087',
+      scenario_id: 'cat6',
+    },
   };
 
   it('is null when the settings still match', () => {
-    assert.equal(advisoryStaleNote(response, 6, 'sagar'), null);
+    assert.equal(advisoryStaleNote(response, 6, 'sagar', '2024145N14087', 'cat6'), null);
   });
 
   it('warns when the category moved', () => {
@@ -548,7 +554,39 @@ describe('advisoryStaleNote', () => {
 
   it('compares against the server echo, not the client’s arguments', () => {
     // The server's `generated_for` is what the prose was written for.
-    assert.equal(advisoryStaleNote(response, 6, 'sagar'), null);
+    assert.equal(advisoryStaleNote(response, 6, 'sagar', '2024145N14087', 'cat6'), null);
+  });
+
+  it('does not treat a missing cyclone_id or scenario_id as stale', () => {
+    // A saved advisory from before those fields were recorded: the axes are
+    // absent, so category and origin alone decide.
+    const saved = {
+      generated_for: {
+        category: 6,
+        imd_category: 'Super Cyclonic Storm',
+        origin: { id: 'sagar', name: 'Sagar' },
+      },
+    };
+    assert.equal(advisoryStaleNote(saved, 6, 'sagar', '2024145N14087', 'cat6'), null);
+    assert.ok(advisoryStaleNote(saved, 5, 'sagar', '2024145N14087', 'cat6') !== null);
+    assert.ok(advisoryStaleNote(saved, 6, 'kakdwip', '2024145N14087', 'cat6') !== null);
+  });
+
+  it('fires when the scenario changes at a constant category and origin', () => {
+    // Same category 6, same town, but the prose was written for the band while
+    // the screen has since selected the storm's observed scenario — or vice
+    // versa. That is a changed advisory, so the note must not be null.
+    const forObserved = {
+      generated_for: {
+        category: 6,
+        imd_category: 'Super Cyclonic Storm',
+        origin: { id: 'sagar', name: 'Sagar' },
+        cyclone_id: '2024145N14087',
+        scenario_id: 'observed',
+      },
+    };
+    assert.equal(advisoryStaleNote(forObserved, 6, 'sagar', '2024145N14087', 'observed'), null);
+    assert.ok(advisoryStaleNote(forObserved, 6, 'sagar', '2024145N14087', 'cat6') !== null);
   });
 });
 

@@ -538,6 +538,8 @@ export interface AdvisoryResponse {
     category: number;
     imd_category: string;
     wind_kmph: number;
+    cyclone_id?: string;
+    scenario_id?: string;
     origin: Locality;
     origin_context: string;
     origin_reachable: boolean;
@@ -1098,8 +1100,13 @@ export function getAllocation(
 export function postAdvisory(
   category: number,
   origin: string,
+  cycloneId?: string,
+  scenarioId?: string,
 ): Promise<AdvisoryResponse> {
-  const q = `category=${category}&origin=${encodeURIComponent(origin)}`;
+  const scope = scopeQuery(cycloneId, scenarioId);
+  const q = `category=${category}&origin=${encodeURIComponent(origin)}${
+    scope ? `&${scope}` : ''
+  }`;
   return request<AdvisoryResponse>(
     `/advisory?${q}`,
     { method: 'POST' },

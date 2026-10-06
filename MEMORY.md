@@ -1987,6 +1987,41 @@ with something in AGENTS.md/CLAUDE.md, or hits a gap in Design.md.)*
     from the plan. Note `STORM_SPEED` → `KNOTS_TO_KMPH` *is* correct and must
     not be "fixed" the same way.
 
+55. **NEW 2026-10-04 — the flood model's reach is step-limited, and the real
+    extent may be larger.** `simulate_flood_propagation` spreads the flood one
+    DEM cell per step for `n_steps=10` steps, so at the committed DEM's ~50 m
+    resolution water reaches at most ~0.5 km inland from any ocean-connected
+    cell, whatever the surge. The ocean-connected bathtub — every cell with
+    `elevation <= surge` in a component touching `ocean_mask`, with ocean and
+    nodata excluded — measured (repo's own
+    `backend/experiments/flood_reach/compare.py`):
+
+    | scenario        | model km2 | bathtub km2 | bath/model |
+    |-----------------|-----------|-------------|------------|
+    | Remal observed  | 327.6     | 440.7       | 1.35       |
+    | cat4            | 359.2     | 440.7       | 1.23       |
+    | cat5            | 1709.6    | 2574.8      | 1.51       |
+    | cat6            | 2680.2    | 4947.7      | 1.85       |
+
+    The app reports the smaller reach-limited figure (`run_flood_model`) on
+    every surface; the bathtub is the unrestricted reference. Correlation note:
+    `cat4` and `Remal observed` bathtub areas are equal (440.7 km²) because the
+    DEM is discrete, not because the model matches — `data/dem.tif` holds whole
+    metres only (80 distinct values, none strictly between 1 and 2; verified
+    with `np.unique`), so every surge from 1.0 to 1.99 m selects the same
+    cells (`elevation <= 1`). That DEM-quantisation step function is also why
+    flooded area has a cliff near 1 m of surge (≈105 km/h). It is not a nodata
+    or an ocean-connectivity effect. A sentence to that disclose it has been
+    added to the About sheet (native), the web's
+    data-provenance disclosure block, and `GET /surge-zone`'s
+    `area_disclosure`, and the numbers live beside the script. **Decision for a
+    human, not taken in this disclosure-only pass: whether to move to the
+    ocean-connected fill (the more honest unrestricted extent) or keep the
+    step-limited model and treat the 0.5 km reach as its published limit.**
+    Correcting it changes `final_land_area_km2`, the overlay polygons, and the
+    whole exposure/advisory surface — so it is a feature decision, not a doc
+    fix. Do not "fix" this by editing the sentence; decide the model first.
+
 
 ## Environment / credentials status
 

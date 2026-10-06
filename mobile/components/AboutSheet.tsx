@@ -122,6 +122,14 @@ export function AboutSheet({
             </Text>
           </Block>
 
+          <Block heading="How wide the flood can spread">
+            <Text style={styles.para}>
+              The flood model spreads water at most about 0.5 km inland from the
+              water's edge, a limit of the algorithm it follows, so flooded area
+              and exposure counts are likely understated.
+            </Text>
+          </Block>
+
           <Block heading="The storm path">
             <Text style={styles.para}>
               {trackLabel ?? 'This track'}
