@@ -208,6 +208,7 @@ def test_the_storm_id_is_built_from_the_basin_and_number() -> None:
     assert atcf_storm_id("ZZ, 01, 2025062218".split(",")) is None
     assert atcf_storm_id(["IO"]) is None
 
+
 def test_the_waypoint_carries_the_storm_number() -> None:
     waypoint = parse_atcf_line("IO, 05, 2025062218, 01, X, 0, 152N, 845E, 40, 0, TS,")
     assert waypoint is not None

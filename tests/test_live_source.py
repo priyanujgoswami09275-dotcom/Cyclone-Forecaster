@@ -148,7 +148,7 @@ def test_no_active_storm_is_distinct_from_unavailable() -> None:
 
 
 def test_no_active_storm_reason_does_not_claim_the_feed_was_unreachable() -> None:
-    """"The feed answered; the basin is quiet. Those are not the same sentence.
+    """The feed answered; the basin is quiet — two different sentences.
 
     The reason used to open with the `live_unavailable` claim — "could not be
     reached" — because it reused that constant verbatim. A quiet basin told the
@@ -337,6 +337,7 @@ def test_a_working_second_source_is_found() -> None:
     assert status.status == "available"
     assert "b.test" in status.source
 
+
 def test_the_live_record_id_comes_from_the_storm_number() -> None:
     """The probe must not invent an id like IO-live-2025 for a real storm."""
     body = "IO, 05, 2025062218, 01, CARQ, 0, 152N, 845E, 45, 990, TS,\n"
@@ -352,7 +353,8 @@ def test_the_live_record_id_comes_from_the_storm_number() -> None:
 
 
 def test_a_fix_without_a_storm_number_yields_no_record() -> None:
-    """An honest absence over a fabricated identity."""
+    """An honest absence over a fabricated identity — and the reason says what
+    actually happened, never 'feed could not be reached' nor 'basin is quiet'."""
     body = "IO, , 2025062218, 01, CARQ, 0, 152N, 845E, 45, 990, TS,\n"
     status = run(
         AtcfLiveSource(
@@ -360,5 +362,8 @@ def test_a_fix_without_a_storm_number_yields_no_record() -> None:
             transport=fake_transport(status=200, body=body),
         ).probe()
     )
-    assert status.status != "available"
+    assert status.status == "live_unavailable"
     assert status.cyclone is None
+    assert "no usable storm number" in status.reason
+    assert "could not be reached" not in status.reason
+    assert "none listed a storm" not in status.reason

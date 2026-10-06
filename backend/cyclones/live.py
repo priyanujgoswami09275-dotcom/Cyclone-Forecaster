@@ -219,6 +219,7 @@ class AtcfLiveSource(CycloneSource):
         observed: list[str] = []
 
         spoke = 0
+        rejected_record = False
         for url in self.endpoints:
             status, waypoints, spoke_atcf = self._attempt(url)
             observed.append(str(status))
@@ -226,8 +227,10 @@ class AtcfLiveSource(CycloneSource):
             if waypoints:
                 record = self._record(waypoints)
                 if record is None:
-                    # Fixes arrived but carried no usable identity to build an
-                    # honest id from — the same principle as no waypoints at all.
+                    # The feed listed a storm, but its fixes lacked any usable
+                    # identity we can certify. That must not be reported as
+                    # "the basin is quiet" — it was not.
+                    rejected_record = True
                     continue
                 head, tail = record.waypoints[0], record.waypoints[-1]
                 return LiveStatus(
@@ -267,6 +270,42 @@ class AtcfLiveSource(CycloneSource):
         # "No active storm" only when every source answered *in ATCF* and none
         # listed this basin. Anything else is a source we could not read.
         all_spoke = bool(self.endpoints) and spoke == len(self.endpoints)
+        if rejected_record:
+            # The feed reached us and DID list fixes — but none could be turned
+            # into an honest identity. "Unavailable" would say the feed was
+            # down; "no active storm" would say the basin was quiet. Neither is
+            # true, so describe what actually happened.
+            status = "live_unavailable"
+            detail = (
+                "Fixes were listed, but none carried a usable storm number "
+                "(ATCF field 1), so no live record could be built. "
+                + (
+                    "Every source answered in ATCF."
+                    if all_spoke
+                    else "Sources tried: "
+                    + "; ".join(
+                        f"{s} for {u.split('/')[2]}"
+                        for s, u in zip(observed, self.endpoints)
+                    )
+                    + "."
+                )
+            )
+            reason = (
+                "The live cyclone feed answered, but its fixes had no usable "
+                "storm number, so no live cyclone could be identified from them. "
+                "No historical or case-study cyclone is being substituted for "
+                "live data. The historical cyclone list and the deterministic "
+                "storm-surge simulation are unaffected. Attempt made at "
+                f"{now}. {detail}"
+            )
+            return LiveStatus(
+                status=status,
+                source=self.endpoints[0] if self.endpoints else "(none configured)",
+                http_status=None if not observed else int(observed[-1]),
+                reason=reason,
+                checked_at=now,
+                endpoints=self.endpoints,
+            )
         status = "no_active_storm" if all_spoke else "live_unavailable"
         detail = (
             "Every source answered in ATCF and none listed a storm for this basin."
