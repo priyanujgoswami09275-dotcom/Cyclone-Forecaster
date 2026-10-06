@@ -59,6 +59,7 @@ from backend.cyclones.base import (
     LiveStatus,
     iso_time_to_rfc3339,
     live_unavailable_reason,
+    no_active_storm_reason,
 )
 
 log = logging.getLogger(__name__)
@@ -194,8 +195,9 @@ class AtcfLiveSource(CycloneSource):
     async def probe(self) -> LiveStatus:
         """Try every endpoint and report what actually happened.
 
-        The reason always carries `live_unavailable_reason()` — the promise that
-        nothing is being substituted — with the per-endpoint statuses appended.
+        The reason always carries the state's pinned promise —
+        `live_unavailable_reason()` (feed down) or `no_active_storm_reason()`
+        (feed answered, basin quiet) — with the per-endpoint statuses appended.
         A diagnostic alone ("tried 4 sources: 403, 403, 404, 200") tells a
         reader nothing about what is *not* being shown, which is the part that
         matters.
@@ -256,11 +258,19 @@ class AtcfLiveSource(CycloneSource):
             + ", ".join(f"{s} for {u.split('/')[2]}" for s, u in zip(observed, self.endpoints))
             + "."
         )
+        # The promise must match the outcome: `live_unavailable_reason()`
+        # claims the feed was unreachable, which is the one thing we know
+        # is FALSE when every source answered and simply listed nothing.
+        reason = (
+            f"{no_active_storm_reason(now)} {detail}"
+            if all_spoke
+            else f"{live_unavailable_reason(now)} {detail}"
+        )
         return LiveStatus(
             status=status,
             source=self.endpoints[0] if self.endpoints else "(none configured)",
             http_status=None if not observed else int(observed[-1]),
-            reason=f"{live_unavailable_reason(now)} {detail}",
+            reason=reason,
             checked_at=now,
             endpoints=self.endpoints,
         )
