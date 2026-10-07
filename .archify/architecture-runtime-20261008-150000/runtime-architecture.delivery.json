@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "05f3b1de-c0c1-4045-ac99-0c05568aa87e",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/Users/priyanujgoswami/Cyclone app/.archify/architecture-runtime-20261008-150000/candidate.json",
+  "output": "/Users/priyanujgoswami/Cyclone app/.archify/architecture-runtime-20261008-150000/runtime-architecture.html",
+  "specification": {
+    "sha256": "d9f80bd4a917fd89733439eef03596d161741f955cdd1fb99bc3c2a54d9bdf1c",
+    "bytes": 6205
+  },
+  "artifact": {
+    "sha256": "724910075a75ab66e95a3f1745f3ca7221336ec0989fd6772c790417ec3e0c44",
+    "bytes": 775401
+  }
+}

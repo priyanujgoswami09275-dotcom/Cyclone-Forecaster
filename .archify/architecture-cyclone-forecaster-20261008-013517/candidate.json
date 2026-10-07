@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Cyclone Impact & Infrastructure Vulnerability Forecaster",
+    "output": ".archify/architecture-cyclone-forecaster-20261008-013517/cyclone-forecaster.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/priyanujgoswami09275-dotcom/Cyclone-Forecaster.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "f4b6e799ae3e041cf871a3a38c800bcec515fc71"
+    },
+    "views": [
+      {
+        "id": "request-path",
+        "label": "Request path",
+        "focus": ["users", "app", "api", "ai", "gemini"],
+        "note": "Adjust intensity on the map, then Generate Advisory posts to /advisory."
+      },
+      {
+        "id": "compute",
+        "label": "Compute modules",
+        "focus": ["api", "registry", "surge", "flood", "exposure", "routing", "allocation", "ml"],
+        "note": "Every call site lives in a backend/main.py handler; the flood run (~16 s) is cached per wind."
+      },
+      {
+        "id": "offline-plane",
+        "label": "Offline data plane",
+        "focus": ["ibtracs", "overpass", "gee", "pipeline", "datastore"],
+        "note": "Dev-time fetchers write committed files; no request handler fetches live."
+      }
+    ]
+  },
+  "components": [
+    { "id": "users", "type": "external", "label": "Users", "sublabel": "local authorities", "pos": [40, 207], "size": [130, 60] },
+    { "id": "app", "type": "frontend", "label": "Expo mobile app", "sublabel": "Leaflet · StrengthChips", "pos": [250, 200], "size": [160, 75], "sources": [
+      { "path": "mobile/App.tsx", "line": 7, "label": "MapScreen mount" },
+      { "path": "mobile/api.ts", "line": 40, "label": "API base URL from env" }
+    ] },
+    { "id": "api", "type": "backend", "label": "FastAPI service", "sublabel": "backend/main.py · 17 routes", "pos": [510, 165], "size": [185, 145], "sources": [
+      { "path": "backend/main.py", "line": 133, "end_line": 160, "label": "app + CORS/GZip middleware" },
+      { "path": "backend/main.py", "line": 561, "end_line": 575, "label": "route index" }
+    ] },
+    { "id": "ai", "type": "backend", "label": "Advisory synthesis", "sublabel": "Pydantic schema · retries", "pos": [560, 40], "size": [165, 80], "sources": [
+      { "path": "backend/ai/advisory.py", "line": 180, "label": "generate_advisory" },
+      { "path": "backend/main.py", "line": 1741, "label": "_with_capacity_retry" }
+    ] },
+    { "id": "gemini", "type": "cloud", "label": "Gemini 3.8 Flash", "sublabel": "google-genai SDK", "pos": [900, 30], "size": [160, 70], "sources": [
+      { "path": "backend/ai/advisory.py", "line": 61, "label": "pinned model string" },
+      { "path": "backend/ai/advisory.py", "line": 219, "end_line": 220, "label": "genai Client call" }
+    ] },
+    { "id": "surge", "type": "backend", "label": "Surge model", "sublabel": "1.2 × (wind/115)²", "pos": [640, 460], "size": [110, 78], "sources": [
+      { "path": "backend/simulation/surge.py", "line": 71, "end_line": 72, "label": "anchor constants" },
+      { "path": "backend/simulation/surge.py", "line": 196, "label": "surge_for_wind" }
+    ] },
+    { "id": "flood", "type": "backend", "label": "Flood engine", "sublabel": "BFS flood automaton", "pos": [770, 460], "size": [115, 78], "sources": [
+      { "path": "backend/simulation/flood.py", "line": 3, "end_line": 12, "label": "BFS spec" },
+      { "path": "backend/simulation/flood.py", "line": 257, "label": "run_flood_model" }
+    ] },
+    { "id": "exposure", "type": "backend", "label": "Exposure mapping", "sublabel": "point-in-polygon", "pos": [905, 460], "size": [120, 78], "sources": [
+      { "path": "backend/simulation/exposure.py", "line": 9, "end_line": 13, "label": "layer tests" },
+      { "path": "backend/simulation/exposure.py", "line": 196, "label": "compute_exposure" }
+    ] },
+    { "id": "routing", "type": "backend", "label": "Evacuation routing", "sublabel": "networkx Dijkstra", "pos": [1045, 460], "size": [120, 78], "sources": [
+      { "path": "backend/simulation/routing.py", "line": 66, "label": "build_road_graph" },
+      { "path": "backend/simulation/routing.py", "line": 169, "label": "safe_route" }
+    ] },
+    { "id": "allocation", "type": "backend", "label": "Allocation LP", "sublabel": "scipy linprog", "pos": [1185, 460], "size": [125, 78], "sources": [
+      { "path": "backend/simulation/allocation.py", "line": 60, "label": "allocate_shelters" },
+      { "path": "backend/simulation/allocation.py", "line": 69, "label": "shelter load" }
+    ] },
+    { "id": "ml", "type": "backend", "label": "Storm-peak model", "sublabel": "median_baseline", "pos": [1330, 460], "size": [120, 78], "sources": [
+      { "path": "backend/ml/storm_peak_intensity.py", "line": 681, "label": "baseline_estimate()" },
+      { "path": "backend/main.py", "line": 2116, "label": "/risk-analyst call" }
+    ] },
+    { "id": "registry", "type": "backend", "label": "Cyclone registry", "sublabel": "610 NI storms", "pos": [1470, 460], "size": [130, 78], "sources": [
+      { "path": "backend/cyclones/registry.py", "line": 126, "label": "historical()" },
+      { "path": "backend/cyclones/registry.py", "line": 147, "label": "live_status()" },
+      { "path": "backend/cyclones/registry.py", "line": 38, "label": "catalogue path" }
+    ] },
+    { "id": "datastore", "type": "database", "label": "Committed data/ store", "sublabel": "DEM · GeoJSON · catalogue.json", "pos": [510, 760], "size": [950, 90], "sources": [
+      { "path": "backend/simulation/dem.py", "line": 96, "label": "load_dem" },
+      { "path": "backend/main.py", "line": 761, "label": "track file path" },
+      { "path": "backend/simulation/shelters.py", "line": 95, "label": "load_shelters" }
+    ] },
+    { "id": "atcf", "type": "external", "label": "ATCF live feeds", "sublabel": "live_unavailable", "pos": [1490, 905], "size": [150, 70], "sources": [
+      { "path": "backend/cyclones/live.py", "line": 117, "label": "AtcfLiveSource" },
+      { "path": "backend/cyclones/live.py", "line": 14, "end_line": 27, "label": "probed endpoints" }
+    ] },
+    { "id": "pipeline", "type": "backend", "label": "Data pipeline (offline)", "sublabel": "pre-fetch scripts · dev-time", "pos": [40, 760], "size": [360, 90], "sources": [
+      { "path": "backend/main.py", "line": 13, "end_line": 15, "label": "no live fetches rule" },
+      { "path": "backend/data_pipeline/ingest_ibtracs_ni.py", "line": 1, "label": "catalogue builder" }
+    ] },
+    { "id": "ibtracs", "type": "external", "label": "NOAA IBTrACS", "sublabel": "v04r00 / v04r01", "pos": [40, 905], "size": [110, 70], "sources": [
+      { "path": "backend/data_pipeline/fetch_ibtracs.py", "line": 1, "end_line": 3, "label": "v04r00 fetch" }
+    ] },
+    { "id": "overpass", "type": "external", "label": "OSM Overpass API", "sublabel": "infra + places", "pos": [160, 905], "size": [130, 70], "sources": [
+      { "path": "backend/data_pipeline/fetch_osm_infra.py", "line": 1, "end_line": 8, "label": "Overpass pre-fetch" }
+    ] },
+    { "id": "gee", "type": "external", "label": "Google Earth Engine", "sublabel": "SRTM 30 m DEM", "pos": [300, 905], "size": [125, 70], "sources": [
+      { "path": "backend/data_pipeline/fetch_dem.py", "line": 1, "end_line": 3, "label": "GEE SRTM export" }
+    ] }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Vercel Hobby serverless — app.py entry · maxDuration 300 s",
+      "wraps": ["api", "ai", "surge", "flood", "exposure", "routing", "allocation", "ml", "registry", "datastore"]
+    }
+  ],
+  "connections": [
+    { "id": "users-to-app", "from": "users", "to": "app", "label": "Expo Go", "variant": "emphasis", "fromSide": "right", "toSide": "left" },
+    { "id": "app-to-api", "from": "app", "to": "api", "label": "HTTPS REST", "variant": "emphasis", "fromSide": "right", "toSide": "left" },
+    { "id": "api-to-ai", "from": "api", "to": "ai", "label": "advisory inputs", "fromSide": "top", "toSide": "bottom" },
+    { "id": "ai-to-gemini", "from": "ai", "to": "gemini", "label": "generate_content", "fromSide": "right", "toSide": "left" },
+    { "id": "api-to-surge", "from": "api", "to": "surge", "label": "predict_surge" },
+    { "id": "api-to-flood", "from": "api", "to": "flood", "label": "run_flood_model · cached" },
+    { "id": "api-to-exposure", "from": "api", "to": "exposure", "label": "compute_exposure" },
+    { "id": "api-to-routing", "from": "api", "to": "routing", "label": "safe_route" },
+    { "id": "api-to-allocation", "from": "api", "to": "allocation", "label": "allocate_shelters" },
+    { "id": "api-to-ml", "from": "api", "to": "ml", "label": "baseline_estimate" },
+    { "id": "api-to-registry", "from": "api", "to": "registry", "label": "catalogue · live" },
+    { "id": "api-to-datastore", "from": "api", "to": "datastore", "label": "remal_track · overlays" },
+    { "id": "registry-to-atcf", "from": "registry", "to": "atcf", "label": "live probe · 60 s cache", "fromSide": "bottom", "toSide": "top" },
+    { "id": "registry-to-datastore", "from": "registry", "to": "datastore", "label": "catalogue.json", "fromSide": "bottom", "toSide": "right" },
+    { "id": "flood-to-datastore", "from": "flood", "to": "datastore", "label": "dem.tif", "fromSide": "bottom", "toSide": "top" },
+    { "id": "exposure-to-datastore", "from": "exposure", "to": "datastore", "label": "infra GeoJSON", "fromSide": "bottom", "toSide": "top" },
+    { "id": "routing-to-datastore", "from": "routing", "to": "datastore", "label": "roads GeoJSON", "fromSide": "bottom", "toSide": "top" },
+    { "id": "allocation-to-datastore", "from": "allocation", "to": "datastore", "label": "shelters.json", "fromSide": "bottom", "toSide": "top" },
+    { "id": "ml-to-datastore", "from": "ml", "to": "datastore", "label": "model artefact", "fromSide": "bottom", "toSide": "top" },
+    { "id": "ibtracs-to-pipeline", "from": "ibtracs", "to": "pipeline", "fromSide": "top", "toSide": "bottom" },
+    { "id": "overpass-to-pipeline", "from": "overpass", "to": "pipeline", "fromSide": "top", "toSide": "bottom" },
+    { "id": "gee-to-pipeline", "from": "gee", "to": "pipeline", "fromSide": "top", "toSide": "bottom" },
+    { "id": "pipeline-to-datastore", "from": "pipeline", "to": "datastore", "variant": "dashed", "fromSide": "right", "toSide": "left" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Deployment", "items": [
+      "app.py re-exports backend.main:app for Vercel's entrypoint lookup",
+      "render.yaml retained as a fallback blueprint",
+      "Pre-warm before demos — cold /exposure?category=6 takes >100 s"
+    ] },
+    { "dot": "emerald", "title": "Data discipline", "items": [
+      "No live fetches from handlers — Overpass, IBTrACS and GEE are offline scripts",
+      "Flood (~16 s) cached per wind; scenario caches keyed (cyclone_id, scenario_id)",
+      "Routing graph built from committed roads.geojson, not osmnx"
+    ] },
+    { "dot": "amber", "title": "Honesty surfaces", "items": [
+      "Every surge figure carries the screening-estimate limitation string",
+      "Storm-peak ML ships median_baseline — gate failed (21.94 vs 21.03 kt)",
+      "live-cyclone reports live_unavailable; never substitutes history",
+      "Open-Meteo implemented under backend/weather/, wired to no route"
+    ] },
+    { "dot": "rose", "title": "Security", "items": [
+      "No auth by design (PRD: explicitly out of scope)",
+      "GEMINI_API_KEY server-side only; the client sends no credentials",
+      "Advisories failing validation are withheld with a 502"
+    ] }
+  ]
+}

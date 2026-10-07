@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "368e13e6-d650-4d92-9c01-c8757c577fc7",
+  "status": "current",
+  "command": "deliver",
+  "type": "sequence",
+  "input": "/Users/priyanujgoswami/Cyclone app/.archify/sequence-cache-miss-20261008-024610/candidate.json",
+  "output": "/Users/priyanujgoswami/Cyclone app/.archify/sequence-cache-miss-20261008-024610/cache-miss.html",
+  "specification": {
+    "sha256": "10270a681abd475901b2768ee7dc99e63bff357051f0ad404036b12853a6cf50",
+    "bytes": 3086
+  },
+  "artifact": {
+    "sha256": "da311a138b6da4f020aed309e0b09871a3dd5cedfc0ba3c13f7c438698373bb1",
+    "bytes": 754755
+  }
+}

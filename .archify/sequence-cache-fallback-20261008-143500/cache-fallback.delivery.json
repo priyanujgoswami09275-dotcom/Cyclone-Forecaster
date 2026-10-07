@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "7171293a-5eb8-42a1-a510-43a63c706108",
+  "status": "current",
+  "command": "deliver",
+  "type": "sequence",
+  "input": "/Users/priyanujgoswami/Cyclone app/.archify/sequence-cache-fallback-20261008-143500/candidate.json",
+  "output": "/Users/priyanujgoswami/Cyclone app/.archify/sequence-cache-fallback-20261008-143500/cache-fallback.html",
+  "specification": {
+    "sha256": "038110be79592b8f382fe2ca45d8078f35113a8f80a3b7008541455680ecec23",
+    "bytes": 2753
+  },
+  "artifact": {
+    "sha256": "c6671eb1110011959b2278087bb4f4f401f6804323800f7943b5abce1eb0e6b8",
+    "bytes": 753305
+  }
+}

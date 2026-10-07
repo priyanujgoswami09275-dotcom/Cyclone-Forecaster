@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "command": "deliver",
+  "status": "pending",
+  "receiptId": "251e4d87-c08a-4b7b-b8a5-4e052bf9aa4b",
+  "input": "/Users/priyanujgoswami/Cyclone app/.archify/sequence-cache-miss-20261008-143000/candidate.json",
+  "output": "/Users/priyanujgoswami/Cyclone app/.archify/sequence-cache-miss-20261008-143000/cache-miss.html"
+}

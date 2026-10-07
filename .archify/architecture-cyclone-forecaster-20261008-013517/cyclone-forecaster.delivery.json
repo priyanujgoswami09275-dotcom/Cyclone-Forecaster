@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "9a912ecb-9769-43b5-be8e-ea63b4fd9fb2",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/Users/priyanujgoswami/Cyclone app/.archify/architecture-cyclone-forecaster-20261008-013517/candidate.json",
+  "output": "/Users/priyanujgoswami/Cyclone app/.archify/architecture-cyclone-forecaster-20261008-013517/cyclone-forecaster.html",
+  "specification": {
+    "sha256": "8a155659e9e56ffae679c3b4aed0ef28903aef883a55ca83962fdf35b4a8fd43",
+    "bytes": 11582
+  },
+  "artifact": {
+    "sha256": "ec1188f59297e0606cadfb417bc2b44d64ebba2af7bd2604317c23cc9b591ae0",
+    "bytes": 798837
+  }
+}

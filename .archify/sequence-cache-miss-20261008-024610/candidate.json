@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Web Request — Cache Miss Flow",
+    "subtitle": "Browser → API → Redis → PostgreSQL → cache fill",
+    "output": ".archify/sequence-cache-miss-20261008-024610/cache-miss.html",
+    "quality_profile": "showcase",
+    "column_fit": "spread"
+  },
+  "participants": [
+    { "id": "browser", "type": "external", "label": "Browser", "sublabel": "client" },
+    { "id": "api", "type": "backend", "label": "API", "sublabel": "request handler" },
+    { "id": "redis", "type": "database", "label": "Redis", "sublabel": "cache" },
+    { "id": "pg", "type": "database", "label": "PostgreSQL", "sublabel": "source of truth" }
+  ],
+  "segments": [
+    { "from": 150, "to": 260, "label": "Request" },
+    { "from": 270, "to": 400, "label": "Cache lookup" },
+    { "from": 410, "to": 540, "label": "Fallback + fill" },
+    { "from": 550, "to": 640, "label": "Response" }
+  ],
+  "messages": [
+    { "id": "req", "from": "browser", "to": "api", "y": 160, "label": "HTTP GET /resource", "variant": "emphasis" },
+    { "id": "cache-check", "from": "api", "to": "redis", "y": 195, "label": "GET key", "variant": "default" },
+    { "id": "cache-miss", "from": "redis", "to": "api", "y": 228, "label": "miss (nil)", "variant": "return" },
+    { "id": "db-query", "from": "api", "to": "pg", "y": 268, "label": "SELECT * FROM …", "variant": "emphasis" },
+    { "id": "db-rows", "from": "pg", "to": "api", "y": 301, "label": "rows", "variant": "return" },
+    { "id": "cache-fill", "from": "api", "to": "redis", "y": 341, "label": "SET key = value", "variant": "dashed" },
+    { "id": "cache-ack", "from": "redis", "to": "api", "y": 374, "label": "OK", "variant": "return" },
+    { "id": "resp", "from": "api", "to": "browser", "y": 414, "label": "200 OK + JSON", "variant": "return" }
+  ],
+  "activations": [
+    { "participant": "browser", "from": 155, "to": 420, "type": "external" },
+    { "participant": "api", "from": 160, "to": 420, "type": "backend" },
+    { "participant": "redis", "from": 190, "to": 234, "type": "database" },
+    { "participant": "pg", "from": 263, "to": 307, "type": "database" },
+    { "participant": "redis", "from": 336, "to": 380, "type": "database" }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Happy Path",
+      "items": [
+        "Browser sends an HTTP GET to the API",
+        "API checks Redis before touching the database",
+        "On a cache miss the API queries PostgreSQL"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Cache Fill",
+      "items": [
+        "After the DB returns rows the API writes them back to Redis",
+        "The next identical request will be served from cache",
+        "Cache fill is fire-and-forget — it does not block the response"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Why It Matters",
+      "items": [
+        "Redis absorbs read load and reduces DB pressure",
+        "PostgreSQL is only hit on cold or expired keys",
+        "The response path stays fast even on a miss"
+      ]
+    }
+  ]
+}
