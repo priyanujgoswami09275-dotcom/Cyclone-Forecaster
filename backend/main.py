@@ -25,10 +25,15 @@ Plus three small helpers the app needs to drive the slider: `/categories`
   The same rule extends to the AI layer: an advisory that fails
   `ai.advisory.validate_advisory` is withheld with a 502, not returned with a
   disclaimer bolted on.
-- *Nothing is computed twice.* Flood propagation is ~6 s at high categories
-  and there are only 7 categories, so results are cached by category for the
-  life of the process. The slider is unusable without this. `/advisory` reuses
-  those caches rather than re-deriving its inputs.
+- *Nothing is computed twice.* Flood propagation is ~16 s at the top band, so
+  the derived results — flood, populations, shelters, allocation — are cached
+  for the life of the process. The slider is unusable without this, and
+  `/advisory` reuses those caches rather than re-deriving its inputs.
+
+  The key is `(cyclone_id, scenario_id)` via `ScenarioContext`, **not** the
+  category. Both name a strength and only one can win, but they are not the
+  same thing: `observed` is a storm's own wind, so a category-keyed cache hands
+  the second storm the first one's numbers with nothing to indicate a mix-up.
 
 Run locally:
     venv/bin/uvicorn backend.main:app --reload --port 8000
