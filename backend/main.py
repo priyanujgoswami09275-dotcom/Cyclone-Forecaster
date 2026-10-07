@@ -1502,15 +1502,15 @@ def _nearest_node(graph, point: tuple[float, float]):
     return min(graph.nodes, key=lambda n: _haversine_km(point, n))
 
 
-def _diagnose_unreachable(route, locality, shelter, flood):
-    """Replace a misleading `reason` with the actual cause.
+def _diagnose_cause_and_reason(route, locality, shelter, flood) -> tuple[str, str]:
+    """The same branch the reason comes from, plus the structural cause of it.
 
-    `routing.safe_route` reports the same string whether water closed the
-    route or the committed road extract simply has no path between the two
-    points. The second is common here: `roads.geojson` holds arterials and
-    `delta_roads.geojson` covers only the southern delta, so inland towns
-    like Canning are not connected to the delta at all. Saying "cut off" at
-    zero surge would read as a flood warning that does not exist.
+    Returns `(cause, reason)` where cause is "flood" — water cut the route — or
+    "road_data" — the committed extract never connected origin and shelter.
+    Nothing here works by matching reason text; the cause is the branch the
+    reason is being computed from. Used by `_origin_facts` to tag advisory
+    entries with their actual cause, and by `_diagnose_unreachable`, which keeps
+    its old signature for `/routes`.
     """
     graph = build_road_graph()
     origin_node = _nearest_node(graph, (locality.lon, locality.lat))
@@ -1521,25 +1521,41 @@ def _diagnose_unreachable(route, locality, shelter, flood):
     has_flood = flood_geom is not None and not flood_geom.is_empty
 
     if origin_node is None or shelter_node is None:
-        reason = "no road network is loaded"
-    elif components.get(origin_node) != components.get(shelter_node):
-        reason = (
+        return ("road_data", "no road network is loaded")
+    if components.get(origin_node) != components.get(shelter_node):
+        return (
+            "road_data",
             "no route: the committed OSM extract does not connect these two "
             "points. roads.geojson holds arterials and delta_roads.geojson "
             "covers the southern delta only, so many inland towns have no "
             "path to the delta. This is road-data coverage, not flooding"
-            + ("" if has_flood else " (there is no flood at this category)")
+            + ("" if has_flood else " (there is no flood at this category)"),
         )
-    elif not has_flood:
-        reason = (
+    if not has_flood:
+        return (
+            "road_data",
             "no route, and there is no flood at this category — the origin or "
-            "shelter could not be matched to the road network"
+            "shelter could not be matched to the road network",
         )
-    else:
-        # routing.py's own wording is already the right answer here: the two
-        # points are connected in the dry network, so only water can explain it.
-        reason = route.reason
+    # The two points are connected in the dry network, so only water can
+    # explain it; routing's own reason is the truthful one here.
+    return ("flood", route.reason)
 
+
+def _diagnose_unreachable(route, locality, shelter, flood):
+    """Replace a misleading `reason` with the actual cause.
+
+    `routing.safe_route` reports the same string whether water closed the
+    route or the committed road extract simply has no path between the two
+    points. The second is common here: `roads.geojson` holds arterials and
+    `delta_roads.geojson` covers only the southern delta, so inland towns
+    like Canning are not connected to the delta at all. Saying "cut off" at
+    zero surge would read as a flood warning that does not exist.
+
+    Thin wrapper over `_diagnose_cause_and_reason` that discards the cause;
+    same return type and wording.
+    """
+    _, reason = _diagnose_cause_and_reason(route, locality, shelter, flood)
     return replace(route, reason=reason)
 
 
@@ -2281,17 +2297,20 @@ def _origin_facts(ctx: ScenarioContext, locality: Locality) -> dict:
         (locality.lon, locality.lat),
         (shelter.lon, shelter.lat),
     )
-    reason = route.reason
-    if not route.reachable and reason and "no route:" not in reason:
-        # Reuse _diagnose_unreachable's road-data-vs-flood distinction so the
-        # advisory never tells someone to travel a road the extract simply
-        # does not contain.
-        reason = _diagnose_unreachable(route, locality, shelter, flood).reason
+    if route.reachable:
+        cause = "none"
+        reason = route.reason
+    else:
+        # One pass: the advisory never tells someone to travel a road the
+        # extract simply does not contain, and it never labels a road-data
+        # gap as flooding — the cause and reason come from the same branch.
+        cause, reason = _diagnose_cause_and_reason(route, locality, shelter, flood)
     return {
         "locality": locality,
         "shelter": shelter,
         "shelter_basis": basis,
         "reachable": route.reachable,
+        "cause": cause,
         "reason": reason,
         "length_km": route.to_dict().get("length_km"),
         "in_allocation": any(
@@ -2371,14 +2390,23 @@ def _ensure_origin_in_plan(
             f"to its assigned shelter ({facts['shelter'].name}) exists at this "
             f"intensity, so evacuation is feasible on the road network as mapped."
         )
+    elif facts.get("cause") == "road_data":
+        priority = "HIGH"
+        reasoning = (
+            f"The requesting locality. The committed road extract does not "
+            f"connect it to its assigned shelter ({facts['shelter'].name}) — "
+            f"this is a data gap, not a flood finding. Call for off-network "
+            f"planning should name the gap plainly rather than claiming "
+            f"flooding. ({_as_sentence(facts['reason'])})"
+        )
     else:
+        # cause == "flood": the dry network is connected and water closed the route.
         priority = "CRITICAL"
         reasoning = (
             f"The requesting locality. It is UNREACHABLE at this intensity: "
             f"{_as_sentence(facts['reason'])} Evacuation cannot proceed along the "
             f"mapped road network from here, so movement must be planned "
-            f"off-network — this is the highest-priority locality in the "
-            f"district at this intensity."
+            f"off-network."
         )
 
     if not facts["in_allocation"]:

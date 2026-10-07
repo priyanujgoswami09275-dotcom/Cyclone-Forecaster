@@ -624,12 +624,16 @@ class TestOriginAlwaysPresent:
         self._omit_origin("Sagar")
         body = client.post("/advisory?category=6&origin=sagar").json()
         entry = body["advisory"]["evacuation_plan"][0]
-        assert entry["priority_level"] == "CRITICAL", "unreachable is the top priority"
+        # Sagar's cause is road_data, not flood: its assigned shelter sits on a
+        # component the committed extract does not join to the island, so the
+        # entry must be HIGH and name the gap — CRITICAL is reserved for a
+        # flood-cut route (see tests/test_origin_cause.py).
+        assert entry["priority_level"] == "HIGH", "a data gap is not a flood warning"
         # The reasoning must match what the router actually said, not the model's
         # own account of the situation.
         assert body["generated_for"]["origin_reachable"] is False
-        assert "UNREACHABLE" in entry["reasoning"]
-        assert "not flooding" in entry["reasoning"] or "road-data" in entry["reasoning"]
+        assert "data gap, not a flood finding" in entry["reasoning"]
+        assert "does not connect" in entry["reasoning"]
 
     def test_no_population_figure_is_invented_for_the_origin(self, client):
         """A locality with no population estimate must not be given one.
@@ -659,9 +663,9 @@ class TestOriginAlwaysPresent:
 
     def test_a_reachable_origin_is_added_as_high_not_critical(self, client):
         """Anantapur has no allocation row at any intensity, so the code-built
-        entry is what puts it in the plan. Unreachable is the only condition
-        that earns CRITICAL — checked against a *reachable* origin, at a
-        category where it is still routable."""
+        entry is what puts it in the plan. Reachable never earns CRITICAL —
+        and since the cause rework, neither does a road-data gap; only a
+        flood-cut route does (tests/test_origin_cause.py pins that side)."""
         # Category 3 is the anchor band and floods nothing on this grid, so
         # Anantapur is reachable there and the HIGH/CRITICAL distinction is the
         # only thing under test. At category 6 the whole delta is cut off and
@@ -1096,22 +1100,25 @@ class TestReasoningPunctuation:
 
     def test_the_built_reasoning_reads_as_two_sentences(self, client, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
-        # Sagar is in the allocation at category 6, so the plan built from the
-        # allocation's own names mentions it and the code-built entry — the one
-        # that splices the /routes reason in — is never reached. Omit it.
+        # Anantapur, not Sagar: the punctuation under test lives in the
+        # flood-branch splice ("...at this intensity: {reason} Evacuation..."),
+        # and Anantapur's cause at category 6 is flood while Sagar's is a
+        # road-data gap (which gets its own wording). Anantapur has no
+        # allocation row, so the code-built entry — the one that splices the
+        # /routes reason in — is the one the response leads with.
         monkeypatch.setattr(
             main,
             "generate_advisory",
             lambda surge, exposure, allocation, context="", corrections="", cyclone=None: (
                 a_valid_advisory(
-                    [r["node"] for r in allocation["allocation"]], omit="Sagar"
+                    [r["node"] for r in allocation["allocation"]], omit="Anantapur"
                 )
             ),
         )
-        body = client.post("/advisory?category=6&origin=sagar").json()
+        body = client.post("/advisory?category=6&origin=anantapur").json()
         entry = body["advisory"]["evacuation_plan"][0]
         reason = body["generated_for"]["origin_reason"]
-        assert entry["locality_name"] == "Sagar", "must be the code-built entry"
+        assert entry["locality_name"] == "Anantapur", "must be the code-built entry"
         assert f"intensity: {reason}." in entry["reasoning"]
         # The specific run-on from the third live run.
         assert "not flooding Evacuation" not in entry["reasoning"]
