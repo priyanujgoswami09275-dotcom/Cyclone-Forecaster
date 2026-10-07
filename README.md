@@ -200,10 +200,15 @@ re-scopes `/exposure`, `/routes` and `/allocation` with `cyclone_id` and
 scenario (`cat4`/`cat5`/`cat6`) the exposure counts are **identical across
 cyclones** — the surge comes from the band's wind, not from the storm, and the
 flood model runs over the same delta terrain. What changes is the **track**.
-Only the `observed` scenario is storm-specific, and it exists only for cyclones
-whose track is committed locally: `/scenarios?cyclone_id=…` lists `observed` for
-Remal alone. Requesting it for any of the other 609 is
-`400 unknown scenario 'observed'. Available: cat0 … cat6`.
+Only the `observed` scenario is storm-specific, and **every catalogue storm with a
+reported peak wind has one** — `scenarios_for()` returns `(observed,) + bands`
+for any storm whose wind the source published. Measured 2026-10-08: **300 of 610**
+storms offer `observed`, Remal and 1996288N09092 (120.4 kmph) among them. The
+other **310 have no reported peak wind**; for those `/scenarios` lists the bands
+alone and `scenario_id=observed` is
+`400 unknown scenario 'observed'. Available: cat0 … cat6`. That 400 is the
+no-wind case, not "any storm except Remal". Call `/scenarios?cyclone_id=…`
+rather than assuming — `pickSecondScenario` does.
 
 ### The live provider
 
@@ -307,11 +312,13 @@ These are on screen, not buried here.
   only Eastern Pacific storms. No live North Indian Ocean cyclone has ever been
   observed by this app. It says so, shows no storm, and never borrows Remal to
   fill the gap.
-- **The native app has never run on a physical device.** It is verified by
-  `tsc`, `node --test` (328) and `pytest` (618 passed, 3 skipped). Rendering on
-  a handset is unverified — including the cyclone picker, the comparison sheet
-  and the risk-analyst panel added for the dynamic system, which are
-  type-checked and unit-tested but only ever *seen* in a browser.
+- **The native app has been run on a physical device, and reached the error
+  screen.** It is verified by `tsc`, `node --test` (372) and `pytest` (674
+  passed, 3 skipped). On-device it got as far as the error screen, so the
+  bundle loads and React Native boots — but a full journey through the map,
+  the cyclone picker, the comparison sheet and the risk-analyst panel has **not**
+  been recorded on hardware. Those remain type-checked and unit-tested, and seen
+  only in a browser.
   **The Web build is verified in a real browser** against the local backend:
   22 checks covering the picker, track redraw on a storm switch, the H1
   following the selection, the comparison sheet and its method footer, the
@@ -381,8 +388,8 @@ Two things that will bite:
 ### Tests
 
 ```bash
-venv/bin/python -m pytest -q                   # 618 passed, 3 skipped
-cd mobile && node --test 'tests/*.test.mjs'    # 328 pass, 0 fail
+venv/bin/python -m pytest -q                   # 674 passed, 3 skipped
+cd mobile && node --test 'tests/*.test.mjs'    # 372 pass, 0 fail
 cd mobile && npx tsc --noEmit                  # clean
 ```
 

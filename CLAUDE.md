@@ -265,11 +265,16 @@ to the same bbox, 30m scale, exported via `getDownloadURL`.
   storm's data, which is why `mobile/tests/apiCyclones.test.mjs` asserts the
   URLs. Do not add a `cyclone_id` parameter to `/track` instead — that changes
   the case-study contract that the fixtures depend on.
-- **The `observed` scenario exists only for cyclones whose track is committed
-  locally — today that is Remal alone.** `/scenarios?cyclone_id=…` is the
-  authority; requesting `scenario_id=observed` for one of the other 609 is
-  `400 unknown scenario 'observed'. Available: cat0 … cat6`. Never assume the
-  scenario list — `pickSecondScenario` consults the catalogue first.
+- **The `observed` scenario exists for any catalogue storm that has a reported
+  peak wind — Remal is not special here.** `scenarios_for()` returns
+  `(observed,) + bands` whenever the source published a wind. Measured
+  2026-10-08: **300 of 610** storms offer `observed`, including 1996288N09092 at
+  120.4 kmph. The remaining **310 have no reported peak wind**, and for those
+  `/scenarios` lists the bands alone, so `scenario_id=observed` is
+  `400 unknown scenario 'observed'. Available: cat0 … cat6`. The old version of
+  this note ("Remal alone, the other 609 reject it") was simply wrong and cost
+  the dynamic-cyclone work a storm. `/scenarios?cyclone_id=…` is the authority;
+  `pickSecondScenario` consults the catalogue first, never the assumption.
 - **At a band scenario, exposure counts are identical across cyclones.** The
   surge comes from the band's wind and the flood runs over the same delta
   terrain, so switching storms changes the *track*, not the counts. Only the
