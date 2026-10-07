@@ -1012,7 +1012,12 @@ def list_cyclones() -> dict:
 
     return {
         "source": registry().describe(),
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        # UTC, like every other stamp in the service. `datetime.now()` returned
+        # naive local time here, so this field was the only one whose offset was
+        # machine-dependent — `/live-cyclone` reports `Z`, `/advisory` reports
+        # `+00:00`, and a client comparing this against either had to guess the
+        # server's timezone.
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "count": len(cyclones),
         "default_cyclone_id": default_id,
         "limitation": CATALOGUE_LIMITATION,
