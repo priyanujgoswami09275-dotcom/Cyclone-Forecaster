@@ -535,6 +535,7 @@ def _category_header(
 
 @app.get("/")
 def root() -> dict:
+    """The service index: what this is, and every route it serves."""
     return {
         "service": "cyclone-impact-forecaster",
         "case_study": "Cyclone Remal, May 2024 (Sagar Island / Khepupara landfall)",
@@ -594,9 +595,6 @@ def categories(
         str | None, Query(description="`cat0`-`cat6`, or `observed`.")
     ] = None,
 ) -> dict:
-    # This endpoint reports every band, so it has no single category to honour;
-    # the scenario here only names what the *default* view is.
-    ctx = _context(None, cyclone_id, scenario_id)
     """The seven IMD bands the slider steps through, plus the case study.
 
     `presets` is the important addition. The seven bands are a classification
@@ -606,6 +604,9 @@ def categories(
     a client that can only step through categories 0-6 has no way to show the
     actual case study. The preset gives it one, by name and by id.
     """
+    # This endpoint reports every band, so it has no single category to honour;
+    # the scenario here only names what the *default* view is.
+    ctx = _context(None, cyclone_id, scenario_id)
     return {
         # Provenance like every other response. `/categories` is a classification
         # scheme rather than one scenario's result, so it has no surge figure of
@@ -1291,8 +1292,8 @@ def surge_zone(
         str | None, Query(description="`cat0`-`cat6`, or `observed`. Wins over `category`.")
     ] = None,
 ) -> dict:
-    ctx = _context(category, cyclone_id, scenario_id)
     """Flood polygon at a category's representative intensity."""
+    ctx = _context(category, cyclone_id, scenario_id)
     result = flood_for_scenario(ctx)
     payload = result.to_feature_collection()
     return {
@@ -1340,8 +1341,8 @@ def exposure(
         str | None, Query(description="`cat0`-`cat6`, or `observed`. Wins over `category`.")
     ] = None,
 ) -> dict:
-    ctx = _context(category, cyclone_id, scenario_id)
     """Which hospitals, substations and roads the flood reaches."""
+    ctx = _context(category, cyclone_id, scenario_id)
     flood = flood_for_scenario(ctx)
     result = compute_exposure(flood.frames[-1].geometry)
     payload = result.to_dict()
@@ -1383,12 +1384,12 @@ def routes(
         str | None, Query(description="`cat0`-`cat6`, or `observed`. Wins over `category`.")
     ] = None,
 ) -> dict:
-    ctx = _context(category, cyclone_id, scenario_id)
     """A flood-free route from a locality to its assigned shelter.
 
     Unreachable is a real answer here — a high surge severs the delta — so it
     returns 200 with `reachable: false` and a reason, not a 404.
     """
+    ctx = _context(category, cyclone_id, scenario_id)
     locality = get_locality(origin)
     if locality is None:
         raise HTTPException(
@@ -1447,8 +1448,8 @@ def allocation(
         str | None, Query(description="`cat0`-`cat6`, or `observed`. Wins over `category`.")
     ] = None,
 ) -> dict:
-    ctx = _context(category, cyclone_id, scenario_id)
     """Capacity-aware shelter assignment per locality (transportation LP)."""
+    ctx = _context(category, cyclone_id, scenario_id)
     flood = flood_for_scenario(ctx)
     populations = populations_for_scenario(ctx)
     # Same cached result /routes reads, so the two endpoints cannot drift
@@ -1764,10 +1765,10 @@ def advisory(
         str | None, Query(description="`cat0`-`cat6`, or `observed`. Wins over `category`.")
     ] = None,
 ) -> dict:
-    ctx = _context(category, cyclone_id, scenario_id)
     """Synthesise a district advisory from the simulation outputs (Module D).
 
-    The only endpoint in this service that reaches the network, and only ever
+    One of three endpoints that reach the network — with `/risk-analyst` and
+    `/live-cyclone` — and the only one that calls a *model*, and only ever
     because a human pressed the "Generate Advisory" button (Rules.md: never
     call Gemini on slider `onChange`). Everything it sends to Gemini is the
     same payload the GET endpoints return, so the numbers in the prose are the
@@ -1780,6 +1781,7 @@ def advisory(
     pass is 502 with the violations listed. A 200 always means the advisory
     passed every honesty check.
     """
+    ctx = _context(category, cyclone_id, scenario_id)
     # Request validity is settled before server configuration, so a client with
     # a bad origin id hears about that even on an unconfigured server — the two
     # problems are independent and reporting only the second hides the first.
