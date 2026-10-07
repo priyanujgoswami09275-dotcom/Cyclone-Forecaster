@@ -675,8 +675,15 @@ def list_overlays() -> dict:
     A display index, not a computation. Each entry is a transparent PNG
     rendered offline by `backend/tools/render_overlays.py` from the flood
     engine's final mask, downsampled to ~1000 px and quantised into four
-    depth classes. `image_url` is absolute because a mobile client cannot
-    resolve a server-relative path into something `<Overlay>` will load.
+    depth classes.
+
+    `image_url` is **server-relative** — `/overlays/flood_cat6.png` — and the
+    client prepends the API base. `mobile/api.ts:overlayImageUrl` does this for
+    the native build and `WebImpactMap.tsx` does the same concatenation, because
+    a bare relative path resolves against the Metro bundler's own origin and
+    404s. This docstring previously claimed the field was absolute; it was not,
+    and a client written to that description would double-prefix the base URL
+    into `https://api.example.com/https://api.example.com/overlays/…`.
 
     **Read the disclosure before using these for anything but drawing.** The
     raster is a picture of the modelled extent, not a queryable geometry
