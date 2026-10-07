@@ -434,9 +434,29 @@ def surge_for_scenario(ctx: ScenarioContext):
 
 
 @lru_cache(maxsize=64)
+def flood_for_wind(wind_kmph: float) -> FloodResult:
+    """Flood extent for one resolved wind. ~16 s of raster work.
+
+    Keyed on the **exact wind**, not on `(cyclone_id, scenario_id)` and
+    certainly not on the category. Every input to `run_flood_model` is the
+    wind, so two storms at the same strength are the same computation — and
+    re-running a 16 s raster per storm was the price of pretending otherwise.
+    Provenance is not lost by this: the `(cyclone_id, scenario_id)` pair stays
+    at every call site and in `_provenance(ctx)`, so each response still names
+    the storm it is for. What must never share is the *identity*, not the
+    value.
+    """
+    return run_flood_model(wind_kmph)
+
+
 def flood_for_scenario(ctx: ScenarioContext) -> FloodResult:
-    """Flood extent for one (cyclone, scenario) pair. ~6 s of raster work."""
-    return run_flood_model(ctx.wind_kmph(registry().get(ctx.cyclone_id)))
+    """Flood extent for one (cyclone, scenario) pair.
+
+    The provenance-preserving front door: resolves the wind from the context
+    and delegates to the wind-keyed cache. Kept as a separate function so no
+    call site can reach the cache without a context in hand.
+    """
+    return flood_for_wind(ctx.wind_kmph(registry().get(ctx.cyclone_id)))
 
 
 def _flood_shape(result: FloodResult):
@@ -2184,8 +2204,11 @@ def _ml_figure_disclosure(peak: StormPeakEstimate) -> str:
 
 
 @lru_cache(maxsize=64)
-def populations_for_scenario(ctx: ScenarioContext) -> tuple[DemandNode, ...]:
-    """Evacuation demand per locality at this category's flood extent.
+def populations_for_wind(wind_kmph: float) -> tuple[DemandNode, ...]:
+    """Evacuation demand per locality at this wind's flood extent.
+
+    Wind-keyed for the same reason as `flood_for_wind`: demand derives from the
+    flood extent and the fixed locality set, and neither mentions a storm.
 
     Each locality is passed only the buildings inside its own search radius
     (see locations.buildings_near) — the density count inside
@@ -2194,7 +2217,7 @@ def populations_for_scenario(ctx: ScenarioContext) -> tuple[DemandNode, ...]:
     """
     from .simulation.population import estimate_populations
 
-    flood = flood_for_scenario(ctx)
+    flood = flood_for_wind(wind_kmph)
     cell_km2 = load_dem().cell_area_km2()
     flood_geom = _flood_shape(flood)
 
@@ -2222,9 +2245,14 @@ def populations_for_scenario(ctx: ScenarioContext) -> tuple[DemandNode, ...]:
     return tuple(nodes)
 
 
+def populations_for_scenario(ctx: ScenarioContext) -> tuple[DemandNode, ...]:
+    """Evacuation demand for one (cyclone, scenario) pair."""
+    return populations_for_wind(ctx.wind_kmph(registry().get(ctx.cyclone_id)))
+
+
 @lru_cache(maxsize=64)
-def shelters_for_scenario(ctx: ScenarioContext) -> tuple[Shelter, ...]:
-    """The shelter set the LP allocates against at this category.
+def shelters_for_wind(wind_kmph: float) -> tuple[Shelter, ...]:
+    """The shelter set the LP allocates against at this wind.
 
     Real shelters when `data/shelters.json` has any (it does not — see
     shelters.py for the provenance), otherwise the demo placeholders with
@@ -2248,11 +2276,11 @@ def shelters_for_scenario(ctx: ScenarioContext) -> tuple[Shelter, ...]:
     if real:
         return tuple(real)
 
-    nodes = populations_for_scenario(ctx)
+    nodes = populations_for_wind(wind_kmph)
     total_demand = sum(node.population for node in nodes)
     base = demo_shelters()
     if total_demand <= 0:
-        # No exposed population at this category; keep the base figures rather
+        # No exposed population at this wind; keep the base figures rather
         # than scaling a zero.
         return tuple(base)
 
@@ -2279,17 +2307,26 @@ def shelters_for_scenario(ctx: ScenarioContext) -> tuple[Shelter, ...]:
     return tuple(scaled)
 
 
-@lru_cache(maxsize=64)
-def allocation_for_scenario(ctx: ScenarioContext) -> dict:
-    """Shelter assignment for one (cyclone, scenario) pair.
+def shelters_for_scenario(ctx: ScenarioContext) -> tuple[Shelter, ...]:
+    """The shelter set the LP allocates against, for one (cyclone, scenario)."""
+    return shelters_for_wind(ctx.wind_kmph(registry().get(ctx.cyclone_id)))
 
-    Keyed on the pair for the same reason the flood is: the populations and the
-    shelter capacities both come from the flood extent, so a category-keyed entry
-    is only ever correct for the storm that produced it.
+
+@lru_cache(maxsize=64)
+def allocation_for_wind(wind_kmph: float) -> dict:
+    """Shelter assignment for one resolved wind.
+
+    Wind-keyed for the same reason as the flood: populations and capacities
+    both descend from the wind with no storm in the chain.
     """
     return allocate_shelters(
-        populations_for_scenario(ctx), list(shelters_for_scenario(ctx))
+        populations_for_wind(wind_kmph), list(shelters_for_wind(wind_kmph))
     )
+
+
+def allocation_for_scenario(ctx: ScenarioContext) -> dict:
+    """Shelter assignment for one (cyclone, scenario) pair."""
+    return allocation_for_wind(ctx.wind_kmph(registry().get(ctx.cyclone_id)))
 
 
 def _origin_facts(ctx: ScenarioContext, locality: Locality) -> dict:
