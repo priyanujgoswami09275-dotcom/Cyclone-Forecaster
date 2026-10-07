@@ -1230,6 +1230,23 @@ def compare_cyclones(
     else:
         ids = [DEFAULT_CYCLONE_ID]
 
+    if len(ids) > 2:
+        # Refused rather than silently truncated to the first two. A caller
+        # asking about five storms and receiving figures for two, with a note
+        # explaining that the other three were dropped, has been given an answer
+        # to a question they did not ask — and the three are only discoverable
+        # by reading the note. Before the wind-keyed caches this endpoint was
+        # also the most expensive one in the service (a flood per storm); it is
+        # cheaper now, but a delta is still only defined between two figures.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"/comparison accepts at most 2 cyclone_ids, got {len(ids)}. "
+                "A delta between three storms is not a number; compare two. "
+                f"Call /comparison for a pair, e.g. ?cyclone_ids={ids[0]},{ids[1]}."
+            ),
+        )
+
     unknown = [cyclone_id for cyclone_id in ids if registry().get(cyclone_id) is None]
     if unknown:
         raise HTTPException(
@@ -1258,15 +1275,10 @@ def compare_cyclones(
             "roads_cut_off",
         ):
             deltas[f"{field}_delta"] = round(left[field] - right[field], 4)
-    elif len(entries) == 1:
+    else:
         deltas["note"] = (
             "One cyclone, so there is nothing to compare it against. Add a second "
             "cyclone_id to get deltas."
-        )
-    else:
-        deltas["note"] = (
-            f"{len(entries)} cyclones. Deltas are reported for exactly two, because "
-            "a delta between three storms is not a number."
         )
 
     return {
