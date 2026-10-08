@@ -76,18 +76,7 @@ import {
 } from '../mapProjection';
 import { theme } from '../theme';
 import { LEGEND_ROWS, type SwatchSource } from '../legend';
-import { isCompactViewport, mapPanelHeightPx } from '../webViewModel';
-
-/**
- * Height reserved at the bottom of the map for the disclosure strip.
- *
- * The strip is `position: absolute; bottom: 0` across the full width, and the
- * legend was independently `bottom: 12` — so the legend's last rows rendered
- * *behind* the strip and "Storm path" was cut off. Positioning the legend
- * above this value fixes it, and naming the value here means the two cannot
- * be changed in one place only.
- */
-const DISCLOSURE_STRIP_HEIGHT = 44;
+import { isCompactViewport, mapPanelHeightPx, overlayClearancePx } from '../webViewModel';
 
 /** The SVG user units the map draws in. Scaled by CSS to its container. */
 /**
@@ -203,6 +192,18 @@ export function WebImpactMap({
   const onPanelLayout = useCallback((event: LayoutChangeEvent) => {
     const { width } = event.nativeEvent.layout;
     setPanelWidth((current) => (current === width ? current : width));
+  }, []);
+  /**
+   * The disclosure strip's measured height. The strip is body text over the
+   * full panel width, so it wraps — 84 px at a 360 px viewport against the
+   * 44 px the layout once hard-coded — and the legend and the S/T/L buttons
+   * must clear the *real* height or their last rows render behind the
+   * strip's 90%-opaque background. See `overlayClearancePx`.
+   */
+  const [stripHeightPx, setStripHeightPx] = useState<number | null>(null);
+  const onStripLayout = useCallback((event: LayoutChangeEvent) => {
+    const { height } = event.nativeEvent.layout;
+    setStripHeightPx((current) => (current === height ? current : height));
   }, []);
 
   const bounds = view.kind === 'track' ? view.bounds : openingBounds();
@@ -556,7 +557,7 @@ export function WebImpactMap({
       </svg>
 
       {/* --- controls, bottom-right, mirroring MapControl ---------------- */}
-      <View style={styles.controls}>
+      <View style={[styles.controls, { bottom: overlayClearancePx(stripHeightPx) }]}>
         <MapButton
           Icon={TargetIcon}
           active={view.kind === 'region'}
@@ -605,7 +606,7 @@ export function WebImpactMap({
       </View>
 
       {showLegend ? (
-        <View style={styles.legend}>
+        <View style={[styles.legend, { bottom: overlayClearancePx(stripHeightPx) }]}>
           <Text style={styles.legendTitle}>Legend</Text>
           {LEGEND_ROWS.map((row) => (
             <View key={row.id} style={styles.legendRow}>
@@ -641,7 +642,7 @@ export function WebImpactMap({
         place a reader could be misled about the geography — the numbers in
         the panel do not come from here.
       */}
-      <View style={styles.disclosure} pointerEvents="none">
+      <View style={styles.disclosure} pointerEvents="none" onLayout={onStripLayout}>
         <Text style={styles.disclosureText}>{BASEMAP_DISCLOSURE}</Text>
       </View>
     </View>
@@ -828,8 +829,8 @@ const styles = StyleSheet.create({
   controls: {
     position: 'absolute',
     right: 14,
-    // Also above the strip, for the same reason as the legend.
-    bottom: DISCLOSURE_STRIP_HEIGHT + 8,
+    // `bottom` is set at the call site from `overlayClearancePx` — above the
+    // strip's *measured* height, which wraps taller than 44 px on phones.
     gap: 8,
   },
   mapButton: {
@@ -889,8 +890,9 @@ const styles = StyleSheet.create({
   legend: {
     position: 'absolute',
     left: 12,
-    // Above the disclosure strip. See DISCLOSURE_STRIP_HEIGHT.
-    bottom: DISCLOSURE_STRIP_HEIGHT + 8,
+    // `bottom` is set at the call site from `overlayClearancePx` — above the
+    // strip's *measured* height, which wraps to 84 px at a 360 px viewport
+    // where the old hard-coded 44 put "Storm path" and "Your origin" behind it.
     backgroundColor: theme.colors.card,
     borderWidth: 1,
     borderColor: theme.colors.border,

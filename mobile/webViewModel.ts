@@ -604,9 +604,6 @@ export const COMPACT_MAP_MIN_HEIGHT_PX = 320;
 /** The stacked map is at most this fraction of the viewport. Brief: `~55vh`. */
 export const COMPACT_MAP_VIEWPORT_FRACTION = 0.55;
 
-/** The two-column map's floor, unchanged from the pre-breakpoint behaviour. */
-export const WIDE_MAP_MIN_HEIGHT_PX = 460;
-
 /**
  * Which layout the viewport gets: single column below the breakpoint, two
  * columns at and above it.
@@ -636,8 +633,14 @@ export function isCompactViewport(viewportWidthPx: number): boolean {
  * the bbox one level down. The clamps keep the panel useful when the aspect
  * and the viewport disagree:
  *
- * - **floor** 320 px compact / 460 px wide — a very wide frame in a narrow
- *   panel must not collapse the map to a ribbon;
+ * - **floor** 320 px in both layouts — a very wide frame in a narrow panel
+ *   must not collapse the map to a ribbon. The wide layout once kept a
+ *   separate 460 px floor inherited from the fixed-height panel; it only
+ *   ever bound between 860 and ~990 px, where the map column is too narrow
+ *   for a 460 px panel to be filled by a ~1.16-aspect drawing — measured at
+ *   860x800: a 446 px panel, a 383 px drawing, 77 px of dead panel — so it
+ *   is gone and the wide layout is aspect-fit all the way down to the same
+ *   320 px floor;
  * - **ceiling** `COMPACT_MAP_VIEWPORT_FRACTION` of the viewport height in the
  *   stacked layout only — a 720 px-wide phone map is most of the viewport, so
  *   the steps below it start off-screen. The wide layout has no ceiling: the
@@ -654,11 +657,11 @@ export function mapPanelHeightPx(input: {
   frameAspect: number;
   /** The viewport height, from `useWindowDimensions`. */
   viewportHeightPx: number;
-  /** Which layout is active — decides floor and ceiling. */
+  /** Which layout is active — decides the ceiling. */
   compact: boolean;
 }): number {
   const { panelWidthPx, frameAspect, viewportHeightPx, compact } = input;
-  const floor = compact ? COMPACT_MAP_MIN_HEIGHT_PX : WIDE_MAP_MIN_HEIGHT_PX;
+  const floor = COMPACT_MAP_MIN_HEIGHT_PX;
   const ceiling = compact
     ? Math.max(floor, Math.round(viewportHeightPx * COMPACT_MAP_VIEWPORT_FRACTION))
     : Number.POSITIVE_INFINITY;
@@ -669,4 +672,42 @@ export function mapPanelHeightPx(input: {
 
   if (!Number.isFinite(ideal)) return floor;
   return Math.round(Math.min(Math.max(ideal, floor), ceiling));
+}
+
+// --- the map's floating chrome vs the disclosure strip ----------------------
+
+/**
+ * The disclosure strip's height as the layout assumes it **before the first
+ * `onLayout` measurement arrives** — the value the old code hard-coded for
+ * every width.
+ */
+export const DISCLOSURE_STRIP_FALLBACK_PX = 44;
+
+/** The gap kept between the strip's top edge and the floating map chrome. */
+export const MAP_CHROME_GAP_PX = 8;
+
+/**
+ * How far from the panel's bottom the legend and the S/T/L buttons must sit.
+ *
+ * **Why this function exists: the strip's height is not a constant.** The
+ * basemap disclosure is body text at 10 px over the full panel width, so it
+ * wraps — measured in the browser: **84 px at a 360 px viewport**, 70 px at
+ * 390, 56 px at 480/600/860, 42 px from ~700 px up. The layout positioned the
+ * legend and the controls above a hard-coded 44 px, so at every width where
+ * the strip wrapped taller than that, the legend's last rows ("Storm path",
+ * "Your origin") and the map buttons rendered **behind** the strip's
+ * 90%-opaque background.
+ *
+ * The rule is one sentence: clear the *measured* strip by the chrome gap, and
+ * fall back to the old constant only until the first measurement arrives. A
+ * degenerate measurement (NaN, negative, infinite) is treated as unmeasured
+ * rather than as zero — a zero-height strip is a layout bug, not a
+ * strip-less panel.
+ */
+export function overlayClearancePx(stripHeightPx: number | null): number {
+  const measured =
+    stripHeightPx !== null && Number.isFinite(stripHeightPx) && stripHeightPx >= 0
+      ? stripHeightPx
+      : DISCLOSURE_STRIP_FALLBACK_PX;
+  return measured + MAP_CHROME_GAP_PX;
 }

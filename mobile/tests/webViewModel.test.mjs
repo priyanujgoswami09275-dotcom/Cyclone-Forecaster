@@ -40,6 +40,7 @@ import {
   countUnit,
   isCompactViewport,
   mapPanelHeightPx,
+  overlayClearancePx,
   COMPACT_BREAKPOINT_PX,
   personKmLabel,
   populationDisclosure,
@@ -931,8 +932,23 @@ describe('mapPanelHeightPx — the map panel sizes to the drawing, not the rever
     );
   });
 
-  it('keeps the wide layout floor of 460 px, with no cap', () => {
-    // Below the aspect ideal, the two-column map stays at its 460 floor...
+  it('keeps the wide layout aspect-fit: no 460 floor, no cap', () => {
+    // **The 460 px wide floor is gone.** It only ever bound between 860 and
+    // ~990 px, where the map column is too narrow for a 460 px panel to be
+    // filled by a 1.164-aspect drawing. Measured in the browser at 860x800:
+    // a 446 px-wide panel, a 383 px drawing, and 77 px of dead panel the
+    // drawing could not reach. The floor that remains is the 320 px
+    // legibility floor both layouts share.
+    assert.equal(
+      mapPanelHeightPx({
+        panelWidthPx: 446,
+        frameAspect: 1.164,
+        viewportHeightPx: 800,
+        compact: false,
+      }),
+      383,
+    );
+    // Below the floor the wide map still refuses to collapse to a ribbon...
     assert.equal(
       mapPanelHeightPx({
         panelWidthPx: 500,
@@ -940,7 +956,7 @@ describe('mapPanelHeightPx — the map panel sizes to the drawing, not the rever
         viewportHeightPx: 800,
         compact: false,
       }),
-      460,
+      320,
     );
     // ...and above it there is no viewport cap — the page scrolls, and the
     // basemap fills the panel instead of letterboxing beside it.
@@ -981,5 +997,33 @@ describe('mapPanelHeightPx — the map panel sizes to the drawing, not the rever
       }),
       320,
     );
+  });
+});
+
+describe('overlayClearancePx — floating map chrome clears the real strip', () => {
+  it('falls back to the 44 px constant before the first measurement', () => {
+    // 44 + the 8 px gap. The constant is the pre-measurement assumption the
+    // old layout hard-coded for every width.
+    assert.equal(overlayClearancePx(null), 52);
+  });
+
+  it('rises with a taller wrapped strip', () => {
+    // Measured in the browser: the basemap disclosure wraps to 84 px at a
+    // 360 px viewport and 56 px at 480/600/860 — taller than the 44 px the
+    // layout assumed, which is what put the legend's last rows and the
+    // S/T/L buttons behind the semi-opaque strip.
+    assert.equal(overlayClearancePx(84), 92);
+    assert.equal(overlayClearancePx(56), 64);
+    assert.equal(overlayClearancePx(42), 50);
+  });
+
+  it('treats a degenerate measurement as unmeasured', () => {
+    for (const bad of [Number.NaN, -3, Number.POSITIVE_INFINITY]) {
+      assert.equal(overlayClearancePx(bad), 52, `strip height ${bad}`);
+    }
+  });
+
+  it('still leaves the gap on a zero-height strip', () => {
+    assert.equal(overlayClearancePx(0), 8);
   });
 });
