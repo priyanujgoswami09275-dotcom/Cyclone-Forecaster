@@ -229,7 +229,8 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.selectedText,
     borderRadius: theme.radius.button,
     paddingHorizontal: 14,
-    paddingVertical: 11,
+    // 13 + 13 + the 16 px line height ≈ 44 px — the touch-target floor.
+    paddingVertical: 13,
     fontFamily: theme.fonts.body,
     fontSize: theme.typography.body,
     color: theme.colors.text,
@@ -261,7 +262,9 @@ const styles = StyleSheet.create({
   },
   option: {
     paddingHorizontal: 9,
-    paddingVertical: 8,
+    // 13 + 13 + the ~18 px label ≈ 44 px — the touch-target floor; the old
+    // 8 px padding made each of the 45 locality rows a ~34 px target.
+    paddingVertical: 13,
     borderRadius: 8,
   },
   optionSelected: {

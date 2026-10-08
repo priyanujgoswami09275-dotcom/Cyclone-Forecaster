@@ -39,8 +39,17 @@
  * backend returned. Where a layer has no features it is simply absent.
  */
 
-import React, { useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+  type LayoutChangeEvent,
+} from 'react-native';
 
 import {
   markerCoordinate,
@@ -67,17 +76,7 @@ import {
 } from '../mapProjection';
 import { theme } from '../theme';
 import { LEGEND_ROWS, type SwatchSource } from '../legend';
-
-/**
- * Height reserved at the bottom of the map for the disclosure strip.
- *
- * The strip is `position: absolute; bottom: 0` across the full width, and the
- * legend was independently `bottom: 12` — so the legend's last rows rendered
- * *behind* the strip and "Storm path" was cut off. Positioning the legend
- * above this value fixes it, and naming the value here means the two cannot
- * be changed in one place only.
- */
-const DISCLOSURE_STRIP_HEIGHT = 44;
+import { isCompactViewport, mapPanelBox, overlayClearancePx } from '../webViewModel';
 
 /** The SVG user units the map draws in. Scaled by CSS to its container. */
 /**
@@ -181,12 +180,64 @@ export function WebImpactMap({
   const [showLegend, setShowLegend] = useState(true);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
+  /**
+   * The panel's own width, measured rather than assumed. In the two-column
+   * layout this view gets a flex share of the workspace, so no constant can
+   * know it; `onLayout` reports the border-box width, and the drawing sits
+   * inside a 1 px border, so 2 px come off before the aspect is matched.
+   */
+  const [panelWidth, setPanelWidth] = useState<number | null>(null);
+  const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
+  const compact = isCompactViewport(viewportWidth);
+  const onPanelLayout = useCallback((event: LayoutChangeEvent) => {
+    const { width } = event.nativeEvent.layout;
+    setPanelWidth((current) => (current === width ? current : width));
+  }, []);
+  /**
+   * The disclosure strip's measured height. The strip is body text over the
+   * full panel width, so it wraps — 84 px at a 360 px viewport against the
+   * 44 px the layout once hard-coded — and the legend and the S/T/L buttons
+   * must clear the *real* height or their last rows render behind the
+   * strip's 90%-opaque background. See `overlayClearancePx`.
+   */
+  const [stripHeightPx, setStripHeightPx] = useState<number | null>(null);
+  const onStripLayout = useCallback((event: LayoutChangeEvent) => {
+    const { height } = event.nativeEvent.layout;
+    setStripHeightPx((current) => (current === height ? current : height));
+  }, []);
+
   const bounds = view.kind === 'track' ? view.bounds : openingBounds();
   /**
    * The frame, shaped to the data. See `VIEW_W` above for why the height is
    * derived rather than fixed.
    */
   const frame = useMemo(() => viewBoxFor(bounds, VIEW_W), [bounds]);
+  /**
+   * The panel's box, matched to that frame by the pure `mapPanelBox`
+   * — **the fix for the black strip**. The `<svg>` fills the panel with
+   * `preserveAspectRatio="xMidYMid meet"`, and `meet` letterboxes whenever
+   * the panel's aspect differs from the frame's; the letterbox shows this
+   * panel's near-black background. That is the strip in the deployed
+   * screenshots — not a basemap that failed to fill its container — and it
+   * appeared at every width because the panel's height was fixed (460 px)
+   * while its width floated. The box is now the drawing's own size:
+   * `mapPanelBox` narrows it to the frame aspect wherever the 55vh cap
+   * binds (700/768/859 drew 37/31/148 px of dead panel each side) and the
+   * style below centres it in the column. Null only before the first
+   * `onLayout`, where the base style still applies.
+   */
+  const panelBox = useMemo(
+    () =>
+      panelWidth === null
+        ? null
+        : mapPanelBox({
+            panelWidthPx: Math.max(0, panelWidth - 2),
+            frameAspect: frame.width / frame.height,
+            viewportHeightPx: viewportHeight,
+            compact,
+          }),
+    [panelWidth, frame, viewportHeight, compact],
+  );
   const projection = useMemo(
     () => makeProjection(bounds, frame.width, frame.height),
     [bounds, frame],
@@ -309,7 +360,23 @@ export function WebImpactMap({
   const onPressRecentre = () => setView({ kind: 'region' });
 
   return (
-    <View style={styles.wrap}>
+    <View
+      style={[
+        styles.wrap,
+        // `+ 2` is the panel's own 1 px border, so the drawing's content box
+        // is exactly aspect-matched and `meet` has nothing to letterbox.
+        // Where the 55vh cap narrows the box, `alignSelf: 'center'` centres
+        // it in the column instead of leaving dead panel each side.
+        panelBox !== null && {
+          width: panelBox.widthPx + 2,
+          height: panelBox.heightPx + 2,
+          minHeight: panelBox.heightPx + 2,
+          flex: 0,
+          alignSelf: 'center',
+        },
+      ]}
+      onLayout={onPanelLayout}
+    >
       {/*
         The SVG. `viewBox` is the user-unit space every coordinate above was
         projected into, and its shape is derived from the bbox so the drawing
@@ -496,7 +563,7 @@ export function WebImpactMap({
       </svg>
 
       {/* --- controls, bottom-right, mirroring MapControl ---------------- */}
-      <View style={styles.controls}>
+      <View style={[styles.controls, { bottom: overlayClearancePx(stripHeightPx) }]}>
         <MapButton
           Icon={TargetIcon}
           active={view.kind === 'region'}
@@ -545,7 +612,7 @@ export function WebImpactMap({
       </View>
 
       {showLegend ? (
-        <View style={styles.legend}>
+        <View style={[styles.legend, { bottom: overlayClearancePx(stripHeightPx) }]}>
           <Text style={styles.legendTitle}>Legend</Text>
           {LEGEND_ROWS.map((row) => (
             <View key={row.id} style={styles.legendRow}>
@@ -581,7 +648,7 @@ export function WebImpactMap({
         place a reader could be misled about the geography — the numbers in
         the panel do not come from here.
       */}
-      <View style={styles.disclosure} pointerEvents="none">
+      <View style={styles.disclosure} pointerEvents="none" onLayout={onStripLayout}>
         <Text style={styles.disclosureText}>{BASEMAP_DISCLOSURE}</Text>
       </View>
     </View>
@@ -768,13 +835,15 @@ const styles = StyleSheet.create({
   controls: {
     position: 'absolute',
     right: 14,
-    // Also above the strip, for the same reason as the legend.
-    bottom: DISCLOSURE_STRIP_HEIGHT + 8,
+    // `bottom` is set at the call site from `overlayClearancePx` — above the
+    // strip's *measured* height, which wraps taller than 44 px on phones.
     gap: 8,
   },
   mapButton: {
-    width: 40,
-    height: 40,
+    // 44 px: the touch-target floor. 40 px was under it on a phone, where
+    // these are the only zoom controls the Web map has.
+    width: 44,
+    height: 44,
     borderRadius: theme.radius.button,
     backgroundColor: theme.colors.white,
     borderWidth: 1,
@@ -827,8 +896,9 @@ const styles = StyleSheet.create({
   legend: {
     position: 'absolute',
     left: 12,
-    // Above the disclosure strip. See DISCLOSURE_STRIP_HEIGHT.
-    bottom: DISCLOSURE_STRIP_HEIGHT + 8,
+    // `bottom` is set at the call site from `overlayClearancePx` — above the
+    // strip's *measured* height, which wraps to 84 px at a 360 px viewport
+    // where the old hard-coded 44 put "Storm path" and "Your origin" behind it.
     backgroundColor: theme.colors.card,
     borderWidth: 1,
     borderColor: theme.colors.border,

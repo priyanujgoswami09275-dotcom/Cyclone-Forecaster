@@ -38,6 +38,10 @@ import {
   caseStudyLine,
   countLabel,
   countUnit,
+  isCompactViewport,
+  mapPanelBox,
+  overlayClearancePx,
+  COMPACT_BREAKPOINT_PX,
   personKmLabel,
   populationDisclosure,
   ROADS_DISCLOSURE,
@@ -846,5 +850,161 @@ describe('waypointLabel', () => {
       wind_reported: true,
     });
     assert.match(wind, /not reported/);
+  });
+});
+
+describe('isCompactViewport — the Web layout breakpoint', () => {
+  it('stacks the screen below the breakpoint and columns at it', () => {
+    // The breakpoint itself belongs to the wide layout: 860 is two columns,
+    // so "below ~860 px" in the brief is [0, 860).
+    assert.equal(isCompactViewport(360), true);
+    assert.equal(isCompactViewport(390), true);
+    assert.equal(isCompactViewport(768), true);
+    assert.equal(isCompactViewport(859), true);
+    assert.equal(isCompactViewport(860), false);
+    assert.equal(isCompactViewport(1024), false);
+    assert.equal(isCompactViewport(1560), false);
+  });
+
+  it('exposes the breakpoint as a named constant, not a magic number', () => {
+    assert.equal(COMPACT_BREAKPOINT_PX, 860);
+    // The three widths the phone-fit work is verified at must all land on the
+    // side of the breakpoint their layout expects.
+    for (const w of [360, 390, 768]) {
+      assert.ok(isCompactViewport(w), `${w} must be single-column`);
+    }
+    assert.ok(!isCompactViewport(861));
+  });
+});
+
+describe('mapPanelBox — the panel box is the drawing, narrowed and centred when a bound applies', () => {
+  it('fits the drawing naturally when no bound applies', () => {
+    // 600x900: 552 px of column, the natural height fits under the cap.
+    const b600 = mapPanelBox({ panelWidthPx: 552, frameAspect: 1.164, viewportHeightPx: 900, compact: true });
+    assert.equal(b600.heightPx, 474);
+    assert.equal(b600.widthPx, 552);
+    // 360x800 and 390x844 with the 260 floor: the natural height is above
+    // the floor, so the box is the drawing — no letterbox bars on phones.
+    const b360 = mapPanelBox({ panelWidthPx: 310, frameAspect: 1.164, viewportHeightPx: 800, compact: true });
+    assert.equal(b360.heightPx, 266);
+    assert.equal(b360.widthPx, 310);
+    const b390 = mapPanelBox({ panelWidthPx: 340, frameAspect: 1.164, viewportHeightPx: 844, compact: true });
+    assert.equal(b390.heightPx, 292);
+    assert.equal(b390.widthPx, 340);
+  });
+
+  it('narrows and centres the box where the 55vh cap applies', () => {
+    // 700x900: the cap (495 px) is the limit, so the box narrows to
+    // 495 x 1.164 = 576 px wide, centred in the 652 px column — instead of a
+    // full-width box letterboxing 37 px of dead panel each side.
+    const b700 = mapPanelBox({ panelWidthPx: 652, frameAspect: 1.164, viewportHeightPx: 900, compact: true });
+    assert.equal(b700.heightPx, 495);
+    assert.equal(b700.widthPx, 576);
+    // 768x1024: cap 563, box 655 wide in a 720 px column (was 31 px bars).
+    const b768 = mapPanelBox({ panelWidthPx: 720, frameAspect: 1.164, viewportHeightPx: 1024, compact: true });
+    assert.equal(b768.heightPx, 563);
+    assert.equal(b768.widthPx, 655);
+    // 859x800 — the breakpoint edge that drew 148 px bars each side.
+    const b859 = mapPanelBox({ panelWidthPx: 811, frameAspect: 1.164, viewportHeightPx: 800, compact: true });
+    assert.equal(b859.heightPx, 440);
+    assert.equal(b859.widthPx, 512);
+    // A square frame narrows to the cap itself.
+    const b1 = mapPanelBox({ panelWidthPx: 720, frameAspect: 1, viewportHeightPx: 1024, compact: true });
+    assert.equal(b1.heightPx, 563);
+    assert.equal(b1.widthPx, 563);
+  });
+
+  it('the box aspect equals the viewBox aspect wherever the floor is not the limit', () => {
+    for (const b of [
+      mapPanelBox({ panelWidthPx: 310, frameAspect: 1.164, viewportHeightPx: 800, compact: true }),
+      mapPanelBox({ panelWidthPx: 652, frameAspect: 1.164, viewportHeightPx: 900, compact: true }),
+      mapPanelBox({ panelWidthPx: 720, frameAspect: 1.164, viewportHeightPx: 1024, compact: true }),
+      mapPanelBox({ panelWidthPx: 811, frameAspect: 1.164, viewportHeightPx: 800, compact: true }),
+      mapPanelBox({ panelWidthPx: 808, frameAspect: 1.164, viewportHeightPx: 900, compact: false }),
+    ]) {
+      assert.ok(Math.abs(b.widthPx / b.heightPx - 1.164) < 0.01, `box ${b.widthPx}x${b.heightPx}`);
+    }
+  });
+
+  it('keeps the 260 px floor, the one case allowed to letterbox', () => {
+    // A 320 px viewport leaves 272 px of column; the natural height is 234
+    // px, below the 260 floor, so the floor binds and the box keeps the
+    // column's width — squeezing the drawing under the floor to avoid bars
+    // would trade a small letterbox for an illegible map.
+    const b = mapPanelBox({ panelWidthPx: 272, frameAspect: 1.164, viewportHeightPx: 667, compact: true });
+    assert.equal(b.heightPx, 260);
+    assert.equal(b.widthPx, 272);
+    // A very wide frame in a narrow panel would ask for 150 px; the floor
+    // keeps the map legible instead of obeying the aspect all the way down.
+    const b2 = mapPanelBox({ panelWidthPx: 300, frameAspect: 2, viewportHeightPx: 844, compact: true });
+    assert.equal(b2.heightPx, 260);
+    assert.equal(b2.widthPx, 300);
+  });
+
+  it('never lets the cap fall below the floor on a short viewport', () => {
+    // 55% of a 400 px viewport is 220 px, under the 260 floor. The floor
+    // wins, or the map collapses to nothing on landscape phones.
+    const b = mapPanelBox({ panelWidthPx: 500, frameAspect: 1, viewportHeightPx: 400, compact: true });
+    assert.equal(b.heightPx, 260);
+    assert.equal(b.widthPx, 260);
+  });
+
+  it('wide layout: aspect-fit with the same floor, no cap', () => {
+    // 860x800 two-column: 446 px of column, natural 383 — no 460 floor, and
+    // the box never widens past the column.
+    const b860 = mapPanelBox({ panelWidthPx: 446, frameAspect: 1.164, viewportHeightPx: 800, compact: false });
+    assert.equal(b860.heightPx, 383);
+    assert.equal(b860.widthPx, 446);
+    // Below the floor the wide map still refuses to collapse to a ribbon...
+    const bw = mapPanelBox({ panelWidthPx: 500, frameAspect: 2, viewportHeightPx: 800, compact: false });
+    assert.equal(bw.heightPx, 260);
+    assert.equal(bw.widthPx, 500);
+    // ...and above it there is no viewport cap — the page scrolls.
+    const b1440 = mapPanelBox({ panelWidthPx: 850, frameAspect: 1.164, viewportHeightPx: 700, compact: false });
+    assert.equal(b1440.heightPx, 730);
+    assert.equal(b1440.widthPx, 850);
+  });
+
+  it('falls back to the floor for degenerate inputs', () => {
+    // A frame with zero, negative or non-finite aspect cannot be matched;
+    // the height falls back to the floor and the box keeps the column's
+    // width rather than NaN px, which the style system would silently drop.
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const b = mapPanelBox({ panelWidthPx: 700, frameAspect: bad, viewportHeightPx: 800, compact: true });
+      assert.equal(b.heightPx, 260, `aspect ${bad}`);
+      assert.equal(b.widthPx, 700, `aspect ${bad}`);
+    }
+    // A panel width that never arrived: the box follows the floor's aspect.
+    const b = mapPanelBox({ panelWidthPx: Number.NaN, frameAspect: 1.164, viewportHeightPx: 800, compact: true });
+    assert.equal(b.heightPx, 260);
+    assert.equal(b.widthPx, 303);
+  });
+});
+
+describe('overlayClearancePx — floating map chrome clears the real strip', () => {
+  it('falls back to the 44 px constant before the first measurement', () => {
+    // 44 + the 8 px gap. The constant is the pre-measurement assumption the
+    // old layout hard-coded for every width.
+    assert.equal(overlayClearancePx(null), 52);
+  });
+
+  it('rises with a taller wrapped strip', () => {
+    // Measured in the browser: the basemap disclosure wraps to 84 px at a
+    // 360 px viewport and 56 px at 480/600/860 — taller than the 44 px the
+    // layout assumed, which is what put the legend's last rows and the
+    // S/T/L buttons behind the semi-opaque strip.
+    assert.equal(overlayClearancePx(84), 92);
+    assert.equal(overlayClearancePx(56), 64);
+    assert.equal(overlayClearancePx(42), 50);
+  });
+
+  it('treats a degenerate measurement as unmeasured', () => {
+    for (const bad of [Number.NaN, -3, Number.POSITIVE_INFINITY]) {
+      assert.equal(overlayClearancePx(bad), 52, `strip height ${bad}`);
+    }
+  });
+
+  it('still leaves the gap on a zero-height strip', () => {
+    assert.equal(overlayClearancePx(0), 8);
   });
 });

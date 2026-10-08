@@ -575,3 +575,167 @@ export function waypointLabel(waypoint: {
       : `${waypoint.wind_kmph.toFixed(0)} km/h reported`;
   return { title, wind };
 }
+
+// --- responsive layout -----------------------------------------------------
+
+/**
+ * The viewport width at which the Web screen switches between its two layouts.
+ *
+ * **Below** it the screen stacks: masthead, then the map, then the four steps,
+ * then "What this is and is not" — one column, so a phone never has to fit a
+ * 340 px-minimum control column beside a map. **At and above** it the map and
+ * the control column sit side by side, as they always have on desktop.
+ *
+ * 860 rather than the control column's 340 plus the map's minimum: the
+ * breakpoint is the width at which the *stacked* layout stops being the better
+ * one, not the width at which the two-column one becomes impossible. The
+ * two-column layout technically survives down to ~600 px, but between there
+ * and 860 the map column is too narrow for a 1.16-aspect drawing to stay
+ * legible while the control column keeps its 340 px — so the stack wins there.
+ *
+ * The value is exported so tests can pin it rather than re-deriving it, and so
+ * `MapScreen.web.tsx` never hardcodes the number twice.
+ */
+export const COMPACT_BREAKPOINT_PX = 860;
+
+/**
+ * The map panel's height floor, in px — the one bound whose letterbox is
+ * accepted. A 320 px floor left 26/13 px bars at 360/390; the box now follows
+ * the drawing's natural aspect down to this floor, so the smallest phones
+ * (a 320 px viewport leaves 272 px of column → 234 px natural) are the only
+ * widths that still letterbox, by 13 px each side, rather than being squeezed
+ * to an illegible ribbon.
+ */
+export const MAP_MIN_HEIGHT_PX = 260;
+
+/** The stacked map is at most this fraction of the viewport. Brief: `~55vh`. */
+export const COMPACT_MAP_VIEWPORT_FRACTION = 0.55;
+
+/**
+ * Which layout the viewport gets: single column below the breakpoint, two
+ * columns at and above it.
+ *
+ * Pure, because the breakpoint is a decision the tests must be able to check
+ * without a renderer — the layout itself is applied in `MapScreen.web.tsx`.
+ */
+export function isCompactViewport(viewportWidthPx: number): boolean {
+  return viewportWidthPx < COMPACT_BREAKPOINT_PX;
+}
+
+/** The map panel's content box: width and height, both in px. */
+export interface MapPanelBox {
+  widthPx: number;
+  heightPx: number;
+}
+
+/**
+ * The map panel's box, matched to the drawing — and **narrowed and centred
+ * where a bound, not the column's width, sets the height**.
+ *
+ * **Why this function exists: the black strip.** The SVG draws a viewBox whose
+ * aspect is the bbox's ground aspect (~1.164 for the study region), and the
+ * `<svg>` element fills its panel with `preserveAspectRatio="xMidYMid meet"`.
+ * `meet` fits the whole drawing inside the panel, so whenever the panel's own
+ * aspect is wider or taller than the frame's, the leftover panel shows the
+ * panel background — near-black `#090909`, reading as an empty strip beside
+ * the pale basemap. That is the defect in the deployed screenshots: not a
+ * basemap that fails to load, but a panel sized independently of the drawing
+ * it contains.
+ *
+ * The bounds, and what each does to the box:
+ *
+ * - **natural fit** — `height = columnWidth / frameAspect`. This is the box
+ *   everywhere the bounds do not bind, and `meet` becomes a no-op: the
+ *   drawing fills the panel exactly, the way `viewBoxFor` already makes the
+ *   frame match the bbox one level down;
+ * - **ceiling** `COMPACT_MAP_VIEWPORT_FRACTION` of the viewport height, in the
+ *   stacked layout only — a 720 px-wide phone map is most of the viewport,
+ *   so the steps below it start off-screen. **Where the ceiling binds, the
+ *   box narrows to `height × frameAspect` and the caller centres it** in the
+ *   column: a full-width box beside a capped height is what drew measured
+ *   37/31/148 px of dead panel each side at 700/768/859. The wide layout has
+ *   no ceiling: the page scrolls, and a taller map is the fix there, not a
+ *   defect;
+ * - **floor** `MAP_MIN_HEIGHT_PX` — the one bound whose letterbox is
+ *   accepted: the box keeps the column's width, because squeezing the
+ *   drawing under the floor to avoid a small bar would trade legibility for
+ *   symmetry. It binds only below ~350 px of viewport.
+ *
+ * The box aspect equals the viewBox aspect everywhere the floor is not the
+ * limit — asserted by the tests, measured in the browser.
+ *
+ * Degenerate inputs fall back to the floor (and the column's width) rather
+ * than NaN — a non-finite size is silently dropped by the style system and
+ * would leave the panel at the flex default, which is exactly the unlabelled
+ * state this replaces.
+ */
+export function mapPanelBox(input: {
+  /** The column's measured content width, from `onLayout`. */
+  panelWidthPx: number;
+  /** The SVG viewBox's width / height, from `viewBoxFor`. */
+  frameAspect: number;
+  /** The viewport height, from `useWindowDimensions`. */
+  viewportHeightPx: number;
+  /** Which layout is active — decides the ceiling. */
+  compact: boolean;
+}): MapPanelBox {
+  const { panelWidthPx, frameAspect, viewportHeightPx, compact } = input;
+  const widthKnown = Number.isFinite(panelWidthPx) && panelWidthPx >= 0;
+  const aspectKnown = Number.isFinite(frameAspect) && frameAspect > 0;
+  const ceiling = compact
+    ? Math.max(MAP_MIN_HEIGHT_PX, Math.round(viewportHeightPx * COMPACT_MAP_VIEWPORT_FRACTION))
+    : Number.POSITIVE_INFINITY;
+
+  const ideal = widthKnown && aspectKnown ? panelWidthPx / frameAspect : MAP_MIN_HEIGHT_PX;
+  const heightPx = Math.round(Math.min(Math.max(ideal, MAP_MIN_HEIGHT_PX), ceiling));
+
+  // Narrow to the drawing's width at the (possibly capped) height, but never
+  // past the column: where the floor binds, height x aspect exceeds the
+  // column and the box keeps the column's width (the accepted letterbox).
+  const drawingWidth = Math.round(heightPx * frameAspect);
+  const widthPx = aspectKnown
+    ? Math.min(widthKnown ? panelWidthPx : Number.POSITIVE_INFINITY, drawingWidth)
+    : widthKnown
+      ? panelWidthPx
+      : heightPx;
+
+  return { widthPx, heightPx };
+}
+
+// --- the map's floating chrome vs the disclosure strip ----------------------
+
+/**
+ * The disclosure strip's height as the layout assumes it **before the first
+ * `onLayout` measurement arrives** — the value the old code hard-coded for
+ * every width.
+ */
+export const DISCLOSURE_STRIP_FALLBACK_PX = 44;
+
+/** The gap kept between the strip's top edge and the floating map chrome. */
+export const MAP_CHROME_GAP_PX = 8;
+
+/**
+ * How far from the panel's bottom the legend and the S/T/L buttons must sit.
+ *
+ * **Why this function exists: the strip's height is not a constant.** The
+ * basemap disclosure is body text at 10 px over the full panel width, so it
+ * wraps — measured in the browser: **84 px at a 360 px viewport**, 70 px at
+ * 390, 56 px at 480/600/860, 42 px from ~700 px up. The layout positioned the
+ * legend and the controls above a hard-coded 44 px, so at every width where
+ * the strip wrapped taller than that, the legend's last rows ("Storm path",
+ * "Your origin") and the map buttons rendered **behind** the strip's
+ * 90%-opaque background.
+ *
+ * The rule is one sentence: clear the *measured* strip by the chrome gap, and
+ * fall back to the old constant only until the first measurement arrives. A
+ * degenerate measurement (NaN, negative, infinite) is treated as unmeasured
+ * rather than as zero — a zero-height strip is a layout bug, not a
+ * strip-less panel.
+ */
+export function overlayClearancePx(stripHeightPx: number | null): number {
+  const measured =
+    stripHeightPx !== null && Number.isFinite(stripHeightPx) && stripHeightPx >= 0
+      ? stripHeightPx
+      : DISCLOSURE_STRIP_FALLBACK_PX;
+  return measured + MAP_CHROME_GAP_PX;
+}
