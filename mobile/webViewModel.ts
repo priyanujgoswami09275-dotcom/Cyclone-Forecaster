@@ -575,3 +575,98 @@ export function waypointLabel(waypoint: {
       : `${waypoint.wind_kmph.toFixed(0)} km/h reported`;
   return { title, wind };
 }
+
+// --- responsive layout -----------------------------------------------------
+
+/**
+ * The viewport width at which the Web screen switches between its two layouts.
+ *
+ * **Below** it the screen stacks: masthead, then the map, then the four steps,
+ * then "What this is and is not" — one column, so a phone never has to fit a
+ * 340 px-minimum control column beside a map. **At and above** it the map and
+ * the control column sit side by side, as they always have on desktop.
+ *
+ * 860 rather than the control column's 340 plus the map's minimum: the
+ * breakpoint is the width at which the *stacked* layout stops being the better
+ * one, not the width at which the two-column one becomes impossible. The
+ * two-column layout technically survives down to ~600 px, but between there
+ * and 860 the map column is too narrow for a 1.16-aspect drawing to stay
+ * legible while the control column keeps its 340 px — so the stack wins there.
+ *
+ * The value is exported so tests can pin it rather than re-deriving it, and so
+ * `MapScreen.web.tsx` never hardcodes the number twice.
+ */
+export const COMPACT_BREAKPOINT_PX = 860;
+
+/** The stacked layout's floor for the map panel, in px. Brief: `min 320`. */
+export const COMPACT_MAP_MIN_HEIGHT_PX = 320;
+
+/** The stacked map is at most this fraction of the viewport. Brief: `~55vh`. */
+export const COMPACT_MAP_VIEWPORT_FRACTION = 0.55;
+
+/** The two-column map's floor, unchanged from the pre-breakpoint behaviour. */
+export const WIDE_MAP_MIN_HEIGHT_PX = 460;
+
+/**
+ * Which layout the viewport gets: single column below the breakpoint, two
+ * columns at and above it.
+ *
+ * Pure, because the breakpoint is a decision the tests must be able to check
+ * without a renderer — the layout itself is applied in `MapScreen.web.tsx`.
+ */
+export function isCompactViewport(viewportWidthPx: number): boolean {
+  return viewportWidthPx < COMPACT_BREAKPOINT_PX;
+}
+
+/**
+ * The map panel's height, matched to the drawing rather than letterboxing it.
+ *
+ * **Why this function exists: the black strip.** The SVG draws a viewBox whose
+ * aspect is the bbox's ground aspect (~1.164 for the study region), and the
+ * `<svg>` element fills its panel with `preserveAspectRatio="xMidYMid meet"`.
+ * `meet` fits the whole drawing inside the panel, so whenever the panel's own
+ * aspect is wider or taller than the frame's, the leftover panel shows the
+ * panel background — near-black `#090909`, reading as an empty strip beside
+ * the pale basemap. That is the defect in the deployed screenshots: not a
+ * basemap that fails to load, but a panel sized independently of the drawing
+ * it contains.
+ *
+ * Sizing the panel to `width / frameAspect` makes `meet` a no-op: the drawing
+ * fills the panel exactly, the way `viewBoxFor` already makes the frame match
+ * the bbox one level down. The clamps keep the panel useful when the aspect
+ * and the viewport disagree:
+ *
+ * - **floor** 320 px compact / 460 px wide — a very wide frame in a narrow
+ *   panel must not collapse the map to a ribbon;
+ * - **ceiling** `COMPACT_MAP_VIEWPORT_FRACTION` of the viewport height in the
+ *   stacked layout only — a 720 px-wide phone map is most of the viewport, so
+ *   the steps below it start off-screen. The wide layout has no ceiling: the
+ *   page scrolls, and a taller map is the fix there, not a defect.
+ *
+ * Degenerate inputs fall back to the floor rather than NaN — a non-finite
+ * height is silently dropped by the style system and would leave the panel at
+ * the flex default, which is exactly the unlabelled state this replaces.
+ */
+export function mapPanelHeightPx(input: {
+  /** The panel's measured content width, from `onLayout`. */
+  panelWidthPx: number;
+  /** The SVG viewBox's width / height, from `viewBoxFor`. */
+  frameAspect: number;
+  /** The viewport height, from `useWindowDimensions`. */
+  viewportHeightPx: number;
+  /** Which layout is active — decides floor and ceiling. */
+  compact: boolean;
+}): number {
+  const { panelWidthPx, frameAspect, viewportHeightPx, compact } = input;
+  const floor = compact ? COMPACT_MAP_MIN_HEIGHT_PX : WIDE_MAP_MIN_HEIGHT_PX;
+  const ceiling = compact
+    ? Math.max(floor, Math.round(viewportHeightPx * COMPACT_MAP_VIEWPORT_FRACTION))
+    : Number.POSITIVE_INFINITY;
+
+  const measurable =
+    Number.isFinite(panelWidthPx) && Number.isFinite(frameAspect) && frameAspect > 0;
+  const ideal = measurable ? panelWidthPx / frameAspect : floor;
+
+  if (!Number.isFinite(ideal)) return floor;
+  return Math.round(Math.min(Math.max(ideal, floor), ceiling));
+}

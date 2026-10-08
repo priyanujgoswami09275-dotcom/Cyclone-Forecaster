@@ -497,6 +497,9 @@ const styles = StyleSheet.create({
     top: theme.spacing.sm,
     paddingHorizontal: 12,
     paddingVertical: 7,
+    // The touch-target floor; the bare padding made this ~32 px on a phone.
+    minHeight: 44,
+    justifyContent: 'center',
     borderRadius: theme.radius.button,
     borderWidth: 1,
     borderColor: theme.colors.border,
@@ -661,6 +664,9 @@ const styles = StyleSheet.create({
   },
   planHeader: {
     flexDirection: 'row',
+    // Wraps: a "CRITICAL" chip plus a long block name cannot share one
+    // 312 px line on a phone, and without wrapping the row overflows.
+    flexWrap: 'wrap',
     alignItems: 'center',
     gap: 10,
     marginBottom: 5,
@@ -721,6 +727,9 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.border,
     paddingHorizontal: 16,
     paddingVertical: 8,
+    // The touch-target floor; the bare padding made this ~34 px on a phone.
+    minHeight: 44,
+    justifyContent: 'center',
   },
   copyLabel: {
     fontFamily: theme.fonts.bodySemibold,

@@ -38,6 +38,9 @@ import {
   caseStudyLine,
   countLabel,
   countUnit,
+  isCompactViewport,
+  mapPanelHeightPx,
+  COMPACT_BREAKPOINT_PX,
   personKmLabel,
   populationDisclosure,
   ROADS_DISCLOSURE,
@@ -846,5 +849,137 @@ describe('waypointLabel', () => {
       wind_reported: true,
     });
     assert.match(wind, /not reported/);
+  });
+});
+
+describe('isCompactViewport — the Web layout breakpoint', () => {
+  it('stacks the screen below the breakpoint and columns at it', () => {
+    // The breakpoint itself belongs to the wide layout: 860 is two columns,
+    // so "below ~860 px" in the brief is [0, 860).
+    assert.equal(isCompactViewport(360), true);
+    assert.equal(isCompactViewport(390), true);
+    assert.equal(isCompactViewport(768), true);
+    assert.equal(isCompactViewport(859), true);
+    assert.equal(isCompactViewport(860), false);
+    assert.equal(isCompactViewport(1024), false);
+    assert.equal(isCompactViewport(1560), false);
+  });
+
+  it('exposes the breakpoint as a named constant, not a magic number', () => {
+    assert.equal(COMPACT_BREAKPOINT_PX, 860);
+    // The three widths the phone-fit work is verified at must all land on the
+    // side of the breakpoint their layout expects.
+    for (const w of [360, 390, 768]) {
+      assert.ok(isCompactViewport(w), `${w} must be single-column`);
+    }
+    assert.ok(!isCompactViewport(861));
+  });
+});
+
+describe('mapPanelHeightPx — the map panel sizes to the drawing, not the reverse', () => {
+  it('matches the panel height to the frame aspect when unclamped', () => {
+    // A 374 px-wide panel showing the study-region frame (ground aspect
+    // ~1.164) wants 374/1.164 ≈ 321 px — above the 320 floor, below the cap.
+    const h = mapPanelHeightPx({
+      panelWidthPx: 374,
+      frameAspect: 1.164,
+      viewportHeightPx: 844,
+      compact: true,
+    });
+    assert.equal(h, 321);
+  });
+
+  it('never drops below the compact floor of 320 px', () => {
+    // A very wide frame in a narrow panel would ask for 150 px; the map
+    // stays legible instead of obeying the aspect ratio all the way down.
+    assert.equal(
+      mapPanelHeightPx({
+        panelWidthPx: 300,
+        frameAspect: 2,
+        viewportHeightPx: 844,
+        compact: true,
+      }),
+      320,
+    );
+  });
+
+  it('caps the compact map at ~55% of the viewport height', () => {
+    // 720 px of map on a 1024 px-tall viewport is too much of one panel;
+    // round(0.55 x 1024) = 563 is the cap the brief asks for.
+    assert.equal(
+      mapPanelHeightPx({
+        panelWidthPx: 720,
+        frameAspect: 1,
+        viewportHeightPx: 1024,
+        compact: true,
+      }),
+      563,
+    );
+  });
+
+  it('never lets the cap fall below the floor on a short viewport', () => {
+    // 55% of a 400 px viewport is 220 px, which is under the 320 floor. The
+    // floor wins, or the map collapses to nothing on landscape phones.
+    assert.equal(
+      mapPanelHeightPx({
+        panelWidthPx: 500,
+        frameAspect: 1,
+        viewportHeightPx: 400,
+        compact: true,
+      }),
+      320,
+    );
+  });
+
+  it('keeps the wide layout floor of 460 px, with no cap', () => {
+    // Below the aspect ideal, the two-column map stays at its 460 floor...
+    assert.equal(
+      mapPanelHeightPx({
+        panelWidthPx: 500,
+        frameAspect: 2,
+        viewportHeightPx: 800,
+        compact: false,
+      }),
+      460,
+    );
+    // ...and above it there is no viewport cap — the page scrolls, and the
+    // basemap fills the panel instead of letterboxing beside it.
+    assert.equal(
+      mapPanelHeightPx({
+        panelWidthPx: 850,
+        frameAspect: 1.164,
+        viewportHeightPx: 700,
+        compact: false,
+      }),
+      730,
+    );
+  });
+
+  it('falls back to the floor for a degenerate frame', () => {
+    // A frame with zero, negative or non-finite aspect cannot be matched; the
+    // panel falls back to the floor rather than NaN px, which RNW would
+    // silently drop and leave at the flex default.
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.equal(
+        mapPanelHeightPx({
+          panelWidthPx: 700,
+          frameAspect: bad,
+          viewportHeightPx: 800,
+          compact: true,
+        }),
+        320,
+        `aspect ${bad}`,
+      );
+    }
+    // And a panel width that never arrived measures the same way.
+    assert.equal(
+      mapPanelHeightPx({
+        panelWidthPx: Number.NaN,
+        frameAspect: 1.164,
+        viewportHeightPx: 800,
+        compact: true,
+      }),
+      320,
+    );
   });
 });

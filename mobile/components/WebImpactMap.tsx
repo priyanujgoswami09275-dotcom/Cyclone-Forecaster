@@ -39,8 +39,17 @@
  * backend returned. Where a layer has no features it is simply absent.
  */
 
-import React, { useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+  type LayoutChangeEvent,
+} from 'react-native';
 
 import {
   markerCoordinate,
@@ -67,6 +76,7 @@ import {
 } from '../mapProjection';
 import { theme } from '../theme';
 import { LEGEND_ROWS, type SwatchSource } from '../legend';
+import { isCompactViewport, mapPanelHeightPx } from '../webViewModel';
 
 /**
  * Height reserved at the bottom of the map for the disclosure strip.
@@ -181,12 +191,50 @@ export function WebImpactMap({
   const [showLegend, setShowLegend] = useState(true);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
+  /**
+   * The panel's own width, measured rather than assumed. In the two-column
+   * layout this view gets a flex share of the workspace, so no constant can
+   * know it; `onLayout` reports the border-box width, and the drawing sits
+   * inside a 1 px border, so 2 px come off before the aspect is matched.
+   */
+  const [panelWidth, setPanelWidth] = useState<number | null>(null);
+  const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
+  const compact = isCompactViewport(viewportWidth);
+  const onPanelLayout = useCallback((event: LayoutChangeEvent) => {
+    const { width } = event.nativeEvent.layout;
+    setPanelWidth((current) => (current === width ? current : width));
+  }, []);
+
   const bounds = view.kind === 'track' ? view.bounds : openingBounds();
   /**
    * The frame, shaped to the data. See `VIEW_W` above for why the height is
    * derived rather than fixed.
    */
   const frame = useMemo(() => viewBoxFor(bounds, VIEW_W), [bounds]);
+  /**
+   * The panel's height, matched to that frame by the pure `mapPanelHeightPx`
+   * — **the fix for the black strip**. The `<svg>` fills the panel with
+   * `preserveAspectRatio="xMidYMid meet"`, and `meet` letterboxes whenever
+   * the panel's aspect differs from the frame's; the letterbox shows this
+   * panel's near-black background. That is the strip in the deployed
+   * screenshots — not a basemap that failed to fill its container — and it
+   * appeared at every width because the panel's height was fixed (460 px)
+   * while its width floated. Sizing the panel to the drawing instead makes
+   * `meet` a no-op and the pale basemap runs edge to edge. Null only before
+   * the first `onLayout`, where the base style still applies.
+   */
+  const panelHeightPx = useMemo(
+    () =>
+      panelWidth === null
+        ? null
+        : mapPanelHeightPx({
+            panelWidthPx: Math.max(0, panelWidth - 2),
+            frameAspect: frame.width / frame.height,
+            viewportHeightPx: viewportHeight,
+            compact,
+          }),
+    [panelWidth, frame, viewportHeight, compact],
+  );
   const projection = useMemo(
     () => makeProjection(bounds, frame.width, frame.height),
     [bounds, frame],
@@ -309,7 +357,19 @@ export function WebImpactMap({
   const onPressRecentre = () => setView({ kind: 'region' });
 
   return (
-    <View style={styles.wrap}>
+    <View
+      style={[
+        styles.wrap,
+        // `+ 2` is the panel's own 1 px border, so the drawing's content box
+        // is exactly aspect-matched and `meet` has nothing to letterbox.
+        panelHeightPx !== null && {
+          height: panelHeightPx + 2,
+          minHeight: panelHeightPx + 2,
+          flex: 0,
+        },
+      ]}
+      onLayout={onPanelLayout}
+    >
       {/*
         The SVG. `viewBox` is the user-unit space every coordinate above was
         projected into, and its shape is derived from the bbox so the drawing
@@ -773,8 +833,10 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   mapButton: {
-    width: 40,
-    height: 40,
+    // 44 px: the touch-target floor. 40 px was under it on a phone, where
+    // these are the only zoom controls the Web map has.
+    width: 44,
+    height: 44,
     borderRadius: theme.radius.button,
     backgroundColor: theme.colors.white,
     borderWidth: 1,

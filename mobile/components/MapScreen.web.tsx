@@ -51,7 +51,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 
 import {
   ApiError,
@@ -112,6 +112,7 @@ import {
   caseStudyLine,
   countLabel,
   countUnit,
+  isCompactViewport,
   personKmLabel,
   populationDisclosure,
   routeSummary,
@@ -154,6 +155,17 @@ type Boot =
 
 export function MapScreen() {
   const [boot, setBoot] = useState<Boot>({ status: 'loading' });
+
+  /**
+   * The viewport, and the layout it gets. One breakpoint, decided by the pure
+   * `isCompactViewport` in `webViewModel.ts` so the rule is testable without
+   * a renderer: below 860 px the screen stacks (masthead → map → the four
+   * steps → "What this is and is not"); at and above it the two-column desktop
+   * layout is unchanged. `useWindowDimensions` re-fires on resize, so a
+   * narrowed desktop window re-stacks live rather than waiting for a reload.
+   */
+  const { width: viewportWidth } = useWindowDimensions();
+  const compact = isCompactViewport(viewportWidth);
 
   const [chipId, setChipId] = useState<ChipId>(DEFAULT_CHIP);
 
@@ -590,7 +602,7 @@ export function MapScreen() {
         showsVerticalScrollIndicator={false}
       >
         {/* --- masthead: the case study, in the first viewport ---------- */}
-        <View style={styles.masthead}>
+        <View style={[styles.masthead, compact && styles.mastheadCompact]}>
           <View style={styles.mastheadText}>
             <Text style={styles.eyebrow}>Cyclone impact & infrastructure forecaster</Text>
             {/*
@@ -603,7 +615,7 @@ export function MapScreen() {
               the catalogue carries a season but not a landfall month, and that
               sentence is the documented anchor.
             */}
-            <Text style={styles.title}>
+            <Text style={[styles.title, compact && styles.titleCompact]}>
               {isCaseStudy
                 ? 'Cyclone Remal, May 2024'
                 : `Cyclone ${cycloneDisplayName(selectedCyclone?.name)}, ${selectedCyclone?.season}`}
@@ -647,8 +659,8 @@ export function MapScreen() {
         </View>
 
         {/* --- the working area: map + control column -------------------- */}
-        <View style={styles.workspace}>
-          <View style={styles.mapColumn}>
+        <View style={[styles.workspace, compact && styles.workspaceCompact]}>
+          <View style={[styles.mapColumn, compact && styles.mapColumnCompact]}>
             <WebImpactMap
               exposure={exposure}
               track={track}
@@ -664,7 +676,7 @@ export function MapScreen() {
             <Text style={styles.trackCaption}>{trackCaption(track)}</Text>
           </View>
 
-          <View style={styles.controlColumn}>
+          <View style={[styles.controlColumn, compact && styles.controlColumnCompact]}>
             {/* Step 1 — scenario */}
             <Step index={1} title="Pick a storm">
               {/*
@@ -1250,6 +1262,13 @@ const styles = StyleSheet.create({
     borderBottomColor: theme.colors.border,
     marginBottom: theme.spacing.md,
   },
+  /**
+   * The stacked masthead. Below the breakpoint the badges sit *under* the
+   * title rather than beside it — `mastheadText`'s `flex: 1` in the row
+   * layout squeezed the title to make room for a 380 px badge block, which
+   * is what made the masthead the first thing to break on a phone.
+   */
+  mastheadCompact: { flexDirection: 'column', gap: theme.spacing.sm },
   mastheadText: { flex: 1, maxWidth: 760 },
   eyebrow: {
     fontFamily: theme.fonts.bodyMedium,
@@ -1265,6 +1284,8 @@ const styles = StyleSheet.create({
     color: theme.colors.text,
     marginTop: 6,
   },
+  /** A phone-sized H1. 38 px wraps to three lines at 360 px wide. */
+  titleCompact: { fontSize: 30, lineHeight: 36 },
   subtitle: {
     fontFamily: theme.fonts.body,
     fontSize: theme.typography.body,
@@ -1303,7 +1324,27 @@ const styles = StyleSheet.create({
   },
 
   workspace: { flexDirection: 'row', gap: theme.spacing.md, alignItems: 'flex-start' },
+  /**
+   * The stacked layout: masthead, map, the four steps, then "What this is
+   * and is not" — the order is just document order, because `mapColumn`
+   * precedes `controlColumn` in the JSX. The map keeps the `55vh`-capped,
+   * aspect-matched height `mapPanelHeightPx` gives it (see
+   * `WebImpactMap.tsx`); the steps follow at full width.
+   */
+  workspaceCompact: { flexDirection: 'column', gap: theme.spacing.sm },
   mapColumn: { flex: 1.45, minWidth: 0 },
+  /**
+   * Stacked, the map is a full-width block, not a 1.45:1 flex share.
+   *
+   * **`flexBasis: 'auto'`, not `flex: 0`.** RNW maps RN's `flex: 0` to CSS
+   * `flex: 0 0 0%`, and in a *column* parent the 0% basis applies to the
+   * child's **height** — both columns collapsed to `h: 0` and the map panel,
+   * whose children overflow visibly, painted over Step 1 beneath it. Measured
+   * by the layout probe at 360 px before this comment was written.
+   * `flexBasis: 'auto'` sizes each stacked column to its content, which is
+   * what a stacked layout means.
+   */
+  mapColumnCompact: { flexGrow: 0, flexBasis: 'auto', width: '100%' },
   mapColumnInner: { minHeight: 620 },
   trackCaption: {
     fontFamily: theme.fonts.body,
@@ -1313,6 +1354,13 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   controlColumn: { flex: 1, minWidth: 340, gap: theme.spacing.sm },
+  /**
+   * Stacked, the control column drops its 340 px minimum — that minimum is
+   * what forced horizontal scroll at 360 px, because 24 px page padding +
+   * 340 px of column + a 16 px gap cannot fit a 360 px viewport.
+   * `flexBasis: 'auto'` for the same reason as `mapColumnCompact`.
+   */
+  controlColumnCompact: { flexGrow: 0, flexBasis: 'auto', minWidth: 0, width: '100%' },
 
   step: {
     backgroundColor: theme.colors.card,
@@ -1357,6 +1405,10 @@ const styles = StyleSheet.create({
   chip: {
     paddingHorizontal: 13,
     paddingVertical: 8,
+    // A 44 px minimum keeps the chip a thumb target on a phone — the bare
+    // padding puts it at ~34 px, under the 44 px floor for touch targets.
+    minHeight: 44,
+    justifyContent: 'center',
     borderRadius: theme.radius.chip,
     backgroundColor: theme.colors.background,
     borderWidth: 1,
@@ -1423,9 +1475,16 @@ const styles = StyleSheet.create({
   factValueSmall: { fontSize: 14, lineHeight: 20 },
   factNote: { fontFamily: theme.fonts.body, fontSize: 10, color: theme.colors.textMuted },
 
-  tiles: { flexDirection: 'row', gap: 8, marginTop: 10 },
+  /**
+   * The tiles wrap below ~440 px of column width: `flexBasis 140` puts two
+   * abreast on a phone (three would be ~110 px each — the 26 px count and the
+   * unit line no longer fit) and three abreast on desktop, unchanged from
+   * the single row the fixed layout drew.
+   */
+  tiles: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
   tile: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: 140,
     backgroundColor: theme.colors.background,
     borderRadius: theme.radius.button,
     borderWidth: 1,
@@ -1492,9 +1551,11 @@ const styles = StyleSheet.create({
     color: theme.colors.textMuted,
     marginTop: 5,
   },
-  allocationStats: { flexDirection: 'row', gap: 8, marginTop: 12 },
+  /** Wraps like the tiles, for the same reason: three across is ~110 px each. */
+  allocationStats: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 12 },
   miniStat: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: 140,
     backgroundColor: theme.colors.card,
     borderRadius: 8,
     padding: 9,
@@ -1611,6 +1672,8 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.button,
     paddingHorizontal: 14,
     paddingVertical: 9,
+    minHeight: 44,
+    justifyContent: 'center',
   },
   cachedLabel: {
     fontFamily: theme.fonts.bodyMedium,
@@ -1646,7 +1709,13 @@ const styles = StyleSheet.create({
     color: theme.colors.textMuted,
     marginTop: 2,
   },
-  aboutToggle: { alignSelf: 'flex-start', paddingVertical: 6 },
+  aboutToggle: {
+    alignSelf: 'flex-start',
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    minHeight: 44,
+    justifyContent: 'center',
+  },
   aboutToggleLabel: {
     fontFamily: theme.fonts.bodySemibold,
     fontSize: 12,
