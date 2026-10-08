@@ -598,8 +598,15 @@ export function waypointLabel(waypoint: {
  */
 export const COMPACT_BREAKPOINT_PX = 860;
 
-/** The stacked layout's floor for the map panel, in px. Brief: `min 320`. */
-export const COMPACT_MAP_MIN_HEIGHT_PX = 320;
+/**
+ * The map panel's height floor, in px — the one bound whose letterbox is
+ * accepted. A 320 px floor left 26/13 px bars at 360/390; the box now follows
+ * the drawing's natural aspect down to this floor, so the smallest phones
+ * (a 320 px viewport leaves 272 px of column → 234 px natural) are the only
+ * widths that still letterbox, by 13 px each side, rather than being squeezed
+ * to an illegible ribbon.
+ */
+export const MAP_MIN_HEIGHT_PX = 260;
 
 /** The stacked map is at most this fraction of the viewport. Brief: `~55vh`. */
 export const COMPACT_MAP_VIEWPORT_FRACTION = 0.55;
@@ -615,8 +622,15 @@ export function isCompactViewport(viewportWidthPx: number): boolean {
   return viewportWidthPx < COMPACT_BREAKPOINT_PX;
 }
 
+/** The map panel's content box: width and height, both in px. */
+export interface MapPanelBox {
+  widthPx: number;
+  heightPx: number;
+}
+
 /**
- * The map panel's height, matched to the drawing rather than letterboxing it.
+ * The map panel's box, matched to the drawing — and **narrowed and centred
+ * where a bound, not the column's width, sets the height**.
  *
  * **Why this function exists: the black strip.** The SVG draws a viewBox whose
  * aspect is the bbox's ground aspect (~1.164 for the study region), and the
@@ -628,30 +642,35 @@ export function isCompactViewport(viewportWidthPx: number): boolean {
  * basemap that fails to load, but a panel sized independently of the drawing
  * it contains.
  *
- * Sizing the panel to `width / frameAspect` makes `meet` a no-op: the drawing
- * fills the panel exactly, the way `viewBoxFor` already makes the frame match
- * the bbox one level down. The clamps keep the panel useful when the aspect
- * and the viewport disagree:
+ * The bounds, and what each does to the box:
  *
- * - **floor** 320 px in both layouts — a very wide frame in a narrow panel
- *   must not collapse the map to a ribbon. The wide layout once kept a
- *   separate 460 px floor inherited from the fixed-height panel; it only
- *   ever bound between 860 and ~990 px, where the map column is too narrow
- *   for a 460 px panel to be filled by a ~1.16-aspect drawing — measured at
- *   860x800: a 446 px panel, a 383 px drawing, 77 px of dead panel — so it
- *   is gone and the wide layout is aspect-fit all the way down to the same
- *   320 px floor;
- * - **ceiling** `COMPACT_MAP_VIEWPORT_FRACTION` of the viewport height in the
- *   stacked layout only — a 720 px-wide phone map is most of the viewport, so
- *   the steps below it start off-screen. The wide layout has no ceiling: the
- *   page scrolls, and a taller map is the fix there, not a defect.
+ * - **natural fit** — `height = columnWidth / frameAspect`. This is the box
+ *   everywhere the bounds do not bind, and `meet` becomes a no-op: the
+ *   drawing fills the panel exactly, the way `viewBoxFor` already makes the
+ *   frame match the bbox one level down;
+ * - **ceiling** `COMPACT_MAP_VIEWPORT_FRACTION` of the viewport height, in the
+ *   stacked layout only — a 720 px-wide phone map is most of the viewport,
+ *   so the steps below it start off-screen. **Where the ceiling binds, the
+ *   box narrows to `height × frameAspect` and the caller centres it** in the
+ *   column: a full-width box beside a capped height is what drew measured
+ *   37/31/148 px of dead panel each side at 700/768/859. The wide layout has
+ *   no ceiling: the page scrolls, and a taller map is the fix there, not a
+ *   defect;
+ * - **floor** `MAP_MIN_HEIGHT_PX` — the one bound whose letterbox is
+ *   accepted: the box keeps the column's width, because squeezing the
+ *   drawing under the floor to avoid a small bar would trade legibility for
+ *   symmetry. It binds only below ~350 px of viewport.
  *
- * Degenerate inputs fall back to the floor rather than NaN — a non-finite
- * height is silently dropped by the style system and would leave the panel at
- * the flex default, which is exactly the unlabelled state this replaces.
+ * The box aspect equals the viewBox aspect everywhere the floor is not the
+ * limit — asserted by the tests, measured in the browser.
+ *
+ * Degenerate inputs fall back to the floor (and the column's width) rather
+ * than NaN — a non-finite size is silently dropped by the style system and
+ * would leave the panel at the flex default, which is exactly the unlabelled
+ * state this replaces.
  */
-export function mapPanelHeightPx(input: {
-  /** The panel's measured content width, from `onLayout`. */
+export function mapPanelBox(input: {
+  /** The column's measured content width, from `onLayout`. */
   panelWidthPx: number;
   /** The SVG viewBox's width / height, from `viewBoxFor`. */
   frameAspect: number;
@@ -659,19 +678,28 @@ export function mapPanelHeightPx(input: {
   viewportHeightPx: number;
   /** Which layout is active — decides the ceiling. */
   compact: boolean;
-}): number {
+}): MapPanelBox {
   const { panelWidthPx, frameAspect, viewportHeightPx, compact } = input;
-  const floor = COMPACT_MAP_MIN_HEIGHT_PX;
+  const widthKnown = Number.isFinite(panelWidthPx) && panelWidthPx >= 0;
+  const aspectKnown = Number.isFinite(frameAspect) && frameAspect > 0;
   const ceiling = compact
-    ? Math.max(floor, Math.round(viewportHeightPx * COMPACT_MAP_VIEWPORT_FRACTION))
+    ? Math.max(MAP_MIN_HEIGHT_PX, Math.round(viewportHeightPx * COMPACT_MAP_VIEWPORT_FRACTION))
     : Number.POSITIVE_INFINITY;
 
-  const measurable =
-    Number.isFinite(panelWidthPx) && Number.isFinite(frameAspect) && frameAspect > 0;
-  const ideal = measurable ? panelWidthPx / frameAspect : floor;
+  const ideal = widthKnown && aspectKnown ? panelWidthPx / frameAspect : MAP_MIN_HEIGHT_PX;
+  const heightPx = Math.round(Math.min(Math.max(ideal, MAP_MIN_HEIGHT_PX), ceiling));
 
-  if (!Number.isFinite(ideal)) return floor;
-  return Math.round(Math.min(Math.max(ideal, floor), ceiling));
+  // Narrow to the drawing's width at the (possibly capped) height, but never
+  // past the column: where the floor binds, height x aspect exceeds the
+  // column and the box keeps the column's width (the accepted letterbox).
+  const drawingWidth = Math.round(heightPx * frameAspect);
+  const widthPx = aspectKnown
+    ? Math.min(widthKnown ? panelWidthPx : Number.POSITIVE_INFINITY, drawingWidth)
+    : widthKnown
+      ? panelWidthPx
+      : heightPx;
+
+  return { widthPx, heightPx };
 }
 
 // --- the map's floating chrome vs the disclosure strip ----------------------

@@ -1328,7 +1328,7 @@ const styles = StyleSheet.create({
    * The stacked layout: masthead, map, the four steps, then "What this is
    * and is not" — the order is just document order, because `mapColumn`
    * precedes `controlColumn` in the JSX. The map keeps the `55vh`-capped,
-   * aspect-matched height `mapPanelHeightPx` gives it (see
+   * aspect-matched, cap-narrowed box `mapPanelBox` gives it (see
    * `WebImpactMap.tsx`); the steps follow at full width.
    */
   workspaceCompact: { flexDirection: 'column', gap: theme.spacing.sm },

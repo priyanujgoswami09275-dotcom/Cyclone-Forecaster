@@ -76,7 +76,7 @@ import {
 } from '../mapProjection';
 import { theme } from '../theme';
 import { LEGEND_ROWS, type SwatchSource } from '../legend';
-import { isCompactViewport, mapPanelHeightPx, overlayClearancePx } from '../webViewModel';
+import { isCompactViewport, mapPanelBox, overlayClearancePx } from '../webViewModel';
 
 /** The SVG user units the map draws in. Scaled by CSS to its container. */
 /**
@@ -213,22 +213,24 @@ export function WebImpactMap({
    */
   const frame = useMemo(() => viewBoxFor(bounds, VIEW_W), [bounds]);
   /**
-   * The panel's height, matched to that frame by the pure `mapPanelHeightPx`
+   * The panel's box, matched to that frame by the pure `mapPanelBox`
    * — **the fix for the black strip**. The `<svg>` fills the panel with
    * `preserveAspectRatio="xMidYMid meet"`, and `meet` letterboxes whenever
    * the panel's aspect differs from the frame's; the letterbox shows this
    * panel's near-black background. That is the strip in the deployed
    * screenshots — not a basemap that failed to fill its container — and it
    * appeared at every width because the panel's height was fixed (460 px)
-   * while its width floated. Sizing the panel to the drawing instead makes
-   * `meet` a no-op and the pale basemap runs edge to edge. Null only before
-   * the first `onLayout`, where the base style still applies.
+   * while its width floated. The box is now the drawing's own size:
+   * `mapPanelBox` narrows it to the frame aspect wherever the 55vh cap
+   * binds (700/768/859 drew 37/31/148 px of dead panel each side) and the
+   * style below centres it in the column. Null only before the first
+   * `onLayout`, where the base style still applies.
    */
-  const panelHeightPx = useMemo(
+  const panelBox = useMemo(
     () =>
       panelWidth === null
         ? null
-        : mapPanelHeightPx({
+        : mapPanelBox({
             panelWidthPx: Math.max(0, panelWidth - 2),
             frameAspect: frame.width / frame.height,
             viewportHeightPx: viewportHeight,
@@ -363,10 +365,14 @@ export function WebImpactMap({
         styles.wrap,
         // `+ 2` is the panel's own 1 px border, so the drawing's content box
         // is exactly aspect-matched and `meet` has nothing to letterbox.
-        panelHeightPx !== null && {
-          height: panelHeightPx + 2,
-          minHeight: panelHeightPx + 2,
+        // Where the 55vh cap narrows the box, `alignSelf: 'center'` centres
+        // it in the column instead of leaving dead panel each side.
+        panelBox !== null && {
+          width: panelBox.widthPx + 2,
+          height: panelBox.heightPx + 2,
+          minHeight: panelBox.heightPx + 2,
           flex: 0,
+          alignSelf: 'center',
         },
       ]}
       onLayout={onPanelLayout}
