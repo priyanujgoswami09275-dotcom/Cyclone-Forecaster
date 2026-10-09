@@ -52,3 +52,8 @@ mobile/dist/
 .vscode/
 opencode.json
 .env*
+
+# Generated tool output (knowledge graph and archify diagrams), agent session transcripts
+/graphify-out/
+/.archify/
+pi-session-*.html
