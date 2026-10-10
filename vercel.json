@@ -3,7 +3,7 @@
   "functions": {
     "app.py": {
       "maxDuration": 300,
-      "excludeFiles": "{mobile/**,tests/**,docs/**,.superpowers/**,.agents/**,.claude/**,*.md,.env,backend/experiments/**,backend/tools/**,backend/data_pipeline/**,venv/**,node_modules/**,project.zip,graphify-out/**,.archify/**,data/basemap/**,requirements-dev.txt,render.yaml,conftest.py}"
+      "excludeFiles": "{mobile/**,tests/**,docs/**,.superpowers/**,.agents/**,.claude/**,*.md,.env,backend/experiments/**,backend/tools/**,backend/data_pipeline/**,venv/**,node_modules/**,project.zip,graphify-out/**,.archify/**,data/basemap/**,render.yaml,conftest.py}"
     }
   }
 }
