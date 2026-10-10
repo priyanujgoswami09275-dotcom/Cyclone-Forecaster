@@ -4632,3 +4632,11 @@ Result: node --test 391 pass / 0 fail (6 new); tsc clean; nothing rendered yet �
 Task A (feat/app-shell): map-layer legibility in WebImpactMap.tsx — both asset pins get 1.5px ink outlines, substations become diamonds (was circles at caution #fcb42a = 1.49:1 on basemap land), origin ring/dot get ink edges (was 2.33:1), active map-button icon stays onWhite (border carries active; was selectedText-on-white 2.80:1), legend flood swatch remaps to FLOOD_RASTER_COLOUR #2563eb (the raster's own ink; the theme.flood tint #84a7d3 read 2.06:1 on land).
 Files: mobile/components/WebImpactMap.tsx only; legend.ts and the shared flood token untouched — the native legend still resolves theme.flood (Web/native legend divergence flagged here, same class as the Android dash caveat).
 Result: node --test 391 pass / 0 fail; tsc clean; rendering NOT VERIFIED (no browser in this session) — pin shapes, halo and diamond swatch need a visual check.
+
+Task B (feat/app-shell): primary action contrast in MapScreen.web.tsx — generateLabel color background→text (#090909 on #0d52c3 was 2.86:1; #eeedea on the same fill is 5.96:1), and the busy-state ActivityIndicator that replaces the label on the same fill got the same fix.
+Files: mobile/components/MapScreen.web.tsx only; no theme change — an existing token, white still reserved for map chrome.
+Result: node --test 391 pass / 0 fail; tsc clean; leftover flagged: the boot-screen spinner (line ~587) is primary-on-background 2.86:1 — a different pairing, not in this task's scope; rendering NOT VERIFIED.
+
+Task C (feat/app-shell): dangerText token — theme.ts adds dangerText #f0552e (danger #a11d00 as text on dark was 2.55:1; dangerText is 5.73:1 on background / 5.63:1 on card), Design.md token table + rationale updated in the same change per theme.ts's spec-first rule, MapScreen.web.tsx errorTitle + errorNote adopt it. danger keeps every fill/map-ink use.
+Files: mobile/theme.ts, Design.md, mobile/components/MapScreen.web.tsx (3, approved D4); committed together with task B per user instruction.
+Result: node --test 391 pass / 0 fail; tsc clean; LEFTOVER danger-as-text at 2.55:1 in AdvisoryContent (443, 455), AdvisoryPanel (559), RiskAnalystPanel (184), ScenarioComparePanel (147) — web-graph files outside this task's budget, same fix pending; rendering NOT VERIFIED.

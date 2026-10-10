@@ -51,7 +51,8 @@ below rather than sitting alongside it. `mobile/theme.ts` is the implementation.
 | `land` | `#e6ece0` | Basemap land tint in `customMapStyle` |
 | `water` | `#c9e0ec` | Basemap water tint in `customMapStyle` |
 | `flood` | `#84a7d3` | The flood raster's own tint |
-| `danger` | `#a11d00` | Submerged hospitals, cut-off roads, CRITICAL |
+| `danger` | `#a11d00` | Submerged hospitals, cut-off roads, CRITICAL — fill and map ink, **not** a text colour on dark surfaces |
+| `dangerText` | `#f0552e` | Danger *as text* on `background`/`card` — error notes, failure headings. **5.73:1 / 5.63:1** |
 | `caution` | `#fcb42a` | Substations, MEDIUM. **Unchanged** from the light theme |
 | `white` | `#ffffff` | The map's floating buttons and the legend pill, **only** |
 | `onWhite` | `#181d26` | Text/icon colour on that white chrome |
@@ -62,6 +63,14 @@ a pale basemap (`land` is `#e6ece0`), and a dark chip on a pale landmass is a
 control nobody can see. The map's chrome is light while the app around it is
 dark; that inversion is deliberate and is why `text` cannot be used on those two
 surfaces.
+
+**`danger` fills; `dangerText` speaks.** `danger` (`#a11d00`) is ink for the
+pale basemap — hospital pins read 6.48:1 on `land` — but as text on the dark
+panel it collapses to 2.55:1, below the 4.5:1 floor for body text. That failed
+check is the one condition under which this palette adds a token: `dangerText`
+is the same signal tuned for dark surfaces (5.73:1 on `background`, 5.63:1 on
+`card`), for error copy and failure headings. `danger` keeps every use where
+it already works — pins, roads, CRITICAL chips.
 
 `land` and `water` are **map tints, not UI surfaces.** They colour the basemap
 and nothing else should reference them.

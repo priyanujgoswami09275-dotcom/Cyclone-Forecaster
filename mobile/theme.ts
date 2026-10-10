@@ -49,6 +49,17 @@ export const theme = {
 
     /** Terracotta — damaged/submerged assets, cut-off roads, critical chips. */
     danger: '#a11d00',
+    /**
+     * Danger as *text* on the dark surfaces — error notes, failure headings.
+     *
+     * `danger` is fill and map ink: 6.48:1 on the pale basemap, but on
+     * `background` it collapses to **2.55:1**, below the 4.5:1 floor — the
+     * failed check that is the one condition under which this palette adds
+     * a token. `dangerText` is the same signal tuned for dark surfaces:
+     * **5.73:1** on `background`, **5.63:1** on `card`. `danger` keeps every
+     * use where it already works — pins, roads, chips. Spec'd in Design.md.
+     */
+    dangerText: '#f0552e',
     /** Marigold — substations, medium priority. Unchanged from the old theme. */
     caution: '#fcb42a',
 

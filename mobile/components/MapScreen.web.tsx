@@ -865,7 +865,10 @@ export function MapScreen() {
                 ]}
               >
                 {advisoryBusy ? (
-                  <ActivityIndicator color={theme.colors.background} />
+                  // `text`, like the label it replaces: the spinner shares
+                  // the primary fill, where `background` was the same
+                  // 2.86:1 the label had.
+                  <ActivityIndicator color={theme.colors.text} />
                 ) : (
                   <Text style={styles.generateLabel}>Generate advisory</Text>
                 )}
@@ -1249,7 +1252,9 @@ const styles = StyleSheet.create({
   errorTitle: {
     fontFamily: theme.fonts.heading,
     fontSize: theme.typography.heading,
-    color: theme.colors.danger,
+    // `dangerText`, not `danger` — the boot-failure heading sat at 2.55:1 on
+    // the page background; the same signal tuned for dark surfaces is 5.73:1.
+    color: theme.colors.dangerText,
   },
 
   masthead: {
@@ -1526,7 +1531,10 @@ const styles = StyleSheet.create({
     fontFamily: theme.fonts.bodyMedium,
     fontSize: 12,
     lineHeight: 18,
-    color: theme.colors.danger,
+    // `dangerText`, not `danger`: 12 px error copy was the app's alarm colour
+    // at its least legible — 2.55:1 on background. Same signal, legible:
+    // 5.73:1.
+    color: theme.colors.dangerText,
     marginTop: 10,
   },
 
@@ -1606,7 +1614,19 @@ const styles = StyleSheet.create({
   generateLabel: {
     fontFamily: theme.fonts.bodySemibold,
     fontSize: theme.typography.emphasis,
-    color: theme.colors.background,
+    /**
+     * `text`, not `background`.
+     *
+     * The label was `background` (#090909) on `primary` (#0d52c3) — **2.86:1**,
+     * below both the 4.5:1 floor for 16 px text and the project's own rule that
+     * a primary-button label meets it. The most important action on the screen
+     * carried its least legible text.
+     *
+     * `text` (#eeedea) on the same fill is **5.96:1**, an existing token, and
+     * the right off-white: `white` is reserved for the map's floating chrome,
+     * which sits on the pale basemap, not for panel surfaces.
+     */
+    color: theme.colors.text,
   },
   secondaryActions: {
     flexDirection: 'row',
