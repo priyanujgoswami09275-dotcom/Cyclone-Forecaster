@@ -123,7 +123,9 @@ import {
   trackCaption,
   unreportedWindSentence,
   windLabel,
+  type ShellTabId,
 } from '../webViewModel';
+import { AppShell } from './AppShell.web';
 import { AdvisoryPanel, type WebAdvisoryOutcome } from './AdvisoryPanel';
 import { CyclonePicker } from './CyclonePicker';
 import { LocalitySearch } from './LocalitySearch';
@@ -168,6 +170,13 @@ export function MapScreen() {
   const compact = isCompactViewport(viewportWidth);
 
   const [chipId, setChipId] = useState<ChipId>(DEFAULT_CHIP);
+
+  /**
+   * The compact shell's active tab. Tabs navigate only — switching one never
+   * fires a request, and above all never the advisory: the quota-spending
+   * actions stay behind their own explicit presses wherever they live.
+   */
+  const [activeTab, setActiveTab] = useState<ShellTabId>('storm');
 
   /**
    * The cyclone the app is addressing, and the catalogue it is chosen from.
@@ -594,6 +603,552 @@ export function MapScreen() {
     return <BootError error={boot.error} />;
   }
 
+  // --- the bodies both layouts share -----------------------------------------
+  // Defined once so the compact shell and the wide layout render the same
+  // content and cannot drift: the wide layout wraps each body in its
+  // numbered Step card, the compact shell serves them as tab bodies. The
+  // content is UNCHANGED — moved, not edited; wording work is T5's.
+
+  /**
+   * The screen's title, derived once. It names **what is selected**, not
+   * the case study — a case-study name over a different storm's track is
+   * the mislabel the picker exists to allow.
+   */
+  const screenTitle = isCaseStudy
+    ? 'Cyclone Remal, May 2024'
+    : `Cyclone ${cycloneDisplayName(selectedCyclone?.name)}, ${selectedCyclone?.season}`;
+
+  /** The masthead's prose: subtitle + the case-study anchor line. */
+  const mastheadDetails = (
+    <>
+      <Text style={styles.subtitle}>
+        Given a storm strength, this shows which hospitals, substations and
+        roads the flood reaches across the Sundarbans delta, and drafts the
+        evacuation advisory.
+      </Text>
+      {/*
+        The anchor is the case study's own fact, so it is labelled as
+        such the moment something else is selected. Left unlabelled it
+        would read as a description of the storm on screen — a Remal
+        landfall sentence under a RUTH heading.
+      */}
+      <Text style={styles.anchorLine}>
+        {isCaseStudy ? '' : 'Case study — '}
+        {caseStudy.anchor}
+      </Text>
+    </>
+  );
+
+  /** The masthead's three facts, as badge chips. */
+  const mastheadBadges = (
+    <>
+      <Badge label="Case study" value="Remal 2024" />
+      <Badge
+        label="Localities"
+        value={String(localitiesResponse?.localities.length ?? 0)}
+      />
+      <Badge
+        label="Storm fixes"
+        value={track ? String(track.waypoint_count ?? track.path.length) : '—'}
+      />
+    </>
+  );
+
+  /** Step 1 — the Storm tab: the strength chips, then the storm picker. */
+  const stormBody = (
+    <>
+      {/*
+        The cyclone picker above the strength chips, as on the native
+        screen. The chips answer "how strong"; the picker answers "which
+        storm". `cat4`/`cat5`/`cat6` are all still there and `cat6` is
+        still the default.
+      */}
+      <CyclonePicker
+        cyclones={cyclones}
+        selectedId={selectedCycloneId ?? ''}
+        onSelect={onSelectCyclone}
+        live={live}
+        liveLoading={liveLoading}
+      />
+      <View style={styles.chips}>
+        {STRENGTH_CHIP_IDS.map((id) => {
+          const chip = resolveChip(id, categories, overlayIndex).chip;
+          const selected = id === chipId;
+          return (
+            <Pressable
+              key={id}
+              onPress={() => onSelectChip(id)}
+              accessibilityRole="radio"
+              accessibilityState={{ selected }}
+              accessibilityLabel={`${chip.label} scenario`}
+              onHoverIn={() => setHoveredChip(id)}
+              onHoverOut={() =>
+                setHoveredChip((current) => (current === id ? null : current))
+              }
+              style={({ pressed }: { pressed: boolean }) => [
+                styles.chip,
+                selected && styles.chipSelected,
+                hoveredChip === id && !selected && styles.chipHovered,
+                pressed && styles.pressed,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.chipLabel,
+                  selected && styles.chipLabelSelected,
+                ]}
+              >
+                {chip.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      <Text style={styles.scenarioHeadline}>{scenarioHeadline(figures)}</Text>
+
+      {/*
+        `figuresLine` is the shared string from `strengthChips.ts`, so
+        the Web and native screens state the scenario identically —
+        including the `≥` that marks category 6's wind as a band floor
+        rather than a midpoint.
+      */}
+      <Text style={styles.figuresLine}>
+        {figuresLine(
+          overlay,
+          exposure?.wind_is_band_midpoint,
+        )}
+      </Text>
+
+      {chipId === 'remal_observed' && borrowedCategory !== null ? (
+        <Text style={styles.borrowed}>
+          The preset is 115 km/h, which is not an IMD band. The counts
+          below borrow the nearest band ({borrowedCategory}).
+        </Text>
+      ) : null}
+
+      {figures.bandNote !== null ? (
+        <Text style={styles.bandNote}>{figures.bandNote}</Text>
+      ) : null}
+    </>
+  );
+
+  /** Step 2 — the Impact tab: the figures and the three asset tiles. */
+  const impactBody = (
+    <>
+      <View style={styles.factGrid}>
+        <Fact label="Wind" value={windLabel(figures.windKmph, figures.windIsBandMidpoint)} />
+        <Fact label="Storm surge" value={surgeLabel(figures.surgeM)} note="estimate" />
+        <Fact label="Flooded land" value={areaLabel(figures.floodedKm2)} note="model" />
+        <Fact label="IMD classification" value={figures.bandLabel || '—'} small />
+      </View>
+
+      <View style={styles.tiles}>
+        <Tile
+          label="Hospitals"
+          count={countLabel(counts.hospitals)}
+          unit={countUnit(counts.hospitals, 'submerged')}
+        />
+        <Tile
+          label="Substations"
+          count={countLabel(counts.substations)}
+          unit={countUnit(counts.substations, 'submerged')}
+        />
+        {/*
+          The road tile's wording is the project's honest position and
+          is asserted against the backend's own `definitions` block by
+          `tests/webViewModel.test.mjs`. "Impassable" would be a
+          connectivity claim this computation never makes.
+        */}
+        <Tile
+          label="Roads"
+          count={countLabel(counts.roads)}
+          unit={countUnit(counts.roads, ROADS_HONEST_LABEL)}
+          disclosure={ROADS_DISCLOSURE}
+        />
+      </View>
+
+      {exposureFailed ? (
+        <Text style={styles.errorNote}>
+          The exposure request did not complete, so these counts are
+          unknown rather than zero. Pick the strength again to retry.
+        </Text>
+      ) : exposureLoading ? (
+        <Text style={styles.loadingNote}>Reading the exposure figures…</Text>
+      ) : exposedCount === 0 && exposure !== null ? (
+        <Text style={styles.emptyNote}>
+          No modelled exposure at this strength — the surge is below what
+          this elevation model can resolve, so the water reaches no mapped
+          asset. Pick a stronger scenario to see the exposure path.
+        </Text>
+      ) : null}
+    </>
+  );
+
+  /** Step 3 — the Route tab: origin search, the route, the shelter notice. */
+  const routeBody = (
+    <>
+      <LocalitySearch
+        response={localitiesResponse}
+        selectedId={originId}
+        onSelect={setOriginId}
+        disabled={advisoryBusy}
+      />
+
+      <View style={styles.routeBlock}>
+        <Text
+          style={[
+            styles.routeHeadline,
+            route.reachable && styles.routeHeadlineOk,
+          ]}
+        >
+          {route.headline}
+        </Text>
+        {route.detail ? (
+          <Text style={styles.routeDetail}>{route.detail}</Text>
+        ) : null}
+
+        <View style={styles.allocationStats}>
+          <MiniStat
+            label="Localities allocated"
+            value={
+              route.evaluatedLocalities === null
+                ? '—'
+                : String(route.evaluatedLocalities)
+            }
+          />
+          <MiniStat label="Total travel" value={personKmLabel(route.totalPersonKm)} />
+          <MiniStat
+            label="Unmet demand"
+            value={route.unmetDemand === null ? '—' : route.unmetDemand.toLocaleString('en-US')}
+          />
+        </View>
+      </View>
+
+      {shelters.isDemo ? (
+        <View style={styles.shelterNotice}>
+          <Text style={styles.shelterHeading}>{shelters.heading}</Text>
+          <Text style={styles.shelterBody}>{shelters.body}</Text>
+        </View>
+      ) : null}
+    </>
+  );
+
+  /**
+   * Step 4 — the Advisory tab's core: the primary button, its gate reason,
+   * the stale notice, the cached example, and the result. The placeholder
+   * -shelter notice and the estimate wording above the result are the
+   * honesty rules; the secondary actions are separate consts so the wide
+   * row and the tab split can share them.
+   */
+  const advisoryBody = (
+    <>
+      <Pressable
+        onPress={onGenerateAdvisory}
+        disabled={!canGenerate}
+        accessibilityRole="button"
+        accessibilityLabel="Generate the district advisory"
+        style={({ pressed }) => [
+          styles.generate,
+          !canGenerate && styles.generateDisabled,
+          pressed && canGenerate && styles.pressed,
+        ]}
+      >
+        {advisoryBusy ? (
+          // `text`, like the label it replaces: the spinner shares
+          // the primary fill, where `background` was the same
+          // 2.86:1 the label had.
+          <ActivityIndicator color={theme.colors.text} />
+        ) : (
+          <Text style={styles.generateLabel}>Generate advisory</Text>
+        )}
+      </Pressable>
+
+      {availability.reason !== null ? (
+        <Text style={styles.generateHint}>{availability.reason}</Text>
+      ) : (
+        <Text style={styles.generateHint}>
+          The advisory text is written by a language model. The impact
+          figures above do not depend on it.
+        </Text>
+      )}
+
+      {staleNote !== null ? (
+        <View style={styles.staleNotice}>
+          <Text style={styles.staleText}>{staleNote}</Text>
+        </View>
+      ) : null}
+
+      {SAMPLE_ADVISORY !== null && advisory?.status !== 'ready' ? (
+        <Pressable
+          onPress={onLoadCachedAdvisory}
+          accessibilityRole="button"
+          style={({ pressed }) => [styles.cachedButton, pressed && styles.pressed]}
+        >
+          <Text style={styles.cachedLabel}>
+            Load cached example (not live)
+          </Text>
+        </Pressable>
+      ) : null}
+
+      <AdvisoryPanel
+        outcome={advisory}
+        shelterStatus={allocation?.shelter_status ?? null}
+        onRetry={onGenerateAdvisory}
+        onClose={() => setAdvisory(null)}
+      />
+    </>
+  );
+
+  /** The Compare scenarios action — Impact tab on compact, row on wide. */
+  const compareAction = (
+    <Pressable
+      onPress={onOpenCompare}
+      disabled={!canGenerate}
+      accessibilityRole="button"
+      accessibilityLabel="Compare scenarios"
+      style={({ pressed }) => [
+        styles.secondary,
+        !canGenerate && styles.generateDisabled,
+        pressed && canGenerate && styles.pressed,
+      ]}
+    >
+      <Text style={styles.secondaryLabel}>Compare scenarios</Text>
+    </Pressable>
+  );
+
+  /**
+   * The Generate analysis action — explicit press only, it spends Gemini
+   * quota. Lives beside Compare on the wide layout, alone in the Advisory
+   * tab on compact.
+   */
+  const analysisAction = (
+    <Pressable
+      onPress={onGenerateRisk}
+      disabled={!canGenerate}
+      accessibilityRole="button"
+      accessibilityLabel="Generate analysis"
+      style={({ pressed }) => [
+        styles.secondary,
+        !canGenerate && styles.generateDisabled,
+        pressed && canGenerate && styles.pressed,
+      ]}
+    >
+      <Text style={styles.secondaryLabel}>Generate analysis</Text>
+    </Pressable>
+  );
+
+  {/*
+    The comparison sheet and the risk analyst, rendered **inline** in both
+    layouts. A modal over a map would hide the map the panel is describing —
+    the same reason `AdvisoryPanel` renders inline rather than in a `Modal`.
+    The native screen wraps the same content-only components in
+    `AdvisoryModal`.
+  */}
+  const comparePanel = (
+    <View style={styles.inlinePanel}>
+      <Text style={styles.inlineHeading}>Scenario comparison</Text>
+      <ScenarioComparePanel
+        rows={compareRows ?? []}
+        loading={compareLoading}
+        error={compareError}
+      />
+    </View>
+  );
+
+  const riskPanel = (
+    <View style={styles.inlinePanel}>
+      <Text style={styles.inlineHeading}>Risk analysis</Text>
+      <RiskAnalystPanel result={riskResult} loading={riskLoading} error={riskError} />
+    </View>
+  );
+
+  /**
+   * The disclosure block and the provenance table, verbatim — every
+   * disclosure sentence stays. The compact shell serves it at the bottom of
+   * the Advisory tab until T6 gives it an info sheet reachable from every
+   * tab; the wide layout keeps it in the column, where it is today.
+   */
+  const disclosureBlock = (
+    <View style={styles.disclosureBlock}>
+      <Text style={styles.disclosureHeading}>What this is and is not</Text>
+      <Disclosure label="Screening estimate, not a forecast">
+        {caseStudy.limitation}
+      </Disclosure>
+      {/*
+        Plain language here; the backend's own disclosure string is
+        shown verbatim in "Show data provenance" below. It names a
+        source file and two wire-format fields, which belong with the
+        provenance and not in the first thing a judge reads.
+      */}
+      <Disclosure label="The storm track is history, not a prediction">
+        {TRACK_DISCLOSURE_PLAIN}
+        {track !== null
+          ? ` The strongest fix reports ${formatPeak(peakReportedWindKmph(track.waypoints))};${unreportedWindSentence(track)}`
+          : ''}
+      </Disclosure>
+      <Disclosure label="Population figures are estimates">
+        {population.text}
+      </Disclosure>
+      <Disclosure label="Roads intersected, not roads proven impassable">
+        {ROADS_DISCLOSURE}
+      </Disclosure>
+      <Disclosure label="The basemap is derived terrain">
+        Land and water come from the committed SRTM elevation model at
+        the 0 m contour, subsampled to about 150 m per pixel. It is for
+        orientation only, and no figure is measured off it.
+      </Disclosure>
+      <Disclosure label="Study area is scoped, not an administrative boundary">
+        {SCOPING_DISCLOSURE_PLAIN}
+      </Disclosure>
+      <Disclosure label="The flood model spreads water at most about 0.5 km inland">
+        The flood model spreads water at most about 0.5 km inland from the
+        water's edge, a limit of the algorithm it follows, so flooded area and
+        exposure counts are likely understated.
+      </Disclosure>
+      <Pressable
+        onPress={() => setShowAbout((on) => !on)}
+        accessibilityRole="button"
+        style={styles.aboutToggle}
+      >
+        <Text style={styles.aboutToggleLabel}>
+          {showAbout ? 'Hide' : 'Show'} data provenance
+        </Text>
+      </Pressable>
+      {showAbout ? (
+        <View style={styles.provenance}>
+          <ProvenanceRow label="Backend" value={API_BASE_URL || '(not configured)'} />
+          <ProvenanceRow
+            label="Surge method"
+            value={boot.categories.method}
+          />
+          <ProvenanceRow
+            label="Representative wind"
+            value={boot.categories.representative_wind}
+          />
+          <ProvenanceRow label="IMD bands" value={boot.categories.source} />
+          <ProvenanceRow
+            label="Track"
+            value={`${track?.source ?? 'IBTrACS'} · ${track?.wind_units ?? 'knots'}`}
+          />
+          <ProvenanceRow
+            label="Overlay rasters"
+            value={
+              overlay !== null
+                ? `${overlay.width_px}×${overlay.height_px} · ${overlay.flooded_pixels.toLocaleString('en-US')} flooded pixels · ${overlay.png_bytes.toLocaleString('en-US')} B`
+                : '—'
+            }
+          />
+          <Text style={styles.provenanceNote}>{overlay?.disclosure ?? ''}</Text>
+
+          {/*
+            The backend's own disclosure strings, verbatim. They are
+            unchanged on the wire and nothing here is edited — this is
+            where they belong, so the main panel can be plain language
+            without losing a single claim.
+          */}
+          <View style={styles.provenanceRow}>
+            <Text style={styles.provenanceKey}>Track, verbatim</Text>
+            <Text style={styles.provenanceValue}>
+              {track?.disclosure ?? '—'}
+            </Text>
+          </View>
+          <View style={styles.provenanceRow}>
+            <Text style={styles.provenanceKey}>Study area, verbatim</Text>
+            <Text style={styles.provenanceValue}>
+              {localitiesResponse?.scoping.disclosure ?? '—'}
+            </Text>
+          </View>
+        </View>
+      ) : null}
+    </View>
+  );
+
+  /** The attribution line — the wide page's foot, the Advisory tab's. */
+  const footer = (
+    <Text style={styles.footer}>
+      Cyclone Impact & Infrastructure Vulnerability Forecaster · Google Code
+      for Communities Hackathon 2nd Edition, Track 5 · every figure is computed
+      at request time from committed data.
+    </Text>
+  );
+
+  /**
+   * The compact layout: a one-line top bar, the map owning everything above
+   * the sheet, and the shell. The masthead's subtitle, the case-study anchor
+   * and the badges live at the bottom of the Storm tab until T6 moves them
+   * into the info sheet — the anchor sentence is a fact about the case
+   * study, so it moves rather than being deleted. The disclosure block sits
+   * at the bottom of the Advisory tab for the same reason.
+   *
+   * Nothing here fires a request on its own: a tab switch only switches
+   * tabs, and the quota-spending presses stay exactly where they were.
+   */
+  if (compact) {
+    return (
+      <View style={styles.shellScreen}>
+        <View style={styles.topBar}>
+          <Text style={styles.topBarTitle} numberOfLines={1}>
+            {screenTitle}
+          </Text>
+          {isCaseStudy ? (
+            <View style={styles.topBarTag}>
+              <Text style={styles.topBarTagLabel}>Case study</Text>
+            </View>
+          ) : null}
+        </View>
+
+        <View style={styles.mapArea}>
+          <WebImpactMap
+            exposure={exposure}
+            track={track}
+            overlay={overlay}
+            localities={localitiesResponse}
+            originId={originId}
+            shelter={routes?.shelter ?? null}
+            routeCoordinates={routes?.coordinates ?? []}
+            routeReachable={routes?.reachable ?? false}
+            loading={exposureLoading}
+            busy={exposureLoading || routesLoading}
+            fillContainer
+          />
+          <Text style={[styles.trackCaption, styles.trackCaptionInMap]}>
+            {trackCaption(track)}
+          </Text>
+        </View>
+
+        <AppShell activeTab={activeTab} onSelectTab={setActiveTab}>
+          {{
+            storm: (
+              <>
+                {stormBody}
+                {mastheadDetails}
+                <View style={styles.mastheadBadges}>{mastheadBadges}</View>
+              </>
+            ),
+            impact: (
+              <>
+                {impactBody}
+                {compareAction}
+                {showCompare ? comparePanel : null}
+              </>
+            ),
+            route: routeBody,
+            advisory: (
+              <>
+                {advisoryBody}
+                {analysisAction}
+                {showRisk ? riskPanel : null}
+                {disclosureBlock}
+                {footer}
+              </>
+            ),
+          }}
+        </AppShell>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.screen}>
       <ScrollView
@@ -616,9 +1171,7 @@ export function MapScreen() {
               sentence is the documented anchor.
             */}
             <Text style={[styles.title, compact && styles.titleCompact]}>
-              {isCaseStudy
-                ? 'Cyclone Remal, May 2024'
-                : `Cyclone ${cycloneDisplayName(selectedCyclone?.name)}, ${selectedCyclone?.season}`}
+              {screenTitle}
             </Text>
             {/*
               No landfall sentence here. It used to sit in this subtitle *and*
@@ -629,33 +1182,9 @@ export function MapScreen() {
               carries the geography once, with both countries named, and this
               subtitle states only what the tool does.
             */}
-            <Text style={styles.subtitle}>
-              Given a storm strength, this shows which hospitals, substations and
-              roads the flood reaches across the Sundarbans delta, and drafts the
-              evacuation advisory.
-            </Text>
-            {/*
-              The anchor is the case study's own fact, so it is labelled as
-              such the moment something else is selected. Left unlabelled it
-              would read as a description of the storm on screen — a Remal
-              landfall sentence under a RUTH heading.
-            */}
-            <Text style={styles.anchorLine}>
-              {isCaseStudy ? '' : 'Case study — '}
-              {caseStudy.anchor}
-            </Text>
+            {mastheadDetails}
           </View>
-          <View style={styles.mastheadBadges}>
-            <Badge label="Case study" value="Remal 2024" />
-            <Badge
-              label="Localities"
-              value={String(localitiesResponse?.localities.length ?? 0)}
-            />
-            <Badge
-              label="Storm fixes"
-              value={track ? String(track.waypoint_count ?? track.path.length) : '—'}
-            />
-          </View>
+          <View style={styles.mastheadBadges}>{mastheadBadges}</View>
         </View>
 
         {/* --- the working area: map + control column -------------------- */}
@@ -677,398 +1206,56 @@ export function MapScreen() {
           </View>
 
           <View style={[styles.controlColumn, compact && styles.controlColumnCompact]}>
-            {/* Step 1 — scenario */}
+            {/* Step 1 — scenario. The body is `stormBody`, shared with the
+                compact shell's Storm tab so the two layouts cannot drift. */}
             <Step index={1} title="Pick a storm">
-              {/*
-                The cyclone picker above the strength chips, as on the native
-                screen. The chips answer "how strong"; the picker answers "which
-                storm". `cat4`/`cat5`/`cat6` are all still there and `cat6` is
-                still the default.
-              */}
-              <CyclonePicker
-                cyclones={cyclones}
-                selectedId={selectedCycloneId ?? ''}
-                onSelect={onSelectCyclone}
-                live={live}
-                liveLoading={liveLoading}
-              />
-              <View style={styles.chips}>
-                {STRENGTH_CHIP_IDS.map((id) => {
-                  const chip = resolveChip(id, categories, overlayIndex).chip;
-                  const selected = id === chipId;
-                  return (
-                    <Pressable
-                      key={id}
-                      onPress={() => onSelectChip(id)}
-                      accessibilityRole="radio"
-                      accessibilityState={{ selected }}
-                      accessibilityLabel={`${chip.label} scenario`}
-                      onHoverIn={() => setHoveredChip(id)}
-                      onHoverOut={() =>
-                        setHoveredChip((current) => (current === id ? null : current))
-                      }
-                      style={({ pressed }: { pressed: boolean }) => [
-                        styles.chip,
-                        selected && styles.chipSelected,
-                        hoveredChip === id && !selected && styles.chipHovered,
-                        pressed && styles.pressed,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.chipLabel,
-                          selected && styles.chipLabelSelected,
-                        ]}
-                      >
-                        {chip.label}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-
-              <Text style={styles.scenarioHeadline}>{scenarioHeadline(figures)}</Text>
-
-              {/*
-                `figuresLine` is the shared string from `strengthChips.ts`, so
-                the Web and native screens state the scenario identically —
-                including the `≥` that marks category 6's wind as a band floor
-                rather than a midpoint.
-              */}
-              <Text style={styles.figuresLine}>
-                {figuresLine(
-                  overlay,
-                  exposure?.wind_is_band_midpoint,
-                )}
-              </Text>
-
-              {chipId === 'remal_observed' && borrowedCategory !== null ? (
-                <Text style={styles.borrowed}>
-                  The preset is 115 km/h, which is not an IMD band. The counts
-                  below borrow the nearest band ({borrowedCategory}).
-                </Text>
-              ) : null}
-
-              {figures.bandNote !== null ? (
-                <Text style={styles.bandNote}>{figures.bandNote}</Text>
-              ) : null}
+              {stormBody}
             </Step>
 
-            {/* Step 2 — impact */}
+            {/* Step 2 — impact. The body is `impactBody`, shared with the
+                compact shell's Impact tab. */}
             <Step index={2} title="See what gets hit">
-              <View style={styles.factGrid}>
-                <Fact label="Wind" value={windLabel(figures.windKmph, figures.windIsBandMidpoint)} />
-                <Fact label="Storm surge" value={surgeLabel(figures.surgeM)} note="estimate" />
-                <Fact label="Flooded land" value={areaLabel(figures.floodedKm2)} note="model" />
-                <Fact label="IMD classification" value={figures.bandLabel || '—'} small />
-              </View>
-
-              <View style={styles.tiles}>
-                <Tile
-                  label="Hospitals"
-                  count={countLabel(counts.hospitals)}
-                  unit={countUnit(counts.hospitals, 'submerged')}
-                />
-                <Tile
-                  label="Substations"
-                  count={countLabel(counts.substations)}
-                  unit={countUnit(counts.substations, 'submerged')}
-                />
-                {/*
-                  The road tile's wording is the project's honest position and
-                  is asserted against the backend's own `definitions` block by
-                  `tests/webViewModel.test.mjs`. "Impassable" would be a
-                  connectivity claim this computation never makes.
-                */}
-                <Tile
-                  label="Roads"
-                  count={countLabel(counts.roads)}
-                  unit={countUnit(counts.roads, ROADS_HONEST_LABEL)}
-                  disclosure={ROADS_DISCLOSURE}
-                />
-              </View>
-
-              {exposureFailed ? (
-                <Text style={styles.errorNote}>
-                  The exposure request did not complete, so these counts are
-                  unknown rather than zero. Pick the strength again to retry.
-                </Text>
-              ) : exposureLoading ? (
-                <Text style={styles.loadingNote}>Reading the exposure figures…</Text>
-              ) : exposedCount === 0 && exposure !== null ? (
-                <Text style={styles.emptyNote}>
-                  No modelled exposure at this strength — the surge is below what
-                  this elevation model can resolve, so the water reaches no mapped
-                  asset. Pick a stronger scenario to see the exposure path.
-                </Text>
-              ) : null}
+              {impactBody}
             </Step>
 
-            {/* Routing and allocation */}
+            {/* Routing and allocation. The body is `routeBody`, shared with
+                the compact shell's Route tab. */}
             <Step index={3} title="Check the evacuation route">
-              <LocalitySearch
-                response={localitiesResponse}
-                selectedId={originId}
-                onSelect={setOriginId}
-                disabled={advisoryBusy}
-              />
-
-              <View style={styles.routeBlock}>
-                <Text
-                  style={[
-                    styles.routeHeadline,
-                    route.reachable && styles.routeHeadlineOk,
-                  ]}
-                >
-                  {route.headline}
-                </Text>
-                {route.detail ? (
-                  <Text style={styles.routeDetail}>{route.detail}</Text>
-                ) : null}
-
-                <View style={styles.allocationStats}>
-                  <MiniStat
-                    label="Localities allocated"
-                    value={
-                      route.evaluatedLocalities === null
-                        ? '—'
-                        : String(route.evaluatedLocalities)
-                    }
-                  />
-                  <MiniStat label="Total travel" value={personKmLabel(route.totalPersonKm)} />
-                  <MiniStat
-                    label="Unmet demand"
-                    value={route.unmetDemand === null ? '—' : route.unmetDemand.toLocaleString('en-US')}
-                  />
-                </View>
-              </View>
-
-              {shelters.isDemo ? (
-                <View style={styles.shelterNotice}>
-                  <Text style={styles.shelterHeading}>{shelters.heading}</Text>
-                  <Text style={styles.shelterBody}>{shelters.body}</Text>
-                </View>
-              ) : null}
+              {routeBody}
             </Step>
 
-            {/* Step 4 — the advisory */}
+            {/* Step 4 — the advisory. `advisoryBody` is shared with the
+                compact shell's Advisory tab; the two secondary actions stay
+                a side-by-side row here because the wide layout shows both,
+                while the tabs separate them per the approved decisions
+                (Compare under Impact, analysis here). */}
             <Step index={4} title="Get the evacuation advisory">
-              <Pressable
-                onPress={onGenerateAdvisory}
-                disabled={!canGenerate}
-                accessibilityRole="button"
-                accessibilityLabel="Generate the district advisory"
-                style={({ pressed }) => [
-                  styles.generate,
-                  !canGenerate && styles.generateDisabled,
-                  pressed && canGenerate && styles.pressed,
-                ]}
-              >
-                {advisoryBusy ? (
-                  // `text`, like the label it replaces: the spinner shares
-                  // the primary fill, where `background` was the same
-                  // 2.86:1 the label had.
-                  <ActivityIndicator color={theme.colors.text} />
-                ) : (
-                  <Text style={styles.generateLabel}>Generate advisory</Text>
-                )}
-              </Pressable>
-
+              {advisoryBody}
               {/*
-                The comparison and the risk analyst, as secondary actions below
-                the primary one. Both are reached from an explicit press — the
-                risk analyst spends Gemini quota.
+                Both are reached from an explicit press — the risk analyst
+                spends Gemini quota.
               */}
               <View style={styles.secondaryActions}>
-                <Pressable
-                  onPress={onOpenCompare}
-                  disabled={!canGenerate}
-                  accessibilityRole="button"
-                  accessibilityLabel="Compare scenarios"
-                  style={({ pressed }) => [
-                    styles.secondary,
-                    !canGenerate && styles.generateDisabled,
-                    pressed && canGenerate && styles.pressed,
-                  ]}
-                >
-                  <Text style={styles.secondaryLabel}>Compare scenarios</Text>
-                </Pressable>
-                <Pressable
-                  onPress={onGenerateRisk}
-                  disabled={!canGenerate}
-                  accessibilityRole="button"
-                  accessibilityLabel="Generate analysis"
-                  style={({ pressed }) => [
-                    styles.secondary,
-                    !canGenerate && styles.generateDisabled,
-                    pressed && canGenerate && styles.pressed,
-                  ]}
-                >
-                  <Text style={styles.secondaryLabel}>Generate analysis</Text>
-                </Pressable>
+                {compareAction}
+                {analysisAction}
               </View>
-
-              {availability.reason !== null ? (
-                <Text style={styles.generateHint}>{availability.reason}</Text>
-              ) : (
-                <Text style={styles.generateHint}>
-                  The advisory text is written by a language model. The impact
-                  figures above do not depend on it.
-                </Text>
-              )}
-
-              {staleNote !== null ? (
-                <View style={styles.staleNotice}>
-                  <Text style={styles.staleText}>{staleNote}</Text>
-                </View>
-              ) : null}
-
-              {SAMPLE_ADVISORY !== null && advisory?.status !== 'ready' ? (
-                <Pressable
-                  onPress={onLoadCachedAdvisory}
-                  accessibilityRole="button"
-                  style={({ pressed }) => [styles.cachedButton, pressed && styles.pressed]}
-                >
-                  <Text style={styles.cachedLabel}>
-                    Load cached example (not live)
-                  </Text>
-                </Pressable>
-              ) : null}
-
-              <AdvisoryPanel
-                outcome={advisory}
-                shelterStatus={allocation?.shelter_status ?? null}
-                onRetry={onGenerateAdvisory}
-                onClose={() => setAdvisory(null)}
-              />
             </Step>
 
-            {/*
-              The comparison sheet and the risk analyst, rendered **inline** on
-              Web. A modal over a map would hide the map the panel is
-              describing — the same reason `AdvisoryPanel` renders inline
-              rather than in a `Modal`. The native screen wraps the same
-              content-only components in `AdvisoryModal`.
-            */}
-            {showCompare ? (
-              <View style={styles.inlinePanel}>
-                <Text style={styles.inlineHeading}>Scenario comparison</Text>
-                <ScenarioComparePanel
-                  rows={compareRows ?? []}
-                  loading={compareLoading}
-                  error={compareError}
-                />
-              </View>
-            ) : null}
+            {/* The comparison sheet, in whichever branch owns the Compare
+                button — inline on Web in both layouts; the compact shell
+                puts it under the Impact tab with its action. */}
+            {showCompare ? comparePanel : null}
 
-            {showRisk ? (
-              <View style={styles.inlinePanel}>
-                <Text style={styles.inlineHeading}>Risk analysis</Text>
-                <RiskAnalystPanel result={riskResult} loading={riskLoading} error={riskError} />
-              </View>
-            ) : null}
+            {showRisk ? riskPanel : null}
 
-            {/* --- disclosures ------------------------------------------- */}
-            <View style={styles.disclosureBlock}>
-              <Text style={styles.disclosureHeading}>What this is and is not</Text>
-              <Disclosure label="Screening estimate, not a forecast">
-                {caseStudy.limitation}
-              </Disclosure>
-              {/*
-                Plain language here; the backend's own disclosure string is
-                shown verbatim in "Show data provenance" below. It names a
-                source file and two wire-format fields, which belong with the
-                provenance and not in the first thing a judge reads.
-              */}
-              <Disclosure label="The storm track is history, not a prediction">
-                {TRACK_DISCLOSURE_PLAIN}
-                {track !== null
-                  ? ` The strongest fix reports ${formatPeak(peakReportedWindKmph(track.waypoints))};${unreportedWindSentence(track)}`
-                  : ''}
-              </Disclosure>
-              <Disclosure label="Population figures are estimates">
-                {population.text}
-              </Disclosure>
-              <Disclosure label="Roads intersected, not roads proven impassable">
-                {ROADS_DISCLOSURE}
-              </Disclosure>
-              <Disclosure label="The basemap is derived terrain">
-                Land and water come from the committed SRTM elevation model at
-                the 0 m contour, subsampled to about 150 m per pixel. It is for
-                orientation only, and no figure is measured off it.
-              </Disclosure>
-              <Disclosure label="Study area is scoped, not an administrative boundary">
-                {SCOPING_DISCLOSURE_PLAIN}
-              </Disclosure>
-              <Disclosure label="The flood model spreads water at most about 0.5 km inland">
-                The flood model spreads water at most about 0.5 km inland from the
-                water's edge, a limit of the algorithm it follows, so flooded area and
-                exposure counts are likely understated.
-              </Disclosure>
-              <Pressable
-                onPress={() => setShowAbout((on) => !on)}
-                accessibilityRole="button"
-                style={styles.aboutToggle}
-              >
-                <Text style={styles.aboutToggleLabel}>
-                  {showAbout ? 'Hide' : 'Show'} data provenance
-                </Text>
-              </Pressable>
-              {showAbout ? (
-                <View style={styles.provenance}>
-                  <ProvenanceRow label="Backend" value={API_BASE_URL || '(not configured)'} />
-                  <ProvenanceRow
-                    label="Surge method"
-                    value={boot.categories.method}
-                  />
-                  <ProvenanceRow
-                    label="Representative wind"
-                    value={boot.categories.representative_wind}
-                  />
-                  <ProvenanceRow label="IMD bands" value={boot.categories.source} />
-                  <ProvenanceRow
-                    label="Track"
-                    value={`${track?.source ?? 'IBTrACS'} · ${track?.wind_units ?? 'knots'}`}
-                  />
-                  <ProvenanceRow
-                    label="Overlay rasters"
-                    value={
-                      overlay !== null
-                        ? `${overlay.width_px}×${overlay.height_px} · ${overlay.flooded_pixels.toLocaleString('en-US')} flooded pixels · ${overlay.png_bytes.toLocaleString('en-US')} B`
-                        : '—'
-                    }
-                  />
-                  <Text style={styles.provenanceNote}>{overlay?.disclosure ?? ''}</Text>
-
-                  {/*
-                    The backend's own disclosure strings, verbatim. They are
-                    unchanged on the wire and nothing here is edited — this is
-                    where they belong, so the main panel can be plain language
-                    without losing a single claim.
-                  */}
-                  <View style={styles.provenanceRow}>
-                    <Text style={styles.provenanceKey}>Track, verbatim</Text>
-                    <Text style={styles.provenanceValue}>
-                      {track?.disclosure ?? '—'}
-                    </Text>
-                  </View>
-                  <View style={styles.provenanceRow}>
-                    <Text style={styles.provenanceKey}>Study area, verbatim</Text>
-                    <Text style={styles.provenanceValue}>
-                      {localitiesResponse?.scoping.disclosure ?? '—'}
-                    </Text>
-                  </View>
-                </View>
-              ) : null}
-            </View>
+            {/* --- disclosures. `disclosureBlock` is shared with the compact
+                shell's Advisory tab until T6 gives it an info sheet of its
+                own. -------------------------------------------------- */}
+            {disclosureBlock}
           </View>
         </View>
 
-        <Text style={styles.footer}>
-          Cyclone Impact & Infrastructure Vulnerability Forecaster · Google Code
-          for Communities Hackathon 2nd Edition, Track 5 · every figure is computed
-          at request time from committed data.
-        </Text>
+        {footer}
       </ScrollView>
     </View>
   );
@@ -1305,6 +1492,42 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   mastheadBadges: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', maxWidth: 380 },
+
+  // --- the compact shell's chrome --------------------------------------------
+  /** The compact screen: a column of top bar, map, sheet. */
+  shellScreen: { flex: 1, backgroundColor: theme.colors.background },
+  /** One line: the storm name, and the case-study tag when it applies. */
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  topBarTitle: {
+    fontFamily: theme.fonts.heading,
+    fontSize: 18,
+    color: theme.colors.text,
+  },
+  topBarTag: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.button,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    backgroundColor: theme.colors.card,
+  },
+  topBarTagLabel: {
+    fontFamily: theme.fonts.bodyMedium,
+    fontSize: 12,
+    color: theme.colors.textMuted,
+  },
+  /** The map owns everything between the top bar and the sheet. */
+  mapArea: { flex: 1, minHeight: 0 },
+  /** The caption sits under a full-bleed map, not inside a padded column. */
+  trackCaptionInMap: { paddingHorizontal: theme.spacing.xs, paddingBottom: 4 },
   badge: {
     backgroundColor: theme.colors.card,
     borderWidth: 1,

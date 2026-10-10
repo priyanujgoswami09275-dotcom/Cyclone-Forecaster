@@ -48,6 +48,7 @@ const WEB_GRAPH = [
   'trackFacts.ts',
   'webBasemap.ts',
   'webViewModel.ts',
+  'components/AppShell.web.tsx',
   'components/MapScreen.web.tsx',
   'components/WebImpactMap.tsx',
   'components/AdvisoryPanel.tsx',

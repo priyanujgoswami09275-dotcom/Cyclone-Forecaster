@@ -39,10 +39,13 @@
  *
  * ## Placement contract
  *
- * The sheet positions itself (`absolute`, bottom, full width, height set by
- * the detent), so the caller drops it in as a sibling of the map inside a
- * full-height view and nothing else needs to agree on geometry. Heights come
- * from `sheetHeightPx` so the fractions stay in `webViewModel.ts`, tested.
+ * The sheet is **in flow**, at its detent height: the parent's column is
+ * the top bar, the map (`flex: 1`), then this sheet — so the map ends
+ * exactly where the sheet begins and the map's own bottom-edge chrome (the
+ * basemap disclosure strip, the legend, the S/T/L buttons) stays visible.
+ * An absolute overlay would put all of that behind the sheet, and a hidden
+ * disclosure is not an option. Heights come from `sheetHeightPx` so the
+ * fractions stay in `webViewModel.ts`, tested.
  */
 
 import React, { useState } from 'react';
@@ -141,15 +144,14 @@ export function AppShell({ activeTab, onSelectTab, children }: AppShellProps) {
 
 const styles = StyleSheet.create({
   /**
-   * Self-docking: absolute, bottom, full width. The height arrives per
-   * detent from the style array in the JSX, never from here — the fractions
-   * belong to `webViewModel.ts` where the tests can reach them.
+   * In flow, at its detent height — the parent stacks the top bar, the map
+   * (`flex: 1`) and this sheet, so the map ends exactly where the sheet
+   * begins and the map's own bottom-edge chrome stays visible rather than
+   * sitting behind an overlay. The height still arrives per detent from the
+   * style array in the JSX, never from here — the fractions belong to
+   * `webViewModel.ts` where the tests can reach them.
    */
   sheet: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
     backgroundColor: theme.colors.card,
     borderTopLeftRadius: theme.radius.card,
     borderTopRightRadius: theme.radius.card,

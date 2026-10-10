@@ -156,6 +156,11 @@ export interface WebImpactMapProps {
   loading: boolean;
   /** Disables pointer interaction while a request is in flight. */
   busy: boolean;
+  /**
+   * Fill the parent instead of taking the aspect-capped panel box — the
+   * compact shell's full-bleed map, which owns the space above the sheet.
+   */
+  fillContainer?: boolean;
 }
 
 /**
@@ -196,6 +201,7 @@ export function WebImpactMap({
   routeReachable,
   loading,
   busy,
+  fillContainer = false,
 }: WebImpactMapProps) {
   const [view, setView] = useState<MapCamera>({ kind: 'region' });
   const [hovered, setHovered] = useState<string | null>(null);
@@ -252,7 +258,11 @@ export function WebImpactMap({
    */
   const panelBox = useMemo(
     () =>
-      panelWidth === null
+      // Full-bleed takes the parent's whole box; the aspect-matched panel
+      // box is the wide layout's. `meet` letterboxes the drawing into
+      // whatever space the sheet leaves, which is the honest crop — never
+      // a silent one.
+      fillContainer || panelWidth === null
         ? null
         : mapPanelBox({
             panelWidthPx: Math.max(0, panelWidth - 2),
@@ -260,7 +270,7 @@ export function WebImpactMap({
             viewportHeightPx: viewportHeight,
             compact,
           }),
-    [panelWidth, frame, viewportHeight, compact],
+    [fillContainer, panelWidth, frame, viewportHeight, compact],
   );
   const projection = useMemo(
     () => makeProjection(bounds, frame.width, frame.height),
@@ -387,6 +397,9 @@ export function WebImpactMap({
     <View
       style={[
         styles.wrap,
+        // Full-bleed: the parent's whole box, no panel border or radius —
+        // the sheet supplies the visual boundary below, the top bar above.
+        fillContainer && styles.wrapFill,
         // `+ 2` is the panel's own 1 px border, so the drawing's content box
         // is exactly aspect-matched and `meet` has nothing to letterbox.
         // Where the 55vh cap narrows the box, `alignSelf: 'center'` centres
@@ -916,6 +929,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.colors.border,
     overflow: 'hidden',
+  },
+  /**
+   * Full-bleed variant: the compact shell's map owns the space above the
+   * sheet, so no border and no radius — and `minHeight: 0` releases the
+   * wide layout's 460 px floor, which at the full detent would push the
+   * map taller than the viewport and shove the sheet off-screen.
+   */
+  wrapFill: {
+    borderRadius: 0,
+    borderWidth: 0,
+    minHeight: 0,
   },
   svg: {
     width: '100%',
