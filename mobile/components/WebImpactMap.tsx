@@ -103,6 +103,24 @@ const PIN_COLOURS = {
 } as const;
 
 /**
+ * The flood raster's own ink — the blue the committed PNGs are actually
+ * painted with (four depth classes from `render_overlays.RGB`, of which this
+ * is the deepest).
+ *
+ * The Web legend swatch resolves `theme.flood` to **this**, not to the
+ * theme's `flood` tint (#84a7d3), because a swatch is a promise about the
+ * layer it explains: measured against the basemap, the tint reads **2.06:1**
+ * on land and **1.82:1** on water while the raster's own blue reads **4.29:1**
+ * and **3.78:1** — a pale periwinkle promise about a royal-blue layer is the
+ * one lie this legend must not tell. `legend.ts` documents its own view (the
+ * swatch as app chrome following the theme) and that stance still holds for
+ * the native screen, out of scope this round: the shared `flood` token is
+ * untouched and the native legend still resolves it. Flagged in MEMORY.md
+ * alongside legend.ts's own Stage B note.
+ */
+const FLOOD_RASTER_COLOUR = '#2563eb';
+
+/**
  * Resolved legend swatches.
  *
  * The rows themselves come from `legend.ts`, which names each colour as a
@@ -111,9 +129,13 @@ const PIN_COLOURS = {
  * `Record<SwatchSource, string>` rather than a `switch`, so adding a name to
  * the union without giving it a colour is a compile error. The native app does
  * the same thing with a `switch` for the same reason.
+ *
+ * `theme.flood` is the one deliberate exception to "nothing retyped": the
+ * raster's ink is not a theme colour at all, so no field path can name it —
+ * see `FLOOD_RASTER_COLOUR` above.
  */
 const SWATCHES: Record<SwatchSource, string> = {
-  'theme.flood': theme.colors.flood,
+  'theme.flood': FLOOD_RASTER_COLOUR,
   'theme.water': theme.colors.water,
   'mapStyles.assetPinColours.hospital': PIN_COLOURS.hospital,
   'mapStyles.assetPinColours.substation': PIN_COLOURS.substation,
@@ -527,6 +549,17 @@ export function WebImpactMap({
           ) : null}
 
           {/* --- exposed assets ------------------------------------------
+              Shape tells the two classes apart; ink makes both of them
+              visible. Until 2026-10-11 both were identical circles, so colour
+              alone distinguished a hospital from a substation — and the
+              substation's marigold is **1.49:1** against the pale basemap,
+              i.e. invisible without an edge. Hospitals stay circles;
+              substations are diamonds — distinct from the shelter's
+              ink-filled diamond by fill and by size, and from hospitals by
+              shape. Both carry a 1.5 px ink stroke (`background`, **16.5:1**
+              on land), which also keeps the classes readable under
+              colour-vision deficiency that cannot lean on the marigold/red
+              split. The legend's substation swatch is drawn to match.
               `tracksViewChanges` is Android-specific and has no SVG analogue;
               the native screen sets it false to stop the pin bitmap
               re-rendering on every parent update, and here there is no native
@@ -539,14 +572,49 @@ export function WebImpactMap({
               onMouseLeave={() => setHovered(null)}
             >
               <circle cx={asset.x} cy={asset.y} r={9} fill="transparent" />
-              <circle cx={asset.x} cy={asset.y} r={4.5} fill={asset.colour} />
+              {asset.kind === 'substation' ? (
+                <rect
+                  x={asset.x - 3.6}
+                  y={asset.y - 3.6}
+                  width={7.2}
+                  height={7.2}
+                  fill={asset.colour}
+                  stroke={theme.colors.background}
+                  strokeWidth={1.5}
+                  transform={`rotate(45 ${asset.x} ${asset.y})`}
+                />
+              ) : (
+                <circle
+                  cx={asset.x}
+                  cy={asset.y}
+                  r={4.5}
+                  fill={asset.colour}
+                  stroke={theme.colors.background}
+                  strokeWidth={1.5}
+                />
+              )}
               <title>{`${asset.name} — ${asset.status}`}</title>
             </g>
           ))}
 
-          {/* --- the origin, drawn last so nothing covers it -------------- */}
+          {/* --- the origin, drawn last so nothing covers it --------------
+              The ring is `selectedText` to match the safe-route line, but on
+              the pale basemap that is **2.33:1** — under the 3:1 floor for a
+              graphic a user must be able to find — so the ring gets a 4.5 px
+              ink circle behind it (a halo each side of the 2 px blue) and the
+              dot is ink-stroked the same way as the asset pins. The blue is
+              what the origin *means*; the ink is what makes it findable.
+          */}
           {originPoint !== null ? (
             <g>
+              <circle
+                cx={originPoint.x}
+                cy={originPoint.y}
+                r={11}
+                fill="none"
+                stroke={theme.colors.background}
+                strokeWidth={4.5}
+              />
               <circle
                 cx={originPoint.x}
                 cy={originPoint.y}
@@ -555,7 +623,14 @@ export function WebImpactMap({
                 stroke={PIN_COLOURS.origin}
                 strokeWidth={2}
               />
-              <circle cx={originPoint.x} cy={originPoint.y} r={5} fill={PIN_COLOURS.origin} />
+              <circle
+                cx={originPoint.x}
+                cy={originPoint.y}
+                r={5}
+                fill={PIN_COLOURS.origin}
+                stroke={theme.colors.background}
+                strokeWidth={1.5}
+              />
               <title>{`Evacuation origin: ${originPoint.name}`}</title>
             </g>
           ) : null}
@@ -656,13 +731,15 @@ export function WebImpactMap({
 }
 
 /**
- * One legend swatch, shaped by `kind`.
+ * One legend swatch, shaped by `kind` — and for the substation, by shape.
  *
  * `flood` is a filled box with a stroke because the flood layer is a fill with
  * an edge; `dash` is drawn as segments rather than a solid box because on this
  * platform the dash is honoured, so the shape carries the meaning; `path` is a
  * dashed bar for the track, which is dashed on Web. Each is drawn in the
- * resolved colour and nothing is retyped.
+ * resolved colour and nothing is retyped. The substation row is the one `pin`
+ * drawn as a diamond, because its map pin is: a swatch that disagrees with the
+ * pin it explains is the flood-swatch problem in another shape.
  */
 function LegendSwatch({ row }: { row: (typeof LEGEND_ROWS)[number] }) {
   const colour = row.fillSource ? SWATCHES[row.fillSource] : theme.colors.flood;
@@ -677,6 +754,9 @@ function LegendSwatch({ row }: { row: (typeof LEGEND_ROWS)[number] }) {
     );
   }
   if (row.kind === 'pin') {
+    if (row.id === 'substation') {
+      return <View style={[styles.swatchDiamond, { backgroundColor: colour }]} />;
+    }
     return <View style={[styles.swatchDot, { backgroundColor: colour }]} />;
   }
   return (
@@ -724,12 +804,19 @@ function MapButton({
    * The icon's colour, taken from the same states that change the button's
    * background, so the glyph always contrasts with what is behind it.
    *
+   * **Only hover** swaps to `selectedText`, because hover is also what swaps
+   * the *fill* to `selectedFill`, where `selectedText` is 6.65:1. The active
+   * state keeps `onWhite` (16.90:1 on the white fill): turning the active
+   * glyph `selectedText` on white was **2.80:1** — the icon vanished exactly
+   * when the button was in use — so **the border carries active** (the 2 px
+   * `selectedText` ring in `mapButtonActive`), not the icon colour.
+   *
    * Passed as an explicit prop rather than relying on a `color` entry in a
    * `View` style: RN's `ViewStyle` type has no `color` key, and on the Web
    * build it would need a cast to `WebOnly`. An explicit prop is checked by
    * `tsc` and cannot silently fall out of step with the button's own states.
    */
-  const iconColour = active || (hovered && !disabled)
+  const iconColour = hovered && !disabled
     ? theme.colors.selectedText
     : theme.colors.onWhite;
 
@@ -935,6 +1022,12 @@ const styles = StyleSheet.create({
     width: 9,
     height: 9,
     borderRadius: 5,
+  },
+  /** Matches the substation's diamond map pin — see `LegendSwatch`. */
+  swatchDiamond: {
+    width: 8,
+    height: 8,
+    transform: [{ rotate: '45deg' }],
   },
   swatchDash: {
     flexDirection: 'row',

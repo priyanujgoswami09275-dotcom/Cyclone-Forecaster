@@ -4628,3 +4628,7 @@ attempt 1 of the internal correction pass, so that path is still unexercised.
 T1 (feat/app-shell): shell state as pure functions in webViewModel.ts — SHELL_TABS (storm first, dependency order), SHEET_DETENTS peek/half/full (default half), nextSheetDetent cycle, fractions 0.16/0.5/0.92, sheetHeightPx, shellApplies delegating to the 860 px rule.
 Files: mobile/webViewModel.ts; mobile/tests/webViewModel.test.mjs (tests written first — red SyntaxError on the missing export, then green).
 Result: node --test 391 pass / 0 fail (6 new); tsc clean; nothing rendered yet — T2 builds AppShell.web.tsx next.
+
+Task A (feat/app-shell): map-layer legibility in WebImpactMap.tsx — both asset pins get 1.5px ink outlines, substations become diamonds (was circles at caution #fcb42a = 1.49:1 on basemap land), origin ring/dot get ink edges (was 2.33:1), active map-button icon stays onWhite (border carries active; was selectedText-on-white 2.80:1), legend flood swatch remaps to FLOOD_RASTER_COLOUR #2563eb (the raster's own ink; the theme.flood tint #84a7d3 read 2.06:1 on land).
+Files: mobile/components/WebImpactMap.tsx only; legend.ts and the shared flood token untouched — the native legend still resolves theme.flood (Web/native legend divergence flagged here, same class as the Android dash caveat).
+Result: node --test 391 pass / 0 fail; tsc clean; rendering NOT VERIFIED (no browser in this session) — pin shapes, halo and diamond swatch need a visual check.
