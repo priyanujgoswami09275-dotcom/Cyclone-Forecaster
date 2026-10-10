@@ -1321,8 +1321,7 @@ const styles = StyleSheet.create({
   },
   badgeLabel: {
     fontFamily: theme.fonts.body,
-    fontSize: 10,
-    letterSpacing: 1,
+    fontSize: 12,
     textTransform: 'uppercase',
     color: theme.colors.textMuted,
     marginTop: 2,
@@ -1353,10 +1352,10 @@ const styles = StyleSheet.create({
   mapColumnInner: { minHeight: 620 },
   trackCaption: {
     fontFamily: theme.fonts.body,
-    fontSize: 11,
+    fontSize: 12,
     color: theme.colors.textMuted,
     marginTop: 8,
-    lineHeight: 16,
+    lineHeight: 17,
   },
   controlColumn: { flex: 1, minWidth: 340, gap: theme.spacing.sm },
   /**
@@ -1441,15 +1440,15 @@ const styles = StyleSheet.create({
   },
   borrowed: {
     fontFamily: theme.fonts.body,
-    fontSize: 11,
-    lineHeight: 16,
+    fontSize: 12,
+    lineHeight: 17,
     color: theme.colors.caution,
     marginTop: 8,
   },
   bandNote: {
     fontFamily: theme.fonts.body,
-    fontSize: 11,
-    lineHeight: 16,
+    fontSize: 12,
+    lineHeight: 17,
     color: theme.colors.textMuted,
     marginTop: 8,
   },
@@ -1466,8 +1465,9 @@ const styles = StyleSheet.create({
   },
   factLabel: {
     fontFamily: theme.fonts.body,
-    fontSize: 10,
-    letterSpacing: 1,
+    // 12 px: the label floor — 10 px was under the platform minimum and
+    // leaned on letterspacing to survive; at 12 px the tracking goes.
+    fontSize: 12,
     textTransform: 'uppercase',
     color: theme.colors.textMuted,
   },
@@ -1478,7 +1478,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   factValueSmall: { fontSize: 14, lineHeight: 20 },
-  factNote: { fontFamily: theme.fonts.body, fontSize: 10, color: theme.colors.textMuted },
+  factNote: { fontFamily: theme.fonts.body, fontSize: 12, color: theme.colors.textMuted },
 
   /**
    * The tiles wrap below ~440 px of column width: `flexBasis 140` puts two
@@ -1498,19 +1498,22 @@ const styles = StyleSheet.create({
   },
   tileLabel: {
     fontFamily: theme.fonts.body,
-    fontSize: 11,
+    fontSize: 12,
     color: theme.colors.text,
   },
   tileCount: {
     fontFamily: theme.fonts.heading,
-    fontSize: 26,
+    // 22 px: one stat style, shared with `factValue` and the map's area tag
+    // — 26 px made the tiles a different class of number from the facts
+    // they sit under, for no structural reason.
+    fontSize: 22,
     color: theme.colors.text,
     marginTop: 3,
   },
   tileUnit: {
     fontFamily: theme.fonts.body,
-    fontSize: 10,
-    lineHeight: 14,
+    fontSize: 12,
+    lineHeight: 16,
     color: theme.colors.textMuted,
     marginTop: 2,
   },
@@ -1577,7 +1580,7 @@ const styles = StyleSheet.create({
   },
   miniStatLabel: {
     fontFamily: theme.fonts.body,
-    fontSize: 10,
+    fontSize: 12,
     color: theme.colors.textMuted,
     marginTop: 2,
   },
@@ -1595,8 +1598,8 @@ const styles = StyleSheet.create({
   },
   shelterBody: {
     fontFamily: theme.fonts.body,
-    fontSize: 11,
-    lineHeight: 16,
+    fontSize: 12,
+    lineHeight: 17,
     color: theme.colors.background,
     marginTop: 3,
   },
@@ -1665,8 +1668,8 @@ const styles = StyleSheet.create({
   },
   generateHint: {
     fontFamily: theme.fonts.body,
-    fontSize: 11,
-    lineHeight: 16,
+    fontSize: 12,
+    lineHeight: 17,
     color: theme.colors.textMuted,
     marginTop: 8,
   },
@@ -1710,8 +1713,7 @@ const styles = StyleSheet.create({
   },
   disclosureHeading: {
     fontFamily: theme.fonts.bodySemibold,
-    fontSize: 11,
-    letterSpacing: 1.3,
+    fontSize: 12,
     textTransform: 'uppercase',
     color: theme.colors.selectedText,
     marginBottom: 10,
@@ -1724,8 +1726,8 @@ const styles = StyleSheet.create({
   },
   disclosureBody: {
     fontFamily: theme.fonts.body,
-    fontSize: 11,
-    lineHeight: 16,
+    fontSize: 12,
+    lineHeight: 17,
     color: theme.colors.textMuted,
     marginTop: 2,
   },
@@ -1754,27 +1756,27 @@ const styles = StyleSheet.create({
   provenanceRow: { flexDirection: 'row', gap: 10 },
   provenanceKey: {
     fontFamily: theme.fonts.bodyMedium,
-    fontSize: 11,
+    fontSize: 12,
     color: theme.colors.textMuted,
     width: 128,
   },
   provenanceValue: {
     flex: 1,
     fontFamily: theme.fonts.body,
-    fontSize: 11,
+    fontSize: 12,
     color: theme.colors.text,
   },
   provenanceNote: {
     fontFamily: theme.fonts.body,
-    fontSize: 10,
-    lineHeight: 15,
+    fontSize: 12,
+    lineHeight: 16,
     color: theme.colors.textMuted,
     marginTop: 4,
   },
 
   footer: {
     fontFamily: theme.fonts.body,
-    fontSize: 11,
+    fontSize: 12,
     color: theme.colors.textMuted,
     textAlign: 'center',
     marginTop: theme.spacing.md,

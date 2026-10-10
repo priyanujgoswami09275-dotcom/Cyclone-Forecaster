@@ -216,11 +216,13 @@ export function WebImpactMap({
     setPanelWidth((current) => (current === width ? current : width));
   }, []);
   /**
-   * The disclosure strip's measured height. The strip is body text over the
-   * full panel width, so it wraps — 84 px at a 360 px viewport against the
-   * 44 px the layout once hard-coded — and the legend and the S/T/L buttons
-   * must clear the *real* height or their last rows render behind the
-   * strip's 90%-opaque background. See `overlayClearancePx`.
+   * The disclosure strip's measured height. The strip is body text (12 px
+   * since the type floor; the 84 px below was measured at its old 10 px
+   * size) over the full panel width, so it wraps — 84 px at a 360 px
+   * viewport against the 44 px the layout once hard-coded — and the legend
+   * and the S/T/L buttons must clear the *real* height or their last rows
+   * render behind the strip's 90%-opaque background. See
+   * `overlayClearancePx`.
    */
   const [stripHeightPx, setStripHeightPx] = useState<number | null>(null);
   const onStripLayout = useCallback((event: LayoutChangeEvent) => {
@@ -965,19 +967,20 @@ const styles = StyleSheet.create({
   },
   areaTagLabel: {
     fontFamily: theme.fonts.bodyMedium,
-    fontSize: 10,
-    letterSpacing: 1.2,
+    fontSize: 12,
     color: theme.colors.textMuted,
   },
   areaTagValue: {
     fontFamily: theme.fonts.heading,
-    fontSize: 20,
+    // 22 px: the one stat style, shared with the panel's fact values and
+    // tile counts — the same class of number everywhere it appears.
+    fontSize: 22,
     color: theme.colors.text,
     marginTop: 2,
   },
   areaTagNote: {
     fontFamily: theme.fonts.body,
-    fontSize: 10,
+    fontSize: 12,
     color: theme.colors.textMuted,
   },
   legend: {
@@ -997,8 +1000,7 @@ const styles = StyleSheet.create({
   },
   legendTitle: {
     fontFamily: theme.fonts.bodySemibold,
-    fontSize: 10,
-    letterSpacing: 1.1,
+    fontSize: 12,
     color: theme.colors.textMuted,
     marginBottom: 1,
   },
@@ -1009,7 +1011,7 @@ const styles = StyleSheet.create({
   },
   legendLabel: {
     fontFamily: theme.fonts.body,
-    fontSize: 11,
+    fontSize: 12,
     color: theme.colors.text,
   },
   swatch: {
@@ -1060,7 +1062,7 @@ const styles = StyleSheet.create({
   },
   tooltipText: {
     fontFamily: theme.fonts.body,
-    fontSize: 11,
+    fontSize: 12,
     color: theme.colors.text,
   },
   busyVeil: {
@@ -1086,8 +1088,8 @@ const styles = StyleSheet.create({
   },
   disclosureText: {
     fontFamily: theme.fonts.body,
-    fontSize: 10,
-    lineHeight: 14,
+    fontSize: 12,
+    lineHeight: 16,
     color: theme.colors.textMuted,
   },
 });
