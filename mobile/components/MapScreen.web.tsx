@@ -654,8 +654,15 @@ export function MapScreen() {
     </>
   );
 
-  /** Step 1 — the Storm tab: the strength chips, then the storm picker. */
-  const stormBody = (
+  /**
+   * Step 1's pieces, assembled differently per layout. The wide layout
+   * keeps the exact order it always had — picker, chips, readout — inside
+   * the numbered Step card. The compact shell floats the chips in the
+   * always-visible bar above the map (the primary control belongs in
+   * reach of every tab) and serves picker + readout as the Storm tab, so
+   * there is one strength control, not two.
+   */
+  const stormPicker = (
     <>
       {/*
         The cyclone picker above the strength chips, as on the native
@@ -670,41 +677,50 @@ export function MapScreen() {
         live={live}
         liveLoading={liveLoading}
       />
-      <View style={styles.chips}>
-        {STRENGTH_CHIP_IDS.map((id) => {
-          const chip = resolveChip(id, categories, overlayIndex).chip;
-          const selected = id === chipId;
-          return (
-            <Pressable
-              key={id}
-              onPress={() => onSelectChip(id)}
-              accessibilityRole="radio"
-              accessibilityState={{ selected }}
-              accessibilityLabel={`${chip.label} scenario`}
-              onHoverIn={() => setHoveredChip(id)}
-              onHoverOut={() =>
-                setHoveredChip((current) => (current === id ? null : current))
-              }
-              style={({ pressed }: { pressed: boolean }) => [
-                styles.chip,
-                selected && styles.chipSelected,
-                hoveredChip === id && !selected && styles.chipHovered,
-                pressed && styles.pressed,
+    </>
+  );
+
+  /** The four strength chips — the primary control, unchanged. */
+  const strengthChips = (
+    <View style={styles.chips}>
+      {STRENGTH_CHIP_IDS.map((id) => {
+        const chip = resolveChip(id, categories, overlayIndex).chip;
+        const selected = id === chipId;
+        return (
+          <Pressable
+            key={id}
+            onPress={() => onSelectChip(id)}
+            accessibilityRole="radio"
+            accessibilityState={{ selected }}
+            accessibilityLabel={`${chip.label} scenario`}
+            onHoverIn={() => setHoveredChip(id)}
+            onHoverOut={() =>
+              setHoveredChip((current) => (current === id ? null : current))
+            }
+            style={({ pressed }: { pressed: boolean }) => [
+              styles.chip,
+              selected && styles.chipSelected,
+              hoveredChip === id && !selected && styles.chipHovered,
+              pressed && styles.pressed,
+            ]}
+          >
+            <Text
+              style={[
+                styles.chipLabel,
+                selected && styles.chipLabelSelected,
               ]}
             >
-              <Text
-                style={[
-                  styles.chipLabel,
-                  selected && styles.chipLabelSelected,
-                ]}
-              >
-                {chip.label}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
+              {chip.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
 
+  /** The scenario readout: headline, figures, the borrow note, band note. */
+  const scenarioReadout = (
+    <>
       <Text style={styles.scenarioHeadline}>{scenarioHeadline(figures)}</Text>
 
       {/*
@@ -730,6 +746,23 @@ export function MapScreen() {
       {figures.bandNote !== null ? (
         <Text style={styles.bandNote}>{figures.bandNote}</Text>
       ) : null}
+    </>
+  );
+
+  /** Step 1 on the wide layout: picker, chips, readout — the old order. */
+  const stormBody = (
+    <>
+      {stormPicker}
+      {strengthChips}
+      {scenarioReadout}
+    </>
+  );
+
+  /** The Storm tab on the compact shell: the chips live in the map's bar. */
+  const stormTabContent = (
+    <>
+      {stormPicker}
+      {scenarioReadout}
     </>
   );
 
@@ -1098,6 +1131,23 @@ export function MapScreen() {
           ) : null}
         </View>
 
+        {/*
+          The strength chips, always visible above the map — the primary
+          control belongs in reach of every tab. An in-flow single row (the
+          filter-chip pattern the map apps themselves use) covers none of
+          the map the way a floating overlay would, and cannot collide with
+          the area tag or the legend. Same chips, same state, same presses
+          as Step 1; the horizontal scroll keeps one row at 390 px.
+        */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.chipBar}
+          contentContainerStyle={styles.chipBarContent}
+        >
+          {strengthChips}
+        </ScrollView>
+
         <View style={styles.mapArea}>
           <WebImpactMap
             exposure={exposure}
@@ -1121,7 +1171,7 @@ export function MapScreen() {
           {{
             storm: (
               <>
-                {stormBody}
+                {stormTabContent}
                 {mastheadDetails}
                 <View style={styles.mastheadBadges}>{mastheadBadges}</View>
               </>
@@ -1528,6 +1578,9 @@ const styles = StyleSheet.create({
   mapArea: { flex: 1, minHeight: 0 },
   /** The caption sits under a full-bleed map, not inside a padded column. */
   trackCaptionInMap: { paddingHorizontal: theme.spacing.xs, paddingBottom: 4 },
+  /** One always-visible row of strength chips above the compact map. */
+  chipBar: { flexGrow: 0 },
+  chipBarContent: { paddingHorizontal: 8, paddingVertical: 6 },
   badge: {
     backgroundColor: theme.colors.card,
     borderWidth: 1,

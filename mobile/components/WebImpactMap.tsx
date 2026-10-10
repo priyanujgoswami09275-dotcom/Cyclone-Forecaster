@@ -205,7 +205,6 @@ export function WebImpactMap({
 }: WebImpactMapProps) {
   const [view, setView] = useState<MapCamera>({ kind: 'region' });
   const [hovered, setHovered] = useState<string | null>(null);
-  const [showLegend, setShowLegend] = useState(true);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
   /**
@@ -217,6 +216,17 @@ export function WebImpactMap({
   const [panelWidth, setPanelWidth] = useState<number | null>(null);
   const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
   const compact = isCompactViewport(viewportWidth);
+
+  /**
+   * The legend opens by default on the wide layout and **closed** on the
+   * compact shell, where the map is short and the area tag, the chip bar
+   * and the disclosure strip already claim its edges — the legend button
+   * opens it whenever asked, and the same rows render either way. The
+   * initial value is decided once, at mount, from the same breakpoint the
+   * layout uses; crossing the breakpoint later in a session leaves the
+   * toggle where the person left it.
+   */
+  const [showLegend, setShowLegend] = useState(!compact);
   const onPanelLayout = useCallback((event: LayoutChangeEvent) => {
     const { width } = event.nativeEvent.layout;
     setPanelWidth((current) => (current === width ? current : width));
@@ -726,9 +736,15 @@ export function WebImpactMap({
         </View>
       ) : null}
 
+      {/*
+        Progress as a corner pill, never a veil: `pointerEvents="none"`
+        keeps the map interactive while a request is in flight, per the
+        project rule that a long wait may never block the screen — what a
+        load replaces is the `—` in the figures, not a frozen pane.
+      */}
       {loading || busy ? (
-        <View style={styles.busyVeil}>
-          <ActivityIndicator color={theme.colors.selectedText} />
+        <View style={styles.busyPill} pointerEvents="none">
+          <ActivityIndicator size="small" color={theme.colors.selectedText} />
           <Text style={styles.busyText}>Updating the model…</Text>
         </View>
       ) : null}
@@ -1089,12 +1105,20 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: theme.colors.text,
   },
-  busyVeil: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(9,9,9,0.62)',
+  /** A non-blocking progress pill for the map's top-right corner. */
+  busyPill: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
+    gap: 6,
+    backgroundColor: theme.colors.card,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.button,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
   },
   busyText: {
     fontFamily: theme.fonts.body,
