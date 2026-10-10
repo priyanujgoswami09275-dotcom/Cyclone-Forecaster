@@ -4624,3 +4624,7 @@ attempt 1 of the internal correction pass, so that path is still unexercised.
   GEE auth absent — `data/dem.tif` NOT produced (blocker above).
 - Plan + ledger: docs/superpowers/plans/2026-09-27-module-a-data-pipeline.md
 - Next: Module B (see "Next step" above).
+
+T1 (feat/app-shell): shell state as pure functions in webViewModel.ts — SHELL_TABS (storm first, dependency order), SHEET_DETENTS peek/half/full (default half), nextSheetDetent cycle, fractions 0.16/0.5/0.92, sheetHeightPx, shellApplies delegating to the 860 px rule.
+Files: mobile/webViewModel.ts; mobile/tests/webViewModel.test.mjs (tests written first — red SyntaxError on the missing export, then green).
+Result: node --test 391 pass / 0 fail (6 new); tsc clean; nothing rendered yet — T2 builds AppShell.web.tsx next.

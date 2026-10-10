@@ -739,3 +739,96 @@ export function overlayClearancePx(stripHeightPx: number | null): number {
       : DISCLOSURE_STRIP_FALLBACK_PX;
   return measured + MAP_CHROME_GAP_PX;
 }
+
+// --- the compact shell: the sheet's tabs and detents -------------------------
+
+/**
+ * The bottom sheet's tabs, in bar order.
+ *
+ * **The order is the dependency map, not an aesthetic.** The strength chips
+ * are the primary control — every figure on screen follows from them — so
+ * `storm` opens the sequence and holds both the chips and the picker. The
+ * picker changes the track, and reaches the figures only through the
+ * observed scenario, so it sits under the chips rather than beside them.
+ * The remaining tabs are the reading order of the results: what gets hit,
+ * the way out, the advisory.
+ */
+export type ShellTabId = 'storm' | 'impact' | 'route' | 'advisory';
+
+/** The tab order the bar renders and the tests pin. */
+export const SHELL_TABS: readonly ShellTabId[] = ['storm', 'impact', 'route', 'advisory'];
+
+/** One-word labels — four tabs across a ~390 px viewport leave no room for more. */
+export const SHELL_TAB_LABELS: Record<ShellTabId, string> = {
+  storm: 'Storm',
+  impact: 'Impact',
+  route: 'Route',
+  advisory: 'Advisory',
+};
+
+/**
+ * The sheet's resting heights. Three, because the map-first goal needs
+ * exactly three postures:
+ *
+ * - **peek** — the grabber, the tab bar and one headline row; the map owns
+ *   the screen;
+ * - **half** — the Storm tab's chips and picker, with the map above;
+ * - **full** — reading a result in full, the top bar still visible.
+ */
+export const SHEET_DETENTS = ['peek', 'half', 'full'] as const;
+
+export type SheetDetent = (typeof SHEET_DETENTS)[number];
+
+/**
+ * The detent the sheet opens at.
+ *
+ * **`half`, not `peek` or `full`.** The first screen must show both the map
+ * and the primary control: opening at peek hides the strength chips the
+ * whole interaction turns on behind a tap, and opening at full starts as the
+ * article this shell exists to replace.
+ */
+export const DEFAULT_SHEET_DETENT: SheetDetent = 'half';
+
+/**
+ * The next detent one grabber tap moves to: `peek → half → full → peek`.
+ *
+ * Pure, because the cycle is the sheet's contract with its grabber — the
+ * component owns only the press. A cycle rather than a toggle means the
+ * grabber does something from every posture, `full` included.
+ */
+export function nextSheetDetent(current: SheetDetent): SheetDetent {
+  return SHEET_DETENTS[(SHEET_DETENTS.indexOf(current) + 1) % SHEET_DETENTS.length];
+}
+
+/**
+ * Each detent's height as a fraction of the viewport height.
+ *
+ * `full` is 0.92, not 1: the compact top bar — the storm the figures
+ * describe — stays visible at every detent, for the same reason the masthead
+ * always named the selection rather than the case study.
+ */
+export const SHEET_HEIGHT_FRACTIONS: Record<SheetDetent, number> = {
+  peek: 0.16,
+  half: 0.5,
+  full: 0.92,
+};
+
+/**
+ * A detent's height in whole px, for the style system, which drops a
+ * non-integer style silently enough to notice only in a screenshot.
+ */
+export function sheetHeightPx(detent: SheetDetent, viewportHeightPx: number): number {
+  return Math.round(viewportHeightPx * SHEET_HEIGHT_FRACTIONS[detent]);
+}
+
+/**
+ * Whether this viewport gets the shell.
+ *
+ * The same 860 px rule as `isCompactViewport`, **delegated rather than
+ * restated** — a second breakpoint constant for one decision is how the
+ * phone and desktop layouts drift apart. The shell appears strictly below
+ * the breakpoint; at and above it, today's layout is unchanged by plan.
+ */
+export function shellApplies(viewportWidthPx: number): boolean {
+  return isCompactViewport(viewportWidthPx);
+}

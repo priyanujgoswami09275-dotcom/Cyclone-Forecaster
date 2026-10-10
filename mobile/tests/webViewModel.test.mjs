@@ -56,6 +56,14 @@ import {
   windLabel,
   localityMatchCount,
   searchableLocalities,
+  DEFAULT_SHEET_DETENT,
+  nextSheetDetent,
+  sheetHeightPx,
+  shellApplies,
+  SHEET_DETENTS,
+  SHEET_HEIGHT_FRACTIONS,
+  SHELL_TABS,
+  SHELL_TAB_LABELS,
 } from '../webViewModel.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -1006,5 +1014,62 @@ describe('overlayClearancePx — floating map chrome clears the real strip', () 
 
   it('still leaves the gap on a zero-height strip', () => {
     assert.equal(overlayClearancePx(0), 8);
+  });
+});
+
+describe('the compact shell — tabs, detents, and the 860 px rule', () => {
+  it('orders the tabs with the strength control first', () => {
+    // The order is the dependency map, not an aesthetic: the strength
+    // chips change every figure on screen, so they open the sequence; the
+    // storm picker changes the track and only reaches the figures through
+    // the observed scenario, so it follows. The rest is reading order:
+    // impact, the way out, the advisory.
+    assert.deepEqual(SHELL_TABS, ['storm', 'impact', 'route', 'advisory']);
+    for (const id of SHELL_TABS) {
+      assert.equal(typeof SHELL_TAB_LABELS[id], 'string', `label for ${id}`);
+      assert.ok(SHELL_TAB_LABELS[id].length > 0, `label for ${id} is not empty`);
+      // One-word labels: the tab bar fits four across a ~390 px viewport.
+      assert.ok(!SHELL_TAB_LABELS[id].includes(' '), `${SHELL_TAB_LABELS[id]} is one word`);
+    }
+  });
+
+  it('opens at half, so the map and the primary control share the first screen', () => {
+    // Peek would hide the strength chips behind a tap on first run; full
+    // would open as the article this shell exists to replace.
+    assert.equal(DEFAULT_SHEET_DETENT, 'half');
+  });
+
+  it('cycles one detent per grabber tap, full included', () => {
+    assert.equal(nextSheetDetent('peek'), 'half');
+    assert.equal(nextSheetDetent('half'), 'full');
+    // A cycle, not a toggle: from full the grabber still does something.
+    assert.equal(nextSheetDetent('full'), 'peek');
+  });
+
+  it('sizes each detent as an ascending fraction below the top bar', () => {
+    const [peek, half, full] = SHEET_DETENTS.map((d) => SHEET_HEIGHT_FRACTIONS[d]);
+    assert.ok(peek < half && half < full, 'detents ascend');
+    // Full never covers the top bar — the storm name must stay visible at
+    // every detent, or the figures lose their subject.
+    assert.ok(full < 1, 'full leaves the top bar visible');
+    assert.equal(peek, 0.16);
+    assert.equal(half, 0.5);
+    assert.equal(full, 0.92);
+  });
+
+  it('converts detents to whole px for the style system', () => {
+    // 844 px is the phone viewport class this design is sized against.
+    assert.equal(sheetHeightPx('peek', 844), 135);
+    assert.equal(sheetHeightPx('half', 844), 422);
+    assert.equal(sheetHeightPx('full', 844), 776);
+  });
+
+  it('applies the shell by the compact rule, and never at the breakpoint', () => {
+    // One rule, delegated — a second 860 would be how the phone and desktop
+    // layouts drift apart.
+    assert.equal(shellApplies(COMPACT_BREAKPOINT_PX - 1), true);
+    assert.equal(shellApplies(COMPACT_BREAKPOINT_PX), false);
+    assert.equal(shellApplies(390), true);
+    assert.equal(shellApplies(1024), false);
   });
 });
