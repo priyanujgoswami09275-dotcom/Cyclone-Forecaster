@@ -113,6 +113,7 @@ import {
   countLabel,
   countUnit,
   isCompactViewport,
+  observedWindNote,
   personKmLabel,
   populationDisclosure,
   routeSummary,
@@ -676,6 +677,7 @@ export function MapScreen() {
         onSelect={onSelectCyclone}
         live={live}
         liveLoading={liveLoading}
+        plainLiveNote
       />
     </>
   );
@@ -718,7 +720,14 @@ export function MapScreen() {
     </View>
   );
 
-  /** The scenario readout: headline, figures, the borrow note, band note. */
+  /**
+   * The note under the Remal chip, stating exactly what the backend
+   * computes — pure, tested against the real observed payload. `null`
+   * before the wind arrives, so the note is absent rather than vague.
+   */
+  const observedNote = observedWindNote(figures, exposure?.band_kmph ?? null);
+
+  /** The scenario readout: headline, figures, the observed-wind note, band note. */
   const scenarioReadout = (
     <>
       <Text style={styles.scenarioHeadline}>{scenarioHeadline(figures)}</Text>
@@ -736,11 +745,18 @@ export function MapScreen() {
         )}
       </Text>
 
-      {chipId === 'remal_observed' && borrowedCategory !== null ? (
-        <Text style={styles.borrowed}>
-          The preset is 115 km/h, which is not an IMD band. The counts
-          below borrow the nearest band ({borrowedCategory}).
-        </Text>
+      {/*
+        The note under the Remal chip states exactly what the backend
+        computes: the observed scenario runs at the storm's own reported
+        peak wind — the live payload reads wind_kmph 111.1 with
+        imd_category "Severe Cyclonic Storm" and band 89–117 — not at a
+        class value. The old text claimed the counts "borrowed the nearest
+        band", which was true of the URL's category parameter and false of
+        the computation, and it misread 115 as outside the classes when it
+        sits inside Severe Cyclonic Storm.
+      */}
+      {chipId === 'remal_observed' && borrowedCategory !== null && observedNote !== null ? (
+        <Text style={styles.borrowed}>{observedNote}</Text>
       ) : null}
 
       {figures.bandNote !== null ? (

@@ -24,6 +24,7 @@ import type {
   RoutesResponse,
   TrackResponse,
 } from './api';
+import type { LiveCycloneState, LiveStatus } from './cycloneModel';
 
 /** One headline figure. `null` means "not arrived", which is not zero. */
 export type Figure = number | null;
@@ -307,6 +308,75 @@ export function caseStudyLine(categories: CategoriesResponse | null): {
       categories?.limitation ??
       'Screening estimate scaled from one observed event; omits tide, pressure, bathymetry and storm size.',
   };
+}
+
+/**
+ * The live feed's one-line status for the Web picker's banner.
+ *
+ * **Plain first, verbatim one tap away.** The backend's `reason` is the
+ * honest record — endpoint names, HTTP codes — and it stays on screen
+ * unchanged behind the picker's "technical details" toggle; but it is
+ * written for operators, and a district officer needs the state in one
+ * sentence before the detail. The non-substitution promise sits in the
+ * line itself: "no past storm is shown in its place" is the rule the live
+ * path runs under (see `cycloneModel.ts`), stated where the reader meets
+ * it rather than assumed.
+ *
+ * `available` keeps `liveBannerText`'s exact string, so a live storm reads
+ * identically on both screens. Every other state gets the same line, on
+ * purpose: the reader's action does not differ between "no storm" and
+ * "feed down", and the verbatim reason is what differs — one tap away.
+ * An unrecognised status fails closed to that same line, never to a
+ * storm name (the one substitution this module exists to prevent).
+ */
+export function liveFeedNote(state: {
+  status: LiveStatus;
+  reason: string;
+  checked_at: string | null;
+  cyclone: LiveCycloneState['cyclone'];
+}): string {
+  if (state.status === 'available' && state.cyclone) {
+    const { name, latest_wind_kmph } = state.cyclone;
+    return `${name} — live, ${latest_wind_kmph} km/h`;
+  }
+  return 'No live storm data is available right now, and no past storm is shown in its place.';
+}
+
+/**
+ * The note under the Remal chip, stating exactly what the backend computes.
+ *
+ * The observed scenario runs at **the storm's own reported peak wind** — the
+ * live payload says so: `wind_kmph: 111.1` with `imd_category: "Severe
+ * Cyclonic Storm"` and `band_kmph: {lower: 89, upper: 117}` for the case
+ * study, and the surge follows the anchor law at that wind
+ * (1.2 × (111.1/115)² ≈ 1.12 m — exactly what the payload returns). The
+ * note's old text claimed the counts "borrow the nearest band", which is
+ * true of the URL's category parameter and false of the computation — and
+ * it read 115 as outside the classes when 115 sits *inside* Severe
+ * Cyclonic Storm (89–117). This sentence states the payload: the counts
+ * are the observed wind's own, and the class named is the one that wind
+ * actually lands in.
+ *
+ * Returns `null` when the wind has not arrived — an unresolved value gets
+ * no sentence, the same rule as the tiles.
+ */
+export function observedWindNote(
+  figures: ScenarioFigures,
+  band: { lower: number; upper: number | null } | null,
+): string | null {
+  if (figures.windKmph === null || figures.bandLabel === '') return null;
+  const wind = `${Math.round(figures.windKmph)} km/h`;
+  const range =
+    band === null
+      ? ''
+      : band.upper === null
+        ? ` (${band.lower} km/h and up)`
+        : ` (${band.lower}–${band.upper} km/h)`;
+  return (
+    `The counts use this storm's observed wind of ${wind} directly — it ` +
+    `falls inside the ${figures.bandLabel} band${range}, so no class ` +
+    `value is used in its place.`
+  );
 }
 
 export interface RouteSummary {

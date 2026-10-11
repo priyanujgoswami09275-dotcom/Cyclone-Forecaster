@@ -4,6 +4,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from
 import { theme } from '../theme';
 import { liveStateLabel, type Cyclone, type LiveCycloneState } from '../cycloneModel';
 import { liveBannerText } from '../scenarioCompare.ts';
+import { liveFeedNote } from '../webViewModel';
 
 /**
  * Cyclone picker — which storm the app is addressing, and whether "now" is
@@ -33,6 +34,14 @@ export interface CyclonePickerProps {
   /** The live state, or null while it has not been fetched. */
   live: LiveCycloneState | null;
   liveLoading: boolean;
+  /**
+   * Render the live banner as the plain one-line `liveFeedNote` with the
+   * backend's reason behind a "technical details" expander. **Optional and
+   * off by default**, so the native screen's behaviour — the raw
+   * `liveBannerText` — and the source guards in
+   * `tests/liveLoading.test.mjs` are untouched; the Web screen opts in.
+   */
+  plainLiveNote?: boolean;
 }
 
 type Mode = 'historical' | 'live';
@@ -43,8 +52,11 @@ export function CyclonePicker({
   onSelect,
   live,
   liveLoading,
+  plainLiveNote = false,
 }: CyclonePickerProps) {
   const [mode, setMode] = useState<Mode>('historical');
+  /** Whether the plain note's verbatim reason is unfolded. Web-only. */
+  const [showLiveDetails, setShowLiveDetails] = useState(false);
 
   if (!cyclones.length) return null;
 
@@ -123,10 +135,38 @@ export function CyclonePicker({
           <Text style={styles.liveText}>Checking the live feed…</Text>
         </View>
       ) : live ? (
-        <View>
-          <Text style={styles.liveState}>{liveStateLabel(live)}</Text>
-          <Text style={styles.liveText}>{liveBannerText(live)}</Text>
-        </View>
+        plainLiveNote ? (
+          <View>
+            <Text style={styles.liveState}>{liveStateLabel(live)}</Text>
+            <Text style={styles.liveText}>{liveFeedNote(live)}</Text>
+            {/*
+              The backend's reason, verbatim, one tap behind the plain line
+              — the honest record for whoever needs the endpoint names and
+              the codes. A 44 px target and an expanded state, per the floor.
+            */}
+            {live.status !== 'available' && live.reason ? (
+              <Pressable
+                onPress={() => setShowLiveDetails((on) => !on)}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: showLiveDetails }}
+                accessibilityLabel="Technical details about the live feed"
+                style={styles.detailsToggle}
+              >
+                <Text style={styles.detailsToggleLabel}>
+                  {showLiveDetails ? 'Hide' : 'Show'} technical details
+                </Text>
+              </Pressable>
+            ) : null}
+            {showLiveDetails ? (
+              <Text style={styles.liveReason}>{live.reason}</Text>
+            ) : null}
+          </View>
+        ) : (
+          <View>
+            <Text style={styles.liveState}>{liveStateLabel(live)}</Text>
+            <Text style={styles.liveText}>{liveBannerText(live)}</Text>
+          </View>
+        )
       ) : null}
     </View>
   );
@@ -221,5 +261,26 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.caption,
     color: theme.colors.textMuted,
     marginTop: theme.spacing.xs / 2,
+  },
+  /** The plain note's expander — a 44 px target, per the touch floor. */
+  detailsToggle: {
+    alignSelf: 'flex-start',
+    minHeight: 44,
+    justifyContent: 'center',
+    paddingVertical: 4,
+  },
+  detailsToggleLabel: {
+    fontFamily: theme.fonts.bodySemibold,
+    fontSize: 12,
+    color: theme.colors.selectedText,
+    textDecorationLine: 'underline',
+  },
+  /** The backend's reason, verbatim — shown only when unfolded. */
+  liveReason: {
+    fontFamily: theme.fonts.body,
+    fontSize: 12,
+    lineHeight: 17,
+    color: theme.colors.textMuted,
+    marginTop: 2,
   },
 });

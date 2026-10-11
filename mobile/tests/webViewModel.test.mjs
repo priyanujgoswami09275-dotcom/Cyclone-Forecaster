@@ -57,7 +57,9 @@ import {
   localityMatchCount,
   searchableLocalities,
   DEFAULT_SHEET_DETENT,
+  liveFeedNote,
   nextSheetDetent,
+  observedWindNote,
   sheetHeightPx,
   shellApplies,
   SHEET_DETENTS,
@@ -1071,5 +1073,109 @@ describe('the compact shell — tabs, detents, and the 860 px rule', () => {
     assert.equal(shellApplies(COMPACT_BREAKPOINT_PX), false);
     assert.equal(shellApplies(390), true);
     assert.equal(shellApplies(1024), false);
+  });
+});
+
+/** The real `/exposure?category=3&cyclone_id=2024145N14087&scenario_id=observed`
+ * header — the Remal chip's own payload, read off the live backend on
+ * 2026-10-11. It is the evidence for what the observed scenario computes
+ * at: the storm's own reported peak wind (111.1 km/h), not a band value. */
+const REMAL_OBSERVED_EXPOSURE = {
+  category: 3,
+  imd_category: 'Severe Cyclonic Storm',
+  scenario_id: 'observed',
+  scenario_kind: 'observed',
+  wind_kmph: 111.1,
+  wind_is_band_midpoint: false,
+  surge_m: 1.1199888090737238,
+  band_kmph: { lower: 89, upper: 117 },
+  final_land_area_km2: 327.64,
+  hospitals: { count: 0 },
+  substations: { count: 0 },
+  roads_cut_off: { count: 0 },
+};
+
+describe('liveFeedNote — the plain line; codes stay one tap deep', () => {
+  it('keeps the live banner string for an available storm', () => {
+    // Same string as liveBannerText, so a live storm reads identically on
+    // both screens.
+    assert.equal(
+      liveFeedNote({
+        status: 'available',
+        reason: 'NHC listed one storm',
+        checked_at: '2026-10-11T09:00:00Z',
+        cyclone: { name: 'BIPARJOY', latest_wind_kmph: 115 },
+      }),
+      'BIPARJOY — live, 115 km/h',
+    );
+  });
+
+  it('states the non-substitution promise in one line, with no codes', () => {
+    const line =
+      'No live storm data is available right now, and no past storm is shown in its place.';
+    const states = [
+      {
+        status: 'no_active_storm',
+        reason: 'CurrentStorms.json lists Eastern Pacific storms only',
+        checked_at: '2026-10-11T09:00:00Z',
+        cyclone: null,
+      },
+      {
+        status: 'live_unavailable',
+        reason: 'NHC returned 403; JTWC b-decks 404; RSMC New Delhi unreachable',
+        checked_at: null,
+        cyclone: null,
+      },
+      // An unrecognised status fails closed to the same line — never to a
+      // storm name, the one substitution this module exists to prevent.
+      {
+        status: 'something_unexpected',
+        reason: '??',
+        checked_at: null,
+        cyclone: null,
+      },
+    ];
+    for (const state of states) {
+      assert.equal(liveFeedNote(state), line, `status ${state.status}`);
+      // The operator's line must not leak the operator's detail: the codes
+      // and endpoint names belong to the verbatim reason, one tap away.
+      assert.ok(!/403|404|http/i.test(liveFeedNote(state)), 'codes leaked into the plain line');
+    }
+  });
+});
+
+describe('observedWindNote — the Remal chip states the payload it runs on', () => {
+  it('says the counts run at the observed wind, inside its band', () => {
+    // From the real payload: wind_kmph 111.1 (the storm's own peak, not the
+    // 103 representative and not the 115 preset), imd_category Severe
+    // Cyclonic Storm, band 89–117. The old note claimed the counts
+    // "borrowed the nearest band" — false of the computation.
+    const figures = scenarioFigures(null, REMAL_OBSERVED_EXPOSURE, null);
+    assert.equal(
+      observedWindNote(figures, REMAL_OBSERVED_EXPOSURE.band_kmph),
+      'The counts use this storm\'s observed wind of 111 km/h directly — it ' +
+        'falls inside the Severe Cyclonic Storm band (89–117 km/h), so no ' +
+        'class value is used in its place.',
+    );
+  });
+
+  it('handles the open-ended top band without a dangling dash', () => {
+    const figures = scenarioFigures(null, CAT6_EXPOSURE, null);
+    assert.equal(
+      observedWindNote(figures, CAT6_EXPOSURE.band_kmph),
+      'The counts use this storm\'s observed wind of 222 km/h directly — it ' +
+        'falls inside the Super Cyclonic Storm band (222 km/h and up), so no ' +
+        'class value is used in its place.',
+    );
+  });
+
+  it('returns null rather than a sentence with an unresolved wind', () => {
+    // An unresolved value gets no sentence — the same rule as the tiles.
+    const loaded = scenarioFigures(null, REMAL_OBSERVED_EXPOSURE, null);
+    assert.equal(
+      observedWindNote({ ...loaded, windKmph: null }, { lower: 89, upper: 117 }),
+      null,
+    );
+    assert.equal(observedWindNote(scenarioFigures(null, null, null), null), null);
   });
 });
