@@ -129,22 +129,49 @@ export function countUnit(count: Figure, unit: string): string | null {
 }
 
 /**
- * The road tile's wording, which must not say "impassable".
+ * The road tile's caption — the approved decision, verbatim.
  *
- * The backend's own `definitions.road_cut_off` says: "road geometry
- * intersects the flood polygon; this is NOT a network connectivity analysis
- * and does not imply the road is impassable." That is the project's honest
- * position and this string carries it in the one place a judge reads it. The
- * native app says the same thing as "cut off by water"; "intersected" is
- * blunter and more accurate, since the computation is an intersection test.
+ * "touched, not proven impassable" states both halves: what the count is
+ * (road segments the flood geometry touches) and what it is not (a
+ * passability claim — the computation is an intersection test, not a
+ * network-connectivity analysis). The negation is deliberate: "impassable"
+ * appears only inside "not proven impassable", and the full reasoning stays
+ * in `ROADS_DISCLOSURE` behind the tile's hover tooltip — a tooltip that
+ * does not exist on touch devices, which is exactly why the visible
+ * caption carries the honest claim itself. The rules the tests pin: never
+ * `km` (roads are a count of segments, not a length), never "flooded
+ * roads", always "not proven".
  */
-export const ROADS_HONEST_LABEL = 'intersected by the flood extent';
+export const ROADS_HONEST_LABEL = 'touched, not proven impassable';
 
 /** Why the road count is not a passability claim. Shown as a tooltip title. */
 export const ROADS_DISCLOSURE =
   'A road is counted when its geometry intersects the flood extent. This is ' +
   'not a network-connectivity analysis and does not mean the road is ' +
   'impassable.';
+
+/**
+ * The Impact tab's failed-exposure note. One line; the retry action is the
+ * "Try again" button beside it, not more words — tapping the
+ * already-selected strength chip is a no-op (the handler only commits a
+ * *new* selection), so the button is what makes retry real.
+ *
+ * "unknown — not zero" is the rule `exposureFailed.test.mjs` exists to
+ * enforce: a failed request must never pose as an empty result.
+ */
+export const EXPOSURE_FAILED_NOTE =
+  'These counts could not be loaded, so they are unknown — not zero.';
+
+/**
+ * The Impact tab's empty-exposure note. One line + one action. "In this
+ * model" carries the honesty that the model found nothing at this strength
+ * — not that the storm spared the delta — and the elevation resolution is
+ * the documented reason the surge under-reads there.
+ */
+export const EXPOSURE_EMPTY_NOTE =
+  'In this model, no hospitals, substations or roads are reached at this ' +
+  'strength. The surge is below what this elevation model can resolve. Try ' +
+  'a higher strength to see more of the impact.';
 
 /**
  * Plain-language versions of the two backend disclosures that are the wordiest.
@@ -788,8 +815,10 @@ export const MAP_CHROME_GAP_PX = 8;
  * How far from the panel's bottom the legend and the S/T/L buttons must sit.
  *
  * **Why this function exists: the strip's height is not a constant.** The
- * basemap disclosure is body text at 10 px over the full panel width, so it
- * wraps — measured in the browser: **84 px at a 360 px viewport**, 70 px at
+ * basemap disclosure is body text (12 px since the type floor; the
+ * measurements below were taken at its former 10 px size) over the full
+ * panel width, so it wraps — measured in the browser: **84 px at a 360 px
+ * viewport**, 70 px at
  * 390, 56 px at 480/600/860, 42 px from ~700 px up. The layout positioned the
  * legend and the controls above a hard-coded 44 px, so at every width where
  * the strip wrapped taller than that, the legend's last rows ("Storm path",

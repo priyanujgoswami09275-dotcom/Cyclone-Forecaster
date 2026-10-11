@@ -102,6 +102,8 @@ import { SAMPLE_ADVISORY } from '../sampleAdvisory';
 import { theme } from '../theme';
 import { peakReportedWindKmph } from '../trackFacts';
 import {
+  EXPOSURE_EMPTY_NOTE,
+  EXPOSURE_FAILED_NOTE,
   ROADS_DISCLOSURE,
   ROADS_HONEST_LABEL,
   SCOPING_DISCLOSURE_PLAIN,
@@ -215,6 +217,13 @@ export function MapScreen() {
   const [exposureLoading, setExposureLoading] = useState(false);
   /** As `routesFailed`: an error must not read as a pending request. */
   const [exposureFailed, setExposureFailed] = useState(false);
+  /**
+   * Bumped by the failed state's "Try again" button. Tapping the
+   * already-selected strength chip is a no-op — `onSelectChip` only commits
+   * a *new* selection, so identical state never re-runs the effect — and
+   * this token is what makes a same-scenario retry real.
+   */
+  const [exposureRetry, setExposureRetry] = useState(0);
   const [routes, setRoutes] = useState<RoutesResponse | null>(null);
   const [routesLoading, setRoutesLoading] = useState(false);
   /**
@@ -377,7 +386,9 @@ export function MapScreen() {
     return () => {
       cancelled = true;
     };
-  }, [requestCategory, selectedCycloneId, chipId]);
+    // `exposureRetry` is the failed state's "Try again": bumping it re-runs
+    // this effect for the SAME scenario, which no chip press can do.
+  }, [requestCategory, selectedCycloneId, chipId, exposureRetry]);
 
   // --- routes: changes with both the chip and the origin -----------------
   useEffect(() => {
@@ -789,7 +800,7 @@ export function MapScreen() {
         <Fact label="Wind" value={windLabel(figures.windKmph, figures.windIsBandMidpoint)} />
         <Fact label="Storm surge" value={surgeLabel(figures.surgeM)} note="estimate" />
         <Fact label="Flooded land" value={areaLabel(figures.floodedKm2)} note="model" />
-        <Fact label="IMD classification" value={figures.bandLabel || '—'} small />
+        <Fact label="Storm class (IMD)" value={figures.bandLabel || '—'} small />
       </View>
 
       <View style={styles.tiles}>
@@ -804,32 +815,44 @@ export function MapScreen() {
           unit={countUnit(counts.substations, 'submerged')}
         />
         {/*
-          The road tile's wording is the project's honest position and
-          is asserted against the backend's own `definitions` block by
-          `tests/webViewModel.test.mjs`. "Impassable" would be a
-          connectivity claim this computation never makes.
+          Road segments, touched by the flood: the label says what is
+          counted (segments, never a length in km), the caption carries the
+          approved "touched, not proven impassable", and the full
+          intersection-not-passability reasoning stays in the hover
+          tooltip (`ROADS_DISCLOSURE`).
         */}
         <Tile
-          label="Roads"
+          label="Road segments"
           count={countLabel(counts.roads)}
           unit={countUnit(counts.roads, ROADS_HONEST_LABEL)}
           disclosure={ROADS_DISCLOSURE}
         />
       </View>
 
+      {/*
+        The retry is a button, not advice: tapping the already-selected
+        strength chip is a no-op (`onSelectChip` only commits a *new*
+        selection — identical state means the effect never re-runs), so
+        the old "pick the strength again" advised an action the interface
+        did not offer. The button bumps `exposureRetry`. Styles shared
+        with the cached-example button — the same class of action.
+      */}
       {exposureFailed ? (
-        <Text style={styles.errorNote}>
-          The exposure request did not complete, so these counts are
-          unknown rather than zero. Pick the strength again to retry.
-        </Text>
+        <>
+          <Text style={styles.errorNote}>{EXPOSURE_FAILED_NOTE}</Text>
+          <Pressable
+            onPress={() => setExposureRetry((token) => token + 1)}
+            accessibilityRole="button"
+            accessibilityLabel="Try loading the counts again"
+            style={styles.cachedButton}
+          >
+            <Text style={styles.cachedLabel}>Try again</Text>
+          </Pressable>
+        </>
       ) : exposureLoading ? (
         <Text style={styles.loadingNote}>Reading the exposure figures…</Text>
       ) : exposedCount === 0 && exposure !== null ? (
-        <Text style={styles.emptyNote}>
-          No modelled exposure at this strength — the surge is below what
-          this elevation model can resolve, so the water reaches no mapped
-          asset. Pick a stronger scenario to see the exposure path.
-        </Text>
+        <Text style={styles.emptyNote}>{EXPOSURE_EMPTY_NOTE}</Text>
       ) : null}
     </>
   );

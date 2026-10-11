@@ -44,6 +44,8 @@ import {
   COMPACT_BREAKPOINT_PX,
   personKmLabel,
   populationDisclosure,
+  EXPOSURE_EMPTY_NOTE,
+  EXPOSURE_FAILED_NOTE,
   ROADS_DISCLOSURE,
   ROADS_HONEST_LABEL,
   routeSummary,
@@ -304,9 +306,17 @@ describe('scenarioHeadline', () => {
 // --- roads -----------------------------------------------------------------
 
 describe('road wording', () => {
-  it('never claims impassability', () => {
-    assert.ok(!/impassable/i.test(ROADS_HONEST_LABEL));
-    assert.ok(/intersected/i.test(ROADS_HONEST_LABEL));
+  it('says exactly the approved caption, with the negation intact', () => {
+    // "touched, not proven impassable" — the approved decision. The old
+    // guard banned the word "impassable" outright; the caption now carries
+    // it only inside the negation, which IS the honest claim: a count of
+    // touched segments proves nothing about passability.
+    assert.equal(ROADS_HONEST_LABEL, 'touched, not proven impassable');
+    assert.match(ROADS_HONEST_LABEL, /not proven/);
+    // The decision's nevers: never km (segments, not a length)...
+    assert.ok(!/km/i.test(ROADS_HONEST_LABEL), 'never km — segments, not a length');
+    // ...and never "flooded roads".
+    assert.ok(!/flooded/i.test(ROADS_HONEST_LABEL), 'never "flooded roads"');
   });
 
   it('carries the backend’s own reasoning in the tooltip', () => {
@@ -322,6 +332,29 @@ describe('road wording', () => {
     // UI that the backend contradicts.
     assert.match(backend, /NOT a network connectivity analysis/);
     assert.match(ROADS_DISCLOSURE, /not a network-connectivity analysis/);
+  });
+});
+
+describe('exposure state notes', () => {
+  it('the failed note keeps the unknown-not-zero rule, with no retry advice', () => {
+    // The retry is the "Try again" button, not words — tapping the
+    // already-selected chip is a no-op, so "pick the strength again" would
+    // advise an action the interface does not offer.
+    assert.equal(
+      EXPOSURE_FAILED_NOTE,
+      'These counts could not be loaded, so they are unknown — not zero.',
+    );
+  });
+
+  it('the empty note says "in this model" and keeps the resolution reason', () => {
+    assert.equal(
+      EXPOSURE_EMPTY_NOTE,
+      'In this model, no hospitals, substations or roads are reached at ' +
+        'this strength. The surge is below what this elevation model can ' +
+        'resolve. Try a higher strength to see more of the impact.',
+    );
+    assert.match(EXPOSURE_EMPTY_NOTE, /In this model/);
+    assert.match(EXPOSURE_EMPTY_NOTE, /elevation model can resolve/);
   });
 });
 
