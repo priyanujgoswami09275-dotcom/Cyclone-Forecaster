@@ -57,3 +57,6 @@ opencode.json
 /graphify-out/
 /.archify/
 pi-session-*.html
+audit-shots/
+opencode.json.bak
+.playwright-mcp/
