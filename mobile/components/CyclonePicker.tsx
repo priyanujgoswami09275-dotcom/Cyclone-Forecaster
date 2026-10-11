@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { theme } from '../theme';
@@ -58,6 +58,26 @@ export function CyclonePicker({
   /** Whether the plain note's verbatim reason is unfolded. Web-only. */
   const [showLiveDetails, setShowLiveDetails] = useState(false);
 
+  /**
+   * The Live option is offered unless the feed is known to be unreachable.
+   * While the probe is in flight (`live === null`) or when the feed answered
+   * — a live storm, or an honest "no active storm" — the option stays,
+   * because both are states a reader can act on. Only `live_unavailable`
+   * removes it: a toggle whose every outcome is "no data" is not an option.
+   * The historical list is never removable — it is the fallback, not a
+   * mode.
+   */
+  const liveOffered = live?.status !== 'live_unavailable';
+
+  // If the probe resolves as unreachable while Live is selected (reachable
+  // only by toggling to Live during the probe), return to the historical
+  // list rather than stranding the reader on a mode whose option vanished.
+  useEffect(() => {
+    if (live?.status === 'live_unavailable' && mode === 'live') {
+      setMode('historical');
+    }
+  }, [live, mode]);
+
   if (!cyclones.length) return null;
 
   // The case study first, then the backend's order (newest first).
@@ -71,7 +91,10 @@ export function CyclonePicker({
       <View style={styles.header}>
         <Text style={styles.heading}>Cyclone</Text>
         <View style={styles.toggle}>
-          {(['historical', 'live'] as const).map((m) => {
+          {(liveOffered
+            ? (['historical', 'live'] as const)
+            : (['historical'] as const)
+          ).map((m) => {
             const active = mode === m;
             return (
               <Pressable
