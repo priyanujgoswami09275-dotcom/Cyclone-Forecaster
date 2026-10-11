@@ -229,7 +229,7 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.border,
   },
   toggleChipActive: {
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.selectedFill,
     borderColor: theme.colors.primary,
   },
   toggleLabel: {
@@ -237,8 +237,17 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.caption,
     color: theme.colors.textMuted,
   },
+  /**
+   * `selectedText` (#5f9dea) on `selectedFill` (#011132) is 6.65:1 — the
+   * same pairing the strength chips use, replacing `card` (#0c0c0b) on
+   * `primary` (#0d52c3) which measured 2.81:1, below the 4.5:1 floor for
+   * 13 px text. The semibold weight is the non-colour cue: selection is
+   * carried by weight *and* colour, so the state survives colour-vision
+   * deficiency and a future theme change.
+   */
   toggleLabelActive: {
-    color: theme.colors.card,
+    fontFamily: theme.fonts.bodySemibold,
+    color: theme.colors.selectedText,
   },
   row: {
     flexDirection: 'row',
@@ -252,7 +261,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   chipSelected: {
-    backgroundColor: theme.colors.primary,
+    backgroundColor: theme.colors.selectedFill,
     borderColor: theme.colors.primary,
   },
   chipUnselected: {
@@ -267,8 +276,14 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.caption,
     color: theme.colors.text,
   },
+  /**
+   * Same fix as `toggleLabelActive`: `selectedText` on `selectedFill` is
+   * 6.65:1 (the strength chips' own pairing), replacing `card` on
+   * `primary` at 2.81:1. Semibold carries the selection non-coloured.
+   */
   chipLabelSelected: {
-    color: theme.colors.card,
+    fontFamily: theme.fonts.bodySemibold,
+    color: theme.colors.selectedText,
   },
   liveRow: {
     flexDirection: 'row',
