@@ -857,7 +857,7 @@ export function MapScreen() {
     </>
   );
 
-  /** Step 3 — the Route tab: origin search, the route, the shelter notice. */
+  /** Step 3 — the Route tab: origin search, the shelter notice, then the route. */
   const routeBody = (
     <>
       <LocalitySearch
@@ -866,6 +866,18 @@ export function MapScreen() {
         onSelect={setOriginId}
         disabled={advisoryBusy}
       />
+
+      {/*
+        The shelter placeholder warning comes BEFORE the route headline,
+        per the honesty rules: a reader who takes a placeholder shelter
+        name at face value has already been misled.
+      */}
+      {shelters.isDemo ? (
+        <View style={styles.shelterNotice}>
+          <Text style={styles.shelterHeading}>{shelters.heading}</Text>
+          <Text style={styles.shelterBody}>{shelters.body}</Text>
+        </View>
+      ) : null}
 
       <View style={styles.routeBlock}>
         <Text
@@ -896,13 +908,6 @@ export function MapScreen() {
           />
         </View>
       </View>
-
-      {shelters.isDemo ? (
-        <View style={styles.shelterNotice}>
-          <Text style={styles.shelterHeading}>{shelters.heading}</Text>
-          <Text style={styles.shelterBody}>{shelters.body}</Text>
-        </View>
-      ) : null}
     </>
   );
 
@@ -915,6 +920,16 @@ export function MapScreen() {
    */
   const advisoryBody = (
     <>
+      {/*
+        The screening estimate sits ABOVE the Generate button and any
+        advisory result, per the project's honesty rules. The full
+        disclosure block below carries the rest; this one sentence is
+        the claim a reader must see before they press anything.
+      */}
+      <Disclosure label="Screening estimate, not a forecast">
+        {caseStudy.limitation}
+      </Disclosure>
+
       <Pressable
         onPress={onGenerateAdvisory}
         disabled={!canGenerate}
@@ -941,7 +956,7 @@ export function MapScreen() {
       ) : (
         <Text style={styles.generateHint}>
           The advisory text is written by a language model. The impact
-          figures above do not depend on it.
+          figures do not depend on it.
         </Text>
       )}
 
@@ -1044,14 +1059,13 @@ export function MapScreen() {
   const disclosureBlock = (
     <View style={styles.disclosureBlock}>
       <Text style={styles.disclosureHeading}>What this is and is not</Text>
-      <Disclosure label="Screening estimate, not a forecast">
-        {caseStudy.limitation}
-      </Disclosure>
       {/*
         Plain language here; the backend's own disclosure string is
         shown verbatim in "Show data provenance" below. It names a
         source file and two wire-format fields, which belong with the
         provenance and not in the first thing a judge reads.
+        NOTE: "Screening estimate, not a forecast" moved to the top of
+        `advisoryBody` (above the Generate button) per the honesty rules.
       */}
       <Disclosure label="The storm track is history, not a prediction">
         {TRACK_DISCLOSURE_PLAIN}

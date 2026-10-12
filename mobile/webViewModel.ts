@@ -479,7 +479,7 @@ export function routeSummary(
     return {
       reachable: true,
       headline:
-        `Flood-free route to ${shelter} · ` +
+        `Route avoiding the modelled flood to ${shelter} · ` +
         `${routes.length_km.toFixed(1)} km`,
       detail: routes.shelter_assignment_basis ?? '',
       lengthKm: routes.length_km,
@@ -492,7 +492,7 @@ export function routeSummary(
 
   return {
     reachable: false,
-    headline: 'No flood-free route from this origin',
+    headline: 'No route avoiding the modelled flood from this origin',
     // The backend's reason, verbatim: it distinguishes road-data coverage from
     // flood severance and that distinction is the whole point of the endpoint.
     detail: routes.reason,

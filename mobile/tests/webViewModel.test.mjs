@@ -497,7 +497,7 @@ describe('routeSummary', () => {
     );
     assert.equal(s.reachable, false);
     assert.equal(s.detail, reason);
-    assert.match(s.headline, /No flood-free route/);
+    assert.match(s.headline, /No route avoiding the modelled flood/);
   });
 
   it('reports the allocation figures when they have arrived', () => {
