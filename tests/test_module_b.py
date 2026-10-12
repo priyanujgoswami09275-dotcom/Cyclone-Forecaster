@@ -211,3 +211,36 @@ class TestPopulation:
         info = methodology()
         assert info["is_estimate"] is True
         assert "ESTIMATES" in info["disclosure"]
+
+    def test_flooded_km2_matches_extent_km2_when_flood_covers_everything(self):
+        """When the flood polygon covers the entire extent box, the flooded
+        area in km² must equal the extent area in km².
+
+        The extent formula already applies cos(lat) and the 110.574 latitude
+        constant; the flooded-area formula must use the same constants or
+        the ratio between them silently changes with latitude. The old
+        formula (`area * 111_320**2 / 1e6`) treated both axes as 111.320 km
+        with no cos(lat), overstating flooded_km2 by ~8.4% at 21.8°N —
+        the population estimate was correspondingly too high.
+        """
+        from backend.simulation.population import estimate_populations
+        from shapely.geometry import box
+
+        # A locality at the study area's latitude, with a real radius.
+        lon, lat, radius_km = 88.08, 21.8, 5.0
+        # A flood polygon far larger than the extent, so the intersection
+        # IS the extent — the one case where the two areas must agree.
+        flood = box(80, 15, 95, 30)
+        results = estimate_populations(
+            localities=[("test", lon, lat, radius_km)],
+            flood=flood,
+            cell_km2=0.0025,
+            buildings=[(lon, lat)],  # one building, inside the extent
+        )
+        r = results[0]
+        # Within 0.5% — the two formulas use the same constants, so
+        # agreement should be exact up to floating-point noise.
+        assert r.flooded_km2 == pytest.approx(r.extent_km2, rel=0.005), (
+            f"flooded_km2={r.flooded_km2:.2f} vs extent_km2={r.extent_km2:.2f} "
+            f"— the cos(lat) correction is missing or wrong"
+        )

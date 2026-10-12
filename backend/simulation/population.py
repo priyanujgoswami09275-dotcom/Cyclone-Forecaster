@@ -110,7 +110,16 @@ def estimate_populations(
 
         n_buildings = sum(1 for b in building_points if extent.contains(b))
         flooded = extent.intersection(flood)
-        flooded_km2 = flooded.area * (111_320**2) / 1e6 if not flooded.is_empty else 0.0
+        # Same degree-to-km constants as the extent calculation above: the
+        # longitude scale shrinks with cos(lat), the latitude scale is 110.574.
+        # The old formula (area * 111_320**2 / 1e6) treated both axes as
+        # 111.320 km/deg with no cos(lat), overstating flooded_km2 by ~8.4%
+        # at 21.8°N — and inflating every population estimate with it.
+        flooded_km2 = (
+            flooded.area * (111.320 * math.cos(math.radians(lat))) * 110.574
+            if not flooded.is_empty
+            else 0.0
+        )
 
         if n_buildings < MIN_BUILDINGS_FOR_ESTIMATE:
             population = None
