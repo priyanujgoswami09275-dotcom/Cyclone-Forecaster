@@ -24,6 +24,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
@@ -346,15 +347,40 @@ describe('exposure state notes', () => {
     );
   });
 
-  it('the empty note says "in this model" and keeps the resolution reason', () => {
+  it('the empty note says "in this model", the 0.5 km limit, and "not a safety finding"', () => {
     assert.equal(
       EXPOSURE_EMPTY_NOTE,
-      'In this model, no hospitals, substations or roads are reached at ' +
-        'this strength. The surge is below what this elevation model can ' +
-        'resolve. Try a higher strength to see more of the impact.',
+      'In this model, the flood at this strength reaches no mapped hospital, ' +
+        'substation or road. The model spreads water at most about 0.5 km inland ' +
+        'from the water’s edge, so a real flood could reach farther than shown. ' +
+        'This is not a safety finding. Try a higher strength to see more of the ' +
+        'impact.',
     );
     assert.match(EXPOSURE_EMPTY_NOTE, /In this model/);
-    assert.match(EXPOSURE_EMPTY_NOTE, /elevation model can resolve/);
+    assert.match(EXPOSURE_EMPTY_NOTE, /about 0\.5 km inland/);
+    assert.match(EXPOSURE_EMPTY_NOTE, /not a safety finding/);
+    // The old "elevation model can resolve" reason was factually wrong —
+    // 1.83 m is well above the DEM's resolution. Make sure it stays gone.
+    assert.ok(!/can resolve/.test(EXPOSURE_EMPTY_NOTE));
+  });
+
+  it('the 0.5 km claim matches the backend: DEFAULT_STEPS is 10', () => {
+    // The note says "about 0.5 km inland" because the BFS flood spreads
+    // at most 10 steps × ~50 m per SRTM cell. Read the backend's own
+    // constant and assert the number the claim depends on — if someone
+    // changes DEFAULT_STEPS, this test fails and the note must be
+    // revisited, not silently wrong.
+    const floodSrc = readFileSync(
+      resolve(HERE, '../../backend/simulation/flood.py'),
+      'utf8',
+    );
+    const m = floodSrc.match(/DEFAULT_STEPS\s*=\s*(\d+)/);
+    assert.ok(m, 'DEFAULT_STEPS not found in backend/simulation/flood.py');
+    assert.equal(
+      parseInt(m[1], 10),
+      10,
+      'DEFAULT_STEPS changed — the "about 0.5 km inland" claim in EXPOSURE_EMPTY_NOTE needs revisiting',
+    );
   });
 });
 

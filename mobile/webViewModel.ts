@@ -163,15 +163,21 @@ export const EXPOSURE_FAILED_NOTE =
   'These counts could not be loaded, so they are unknown — not zero.';
 
 /**
- * The Impact tab's empty-exposure note. One line + one action. "In this
- * model" carries the honesty that the model found nothing at this strength
- * — not that the storm spared the delta — and the elevation resolution is
- * the documented reason the surge under-reads there.
+ * The Impact tab's empty-exposure note. The honest reason is the model's
+ * 10-step BFS flood, which spreads water at most about 0.5 km inland
+ * from the water's edge (10 steps x ~50 m per SRTM cell — see
+ * `backend/simulation/flood.py`'s DEFAULT_STEPS and the DEM transform).
+ * A 1.83 m surge is well above the DEM's ~1 m vertical resolution; the
+ * old "below what this elevation model can resolve" was factually wrong.
+ * "Not a safety finding" is the rule: the model found nothing, but the
+ * model's reach is limited, so the absence is not a clean bill.
  */
 export const EXPOSURE_EMPTY_NOTE =
-  'In this model, no hospitals, substations or roads are reached at this ' +
-  'strength. The surge is below what this elevation model can resolve. Try ' +
-  'a higher strength to see more of the impact.';
+  'In this model, the flood at this strength reaches no mapped hospital, ' +
+  'substation or road. The model spreads water at most about 0.5 km inland ' +
+  'from the water’s edge, so a real flood could reach farther than shown. ' +
+  'This is not a safety finding. Try a higher strength to see more of the ' +
+  'impact.';
 
 /**
  * Plain-language versions of the two backend disclosures that are the wordiest.
