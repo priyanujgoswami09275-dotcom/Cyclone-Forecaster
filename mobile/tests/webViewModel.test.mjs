@@ -291,10 +291,21 @@ describe('scenarioFigures', () => {
 });
 
 describe('scenarioHeadline', () => {
-  it('states the band floor with ≥', () => {
+  it('shows the storm class name, not the wind — no repetition with the figures line', () => {
+    // The wind moved to the figuresLine (with its "This strength:" /
+    // "Reference scenario:" prefix), so the headline carries the class
+    // name only. The old test pinned "≥222 km/h · Super Cyclonic Storm".
     const f = scenarioFigures(CAT6_OVERLAY, CAT6_EXPOSURE, null);
     const line = scenarioHeadline(f);
-    assert.match(line, /≥222 km\/h/);
+    assert.match(line, /Super Cyclonic Storm/);
+    assert.ok(!line.includes('222'), 'the wind number is in the figures line, not the headline');
+  });
+
+  it('falls back to the overlay imd_category when the exposure is still loading', () => {
+    // The overlay always carries imd_category, so the "this band"
+    // placeholder is gone even while the exposure request is in flight.
+    const f = scenarioFigures(CAT6_OVERLAY, null, null);
+    const line = scenarioHeadline(f);
     assert.match(line, /Super Cyclonic Storm/);
   });
 

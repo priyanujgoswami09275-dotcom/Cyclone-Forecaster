@@ -105,32 +105,41 @@ export function resolveChip(
 }
 
 /**
- * The one-line figures under the chip row.
+ * The one-line figures under the chip row, with a prefix that labels what
+ * the numbers are.
  *
- * **"≥" appears exactly when the wind is a band floor rather than a
- * midpoint.** IMD documents Super Cyclonic Storm as ≥222 kmph with no upper
- * bound, so the backend reports `wind_is_band_midpoint: false` and 222 is the
- * *lowest* wind in that band, not a representative one. Printing "222 km/h"
- * beside a chip labelled "Super cyclonic" would state as a measurement the
- * bottom of an open-ended range, which is the same class of error as the knots
- * bug in flag 31. When the flag is true the number is a midpoint and reads
- * without a prefix.
+ * **"Reference scenario:"** when the Remal chip is active — the overlay's
+ * figures are the documented landfall preset (115 km/h, 1.2 m), not the
+ * observed storm's own values (111.1 km/h, 1.12 m), and the prefix says so.
  *
- * The flooded area is the model's own `final_land_area_km2` and is **never**
- * measured off the picture — at category 6 the raster shows roughly 1,680 km²
- * and the model says 2,680, because the raster is downsampled to ~150 m and
- * quantised into four depth classes. "(model)" is in the string so the reader
- * knows which of the two numbers they are looking at.
+ * **"This strength:"** for band chips — the overlay's figures are the
+ * band's representative values, which is the strength the user picked.
+ *
+ * The `≥` still appears on band floors (≥222 km/h for Super Cyclonic
+ * Storm, documented as a threshold with no upper bound) and is absent on
+ * band midpoints (142 km/h) and on the reference preset (115 km/h — a
+ * specific value, not a range floor). When a prefix is supplied, the
+ * prefix itself communicates the context and the ≥ is dropped from the
+ * wind — the reader already knows which scenario they are looking at.
+ *
+ * The flooded area is the model's own `final_land_area_km2` and is
+ * **never** measured off the picture — at category 6 the raster shows
+ * roughly 1,680 km² and the model says 2,680, because the raster is
+ * downsampled to ~150 m and quantised into four depth classes.
+ * "(model)" is in the string so the reader knows which of the two
+ * numbers they are looking at.
  */
 export function figuresLine(
   overlay: OverlayEntry | null,
   windIsBandMidpoint: boolean | undefined,
+  prefix?: string,
 ): string {
   if (!overlay) return '';
-  const wind = `${windIsBandMidpoint ? '' : '≥'}${overlay.wind_kmph.toFixed(0)} km/h wind`;
+  const ge = prefix ? '' : (windIsBandMidpoint ? '' : '≥');
+  const wind = `${ge}${overlay.wind_kmph.toFixed(0)} km/h wind`;
   const surge = `${overlay.surge_m.toFixed(1)} m surge`;
   const area = `${Math.round(overlay.final_land_area_km2).toLocaleString('en-US')} km² flooded (model)`;
-  return `${wind}, ${surge}, ${area}`;
+  return `${prefix ?? ''}${wind}, ${surge}, ${area}`;
 }
 
 /**

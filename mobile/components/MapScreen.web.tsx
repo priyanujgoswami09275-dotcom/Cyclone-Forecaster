@@ -639,13 +639,15 @@ export function MapScreen() {
         evacuation advisory.
       </Text>
       {/*
-        The anchor is the case study's own fact, so it is labelled as
-        such the moment something else is selected. Left unlabelled it
-        would read as a description of the storm on screen — a Remal
-        landfall sentence under a RUTH heading.
+        The anchor is always labelled as the historical landfall record,
+        regardless of which storm is selected — when the case study is
+        active the label was previously suppressed, which made the
+        115 km/h landfall sentence read as a description of the selected
+        scenario. "Historical landfall:" says what it is: a documented
+        fact about May 2024, not a model output.
       */}
       <Text style={styles.anchorLine}>
-        {isCaseStudy ? '' : 'Case study — '}
+        {'Historical landfall: '}
         {caseStudy.anchor}
       </Text>
     </>
@@ -745,14 +747,21 @@ export function MapScreen() {
 
       {/*
         `figuresLine` is the shared string from `strengthChips.ts`, so
-        the Web and native screens state the scenario identically —
-        including the `≥` that marks category 6's wind as a band floor
-        rather than a midpoint.
+        the Web and native screens state the scenario identically. The
+        prefix labels what the numbers are: "Reference scenario:" for
+        the Remal chip (the overlay carries the documented 115 km/h /
+        1.2 m preset, not the observed 111.1 km/h / 1.12 m), and
+        "This strength:" for band chips. The ≥ floor marker only
+        appears without a prefix (native callers pass no prefix and
+        keep the existing behaviour).
       */}
       <Text style={styles.figuresLine}>
         {figuresLine(
           overlay,
           exposure?.wind_is_band_midpoint,
+          chipId === 'remal_observed'
+            ? 'Reference scenario: '
+            : 'This strength: ',
         )}
       </Text>
 
@@ -797,7 +806,14 @@ export function MapScreen() {
   const impactBody = (
     <>
       <View style={styles.factGrid}>
-        <Fact label="Wind" value={windLabel(figures.windKmph, figures.windIsBandMidpoint)} />
+        <Fact
+          label="Wind"
+          value={windLabel(
+            figures.windKmph,
+            figures.windIsBandMidpoint,
+            figures.scenarioKind === 'observed',
+          )}
+        />
         <Fact label="Storm surge" value={surgeLabel(figures.surgeM)} note="estimate" />
         <Fact label="Flooded land" value={areaLabel(figures.floodedKm2)} note="model" />
         <Fact label="Storm class (IMD)" value={figures.bandLabel || '—'} small />
@@ -807,12 +823,12 @@ export function MapScreen() {
         <Tile
           label="Hospitals"
           count={countLabel(counts.hospitals)}
-          unit={countUnit(counts.hospitals, 'submerged')}
+          unit={countUnit(counts.hospitals, 'reached by the flood')}
         />
         <Tile
           label="Substations"
           count={countLabel(counts.substations)}
-          unit={countUnit(counts.substations, 'submerged')}
+          unit={countUnit(counts.substations, 'reached by the flood')}
         />
         {/*
           Road segments, touched by the flood: the label says what is
@@ -1039,6 +1055,7 @@ export function MapScreen() {
         rows={compareRows ?? []}
         loading={compareLoading}
         error={compareError}
+        stackedCards
       />
     </View>
   );
@@ -1796,8 +1813,8 @@ const styles = StyleSheet.create({
     fontFamily: theme.fonts.body,
     // 12 px: the label floor — 10 px was under the platform minimum and
     // leaned on letterspacing to survive; at 12 px the tracking goes.
+    // Title case, matching the tile labels — one consistent label voice.
     fontSize: 12,
-    textTransform: 'uppercase',
     color: theme.colors.textMuted,
   },
   factValue: {

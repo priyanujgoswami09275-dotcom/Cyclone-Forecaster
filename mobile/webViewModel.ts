@@ -34,6 +34,8 @@ export interface ScenarioFigures {
   surgeM: Figure;
   /** IMD band ceiling, or null for the open-ended top band. */
   windIsBandMidpoint: boolean;
+  /** `'observed'`, `'band_midpoint'` or `'category'` — from the payload. */
+  scenarioKind: string | null;
   bandLabel: string;
   /** The model's own flooded land area. Never measured off the picture. */
   floodedKm2: Figure;
@@ -66,7 +68,8 @@ export function scenarioFigures(
   exposure: ExposureResponse | null,
   fallbackBand: string | null,
 ): ScenarioFigures {
-  const bandLabel = exposure?.imd_category ?? fallbackBand ?? '';
+  const bandLabel =
+    exposure?.imd_category ?? overlay?.imd_category ?? fallbackBand ?? '';
   return {
     windKmph: exposure?.wind_kmph ?? overlay?.wind_kmph ?? null,
     surgeM: exposure?.surge_m ?? overlay?.surge_m ?? null,
@@ -78,6 +81,7 @@ export function scenarioFigures(
     // km/h" while the figures line directly below said "≥222 km/h wind", which
     // is the same screen contradicting itself.
     windIsBandMidpoint: exposure?.wind_is_band_midpoint ?? false,
+    scenarioKind: (exposure as unknown as { scenario_kind?: string } | null)?.scenario_kind ?? null,
     bandLabel,
     floodedKm2: exposure?.final_land_area_km2 ?? overlay?.final_land_area_km2 ?? null,
     drawnKm2: exposure?.roads_cut_off ? overlay?.drawn_area_km2 ?? null : null,
@@ -92,9 +96,19 @@ export function scenarioFigures(
   };
 }
 
-/** `222 km/h` or `≥222 km/h`. */
-export function windLabel(windKmph: Figure, isBandMidpoint: boolean): string {
+/**
+ * `222 km/h`, `≥222 km/h`, or `111 km/h` (observed — no ≥, a recorded value
+ * is not a floor). The `isObserved` flag comes from `scenario_kind` in the
+ * payload: `'observed'` means the wind is a specific measurement, so the
+ * `≥` floor marker would state a range where there is none.
+ */
+export function windLabel(
+  windKmph: Figure,
+  isBandMidpoint: boolean,
+  isObserved?: boolean,
+): string {
   if (windKmph === null) return '—';
+  if (isObserved) return `${Math.round(windKmph)} km/h`;
   return `${isBandMidpoint ? '' : '≥'}${Math.round(windKmph)} km/h`;
 }
 
@@ -230,11 +244,20 @@ export function unreportedWindSentence(track: {
   return ` ${missing} of the ${track.waypoint_count} fixes report no wind at all, and those are shown as unreported rather than as calm.`;
 }
 
-/** The headline sentence under the scenario control. */
+/**
+ * The headline under the scenario control — the storm class only.
+ *
+ * The wind moved to the figuresLine (which carries the "Reference
+ * scenario:" / "This strength:" prefix), so the headline and the
+ * figures line never repeat the same number. The class name comes
+ * from the exposure payload, with the overlay's `imd_category` as
+ * a fallback — no more "this band" placeholder.
+ */
 export function scenarioHeadline(figures: ScenarioFigures): string {
-  if (figures.windKmph === null) return 'Reading the live model…';
-  const band = figures.bandLabel || 'this band';
-  return `${windLabel(figures.windKmph, figures.windIsBandMidpoint)} · ${band}`;
+  if (figures.windKmph === null && figures.bandLabel === '') {
+    return 'Reading the live model…';
+  }
+  return figures.bandLabel || 'Reading the live model…';
 }
 
 export interface ShelterDisclosure {
