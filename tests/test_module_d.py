@@ -543,7 +543,9 @@ class TestHandlerFailures:
         monkeypatch.setattr(main, "generate_advisory", boom)
         response = client.post("/advisory?category=6&origin=kakdwip")
         assert response.status_code == 502
-        assert "quota exhausted" in response.json()["detail"]
+        # The fixed 502 detail no longer includes exception text (B2 fix);
+        # the full exception is logged server-side instead.
+        assert "Gemini advisory generation failed" in response.json()["detail"]
 
     def test_unfixable_output_is_withheld_with_its_violations(
         self, client, monkeypatch

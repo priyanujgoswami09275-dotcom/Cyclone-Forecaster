@@ -46,6 +46,7 @@ import math
 import os
 import time
 import copy
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -1970,9 +1971,16 @@ def advisory(
             headers={"Retry-After": str(CAPACITY_RETRY_AFTER_SECONDS)},
         ) from exc
     except Exception as exc:  # noqa: BLE001 - any SDK failure is a 502 to the client
+        # Log the full exception server-side for debugging; the client sees
+        # a fixed sentence, because a KeyError('GEMINI_API_KEY') or an SDK
+        # error's upstream text is not a message a district officer can use.
+        logging.getLogger(__name__).exception("advisory generation failed")
         raise HTTPException(
             status_code=502,
-            detail=f"Gemini advisory generation failed: {type(exc).__name__}: {exc}",
+            detail=(
+                "Gemini advisory generation failed. This is an upstream or "
+                "configuration fault, not a problem with your request."
+            ),
         ) from exc
 
     # Before validating, not after: the origin entry is code-built, so
@@ -2016,11 +2024,12 @@ def advisory(
                 headers={"Retry-After": str(CAPACITY_RETRY_AFTER_SECONDS)},
             ) from exc
         except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).exception("advisory correction pass failed")
             raise HTTPException(
                 status_code=502,
                 detail=(
-                    f"Gemini advisory retry failed: {type(exc).__name__}: {exc}. "
-                    f"First attempt's violations: {'; '.join(violations)}"
+                    "Gemini advisory generation failed. This is an upstream or "
+                    "configuration fault, not a problem with your request."
                 ),
             ) from exc
         # The retry replaced the whole object, so the code-built origin entry has
@@ -2240,9 +2249,13 @@ def risk_analyst(body: RiskAnalystRequest) -> dict:
             headers={"Retry-After": str(CAPACITY_RETRY_AFTER_SECONDS)},
         ) from exc
     except Exception as exc:  # noqa: BLE001 - any SDK failure is a 502 to the client
+        logging.getLogger(__name__).exception("risk analysis generation failed")
         raise HTTPException(
             status_code=502,
-            detail=f"Gemini risk analysis failed: {type(exc).__name__}: {exc}",
+            detail=(
+                "Gemini risk analysis failed. This is an upstream or "
+                "configuration fault, not a problem with your request."
+            ),
         ) from exc
 
     analysis: RiskAnalysis = result
