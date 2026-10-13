@@ -45,6 +45,7 @@ import json
 import math
 import os
 import time
+import copy
 from dataclasses import replace
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -1692,6 +1693,54 @@ class GeminiQuotaError(RuntimeError):
     """The daily free-tier request limit is spent. Retry-After would be a lie."""
 
 
+# =========================================================================
+# Advisory cache — reduces repeat Gemini calls for identical requests
+# =========================================================================
+
+class AdvisoryCache:
+    """In-process TTL cache for fully validated /advisory 200 responses.
+
+    Keyed on (cyclone_id, resolved wind_kmph, origin, model) so two scenario
+    ids that resolve to the same wind share an entry. Only responses that
+    passed every `validate_advisory` check are stored; failures and
+    violation-carrying drafts are never cached.
+
+    **Per-process:** on Vercel each function instance has its own cache, so
+    this reduces repeat Gemini calls but does not guarantee fewer. A cold
+    instance starts empty.
+    """
+
+    def __init__(self, ttl_seconds: float = 6 * 3600, max_entries: int = 128,
+                 clock=None):
+        self._ttl = ttl_seconds
+        self._max = max_entries
+        self._clock = clock or time.monotonic
+        self._store: dict = {}  # key -> {"time": float, "body": dict}
+        self._order: list = []  # insertion order, oldest first, for eviction
+
+    def get(self, key: tuple) -> dict | None:
+        entry = self._store.get(key)
+        if entry is None:
+            return None
+        if self._clock() - entry["time"] > self._ttl:
+            del self._store[key]
+            self._order.remove(key)
+            return None
+        return entry["body"]
+
+    def put(self, key: tuple, body: dict) -> None:
+        if key in self._store:
+            self._order.remove(key)
+        self._store[key] = {"time": self._clock(), "body": body}
+        self._order.append(key)
+        while len(self._order) > self._max:
+            oldest = self._order.pop(0)
+            del self._store[oldest]
+
+
+_advisory_cache = AdvisoryCache()
+
+
 def _is_capacity_error(exc: ServerError) -> bool:
     """Is this a capacity block rather than a real server-side failure?
 
@@ -1859,6 +1908,30 @@ def advisory(
             ),
         )
 
+    # Cache check: the resolved wind identifies the scenario without paying
+    # for a flood computation or a Gemini call. Two scenario ids that
+    # resolve to the same wind (cat5 and a hypothetical equal-wind observed
+    # storm) share one entry.
+    scenario = ctx.resolve(registry().get(ctx.cyclone_id))
+    cache_key = (ctx.cyclone_id, scenario.wind_kmph, origin, ADVISORY_MODEL)
+    cached = _advisory_cache.get(cache_key)
+    if cached is not None:
+        # The stored body already carries the original generated_at; it is
+        # never refreshed on a hit, because the advisory was produced at
+        # that time and saying otherwise would be a lie. gemini_calls is 0
+        # because no call was made. attempts stays as originally validated.
+        # scenario_id and category are overwritten with the CURRENT
+        # request's values: the cache key is the resolved wind, so a
+        # different scenario id that resolves to the same wind shares
+        # this entry — and the response must say which scenario was
+        # requested, not which one was first cached.
+        body = copy.deepcopy(cached)
+        body["served_from_cache"] = True
+        body["validation"]["gemini_calls"] = 0
+        body["generated_for"]["scenario_id"] = ctx.scenario_id
+        body["generated_for"]["category"] = category
+        return body
+
     # The endpoint functions, not the raw helpers: advisory.py is written
     # against the response shapes, and feeding it the same dicts the client
     # already has is what guarantees the prose and the map cannot disagree.
@@ -1971,7 +2044,7 @@ def advisory(
             },
         )
 
-    return {
+    response_body = {
         "advisory": result.model_dump(),
         "generated_for": {
             "category": category,
@@ -2014,7 +2087,19 @@ def advisory(
             "attempts": attempts,
             "gemini_calls": gemini_calls,
         },
+        # When Gemini actually produced this advisory — never refreshed on a
+        # cache hit, because the advisory was written at that time.
+        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "served_from_cache": False,
     }
+
+    # Cache only a fully validated success: no violations, no failure paths.
+    # The key was computed before the expensive endpoint calls above.
+    # copy.deepcopy on store AND on retrieval so a caller that mutates the
+    # returned dict cannot corrupt the cached entry for the next request.
+    _advisory_cache.put(cache_key, copy.deepcopy(response_body))
+
+    return response_body
 
 
 class RiskAnalystRequest(BaseModel):

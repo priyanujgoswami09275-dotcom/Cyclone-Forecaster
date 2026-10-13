@@ -531,6 +531,11 @@ class TestHandlerFailures:
 
     def test_a_gemini_exception_is_502_not_a_500(self, client, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+        # Clear the advisory cache: a previous test may have cached a 200 for
+        # this exact (cyclone, wind, origin, model) key, and a cache hit
+        # skips the mocked Gemini call entirely.
+        main._advisory_cache._store.clear()
+        main._advisory_cache._order.clear()
 
         def boom(*a, **k):
             raise RuntimeError("quota exhausted")
