@@ -1192,8 +1192,12 @@ def _comparison_entry(ctx: ScenarioContext) -> dict:
         "wind_kmph": scenario.wind_kmph,
         "imd_category": scenario.imd_category,
         # From the deterministic law, never from the scenario: a scenario is a
-        # wind, and the surge is a function of that wind.
-        "surge_m": round(surge_for_wind(scenario.wind_kmph), 4),
+        # wind, and the surge is a function of that wind. No rounding here —
+        # /exposure emits the raw float from predict_surge, and rounding to
+        # 4 dp here produced 3.415 where /exposure gave 3.41499…, so the
+        # mobile panel's toFixed(2) rendered the same number as two different
+        # readings ("3.42 m" vs "3.41 m").
+        "surge_m": surge_for_wind(scenario.wind_kmph),
         "flood_area_km2": round(flood.frames[-1].land_area_km2, 2),
         "hospitals_exposed": payload["hospitals"]["count"],
         "substations_exposed": payload["substations"]["count"],

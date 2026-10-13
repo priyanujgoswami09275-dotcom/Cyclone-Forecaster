@@ -122,5 +122,53 @@ def test_refused_requests_never_compute_a_flood(sids) -> None:
         )
     finally:
         main_module.run_flood_model = real
+
     assert response.status_code == 400
     assert calls == [], "a refused comparison must not run the flood model"
+
+
+class TestSurgeMatchesExposure:
+    """The /comparison entry's surge must equal /exposure's, byte for byte.
+
+    `_comparison_entry` rounds surge to 4 dp; `/exposure` emits the raw float
+    from `predict_surge`. The mobile panel does `toFixed(2)`, so 3.415
+    (comparison) renders as "3.42 m" while 3.41499… (exposure) renders as
+    "3.41 m" — the same number, two different readings on screen.
+    """
+
+    @pytest.mark.parametrize(
+        "category,scenario_id",
+        [(5, "cat5"), (6, "cat6"), (3, "observed")],
+    )
+    def test_comparison_surge_equals_exposure_surge(
+        self, category: int, scenario_id: str
+    ) -> None:
+        exp = client.get(
+            "/exposure",
+            params={
+                "category": category,
+                "cyclone_id": REMAL,
+                "scenario_id": scenario_id,
+            },
+        )
+        assert exp.status_code == 200, f"/exposure failed: {exp.text[:200]}"
+        exposure_surge = exp.json()["surge_m"]
+
+        comp = client.get(
+            "/comparison",
+            params={
+                "category": category,
+                "cyclone_ids": REMAL,
+                "scenario_id": scenario_id,
+            },
+        )
+        assert comp.status_code == 200, f"/comparison failed: {comp.text[:200]}"
+        comparison_surge = comp.json()["cyclones"][0]["surge_m"]
+
+        # Exact equality: the same wind through the same law must give the
+        # same float, not a rounded variant of it. A 4-dp pre-round produces
+        # 3.415 where /exposure gives 3.41499…, and toFixed(2) splits them.
+        assert comparison_surge == exposure_surge, (
+            f"comparison surge_m={comparison_surge} != exposure surge_m={exposure_surge} "
+            f"for scenario_id={scenario_id} — one of the two paths rounds"
+        )
