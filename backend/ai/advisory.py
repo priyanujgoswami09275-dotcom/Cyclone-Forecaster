@@ -25,6 +25,7 @@ prompt imply otherwise.
 """
 
 import os
+import re
 from typing import Literal
 
 from google import genai
@@ -261,6 +262,68 @@ def plan_coverage(advisory: DistrictAdvisory, allocation: dict) -> dict:
     }
 
 
+# =========================================================================
+# Rule 8 in code: only 112 from the verified contacts pool
+# =========================================================================
+
+# The one number that is always permitted.
+_ALLOWED_NUMBERS = {"112"}
+
+# A call-word followed (within 15 chars of non-digits) by a 3-4 digit
+# number that is not 112. Only direct phone-dialling words are context
+# words: "call", "dial", "ring", "helpline", "hotline", "toll-free".
+# Softer words like "emergency", "contact", "number" and "phone" were
+# removed because they produce false positives on capacity figures
+# ("emergency shelters with capacity 1200"), family counts ("the number
+# of families is 3500") and household figures ("phone outages affect
+# 2200 homes") — none of which are helpline numbers.
+#
+# The 15-char gap means "call: 1070" and "toll-free 1070" are caught,
+# but "call the district officials about 250 families" (25+ chars) is not.
+#
+# Lookahead: the run must not be followed by another digit (so "10700"
+# is a 5-digit number, not "1070" + a stray zero), and must not be
+# followed by a comma + exactly 3 digits (which is a number-format
+# pattern: "call 1200,345" is one figure, not a helpline + a count).
+_PHONE_AFTER_WORD = re.compile(
+    r'\b(?:call|dial|ring|helpline|hotline|toll[-\s]?free)\b'
+    r'[^0-9]{0,15}(\d{3,4})(?!\d)(?!,\d{3}\b)',
+    re.IGNORECASE,
+)
+
+# A 10-digit mobile number, optionally with +91 or 0 prefix, spaces or hyphens.
+_TEN_DIGIT = re.compile(
+    r'(?:\+?91[\s\-]?)?\d{5}[\s\-]?\d{5}'
+    r'|\b0\d{10}\b'
+)
+
+# A toll-free style number: 1800/1860 prefix followed by at least 3 more digits.
+_TOLL_FREE = re.compile(
+    r'\b1[68]00[\-\s]?\d{3,}'
+)
+
+
+def _find_bad_numbers(text: str) -> list[str]:
+    """Phone-like numbers in `text` that are not the verified 112.
+
+    Returns sorted unique matches so the violation list is deterministic and
+    each offending number is named once — the correction pass feeds the
+    string back to the model, and a duplicated entry wastes correction
+    tokens on a repeat.
+    """
+    bad = set()
+    for m in _PHONE_AFTER_WORD.finditer(text):
+        if m.group(1) not in _ALLOWED_NUMBERS:
+            bad.add(m.group(1))
+    for m in _TEN_DIGIT.finditer(text):
+        digits = re.sub(r"\D", "", m.group(0))
+        if len(digits) >= 10:
+            bad.add(m.group(0))
+    for m in _TOLL_FREE.finditer(text):
+        bad.add(m.group(0))
+    return sorted(bad)
+
+
 def validate_advisory(
     advisory: DistrictAdvisory, allocation: dict, origin: str | None = None
 ) -> list[str]:
@@ -302,6 +365,22 @@ def validate_advisory(
         joined = (advisory.executive_summary + advisory.sms_dispatch_draft).lower()
         if not any(w in joined for w in ("provisional", "placeholder", "not surveyed")):
             violations.append("demo shelter data used but no disclosure language found")
+
+    # Rule 8: only 112 from the verified contacts pool is a permitted number.
+    # The prompt already says this; the code now enforces it, because a model
+    # that invents a helpline is the one failure this project cannot tolerate.
+    all_text = " \u00a0 ".join(filter(None, [
+        advisory.executive_summary,
+        advisory.sms_dispatch_draft,
+        advisory.post_landfall_risks,
+        advisory.historical_context,
+        *[item.reasoning for item in advisory.evacuation_plan],
+    ]))
+    for num in _find_bad_numbers(all_text):
+        violations.append(
+            f"emergency number '{num}' is not from the verified contacts pool "
+            f"(only 112 is permitted); remove it or use 112"
+        )
     return violations
 
 # ==========================================================================
