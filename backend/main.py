@@ -116,7 +116,7 @@ from .simulation.allocation import DemandNode, allocate_shelters
 from .simulation.dem import load_dem
 from .simulation.exposure import compute_exposure
 from .simulation.flood import FloodResult, run_flood_model
-from .simulation.routing import build_road_graph, safe_route
+from .simulation.routing import build_road_graph, flooded_edges, safe_route
 from .simulation.shelters import (
     Shelter,
     demo_shelters,
@@ -449,6 +449,22 @@ def flood_for_wind(wind_kmph: float) -> FloodResult:
     value.
     """
     return run_flood_model(wind_kmph)
+
+
+@lru_cache(maxsize=4)
+def _blocked_edges_for_wind(wind_kmph: float) -> frozenset:
+    """The set of road-graph edges the flood at this wind touches.
+
+    `flooded_edges` tests ~90k shapely intersections per call; /routes runs
+    it on every request. Wind-keyed (like `flood_for_wind`), because the
+    flood geometry — and therefore the blocked set — is a function of the
+    wind alone. Max 4: the app offers four strengths, and a fifth wind
+    would evict the least recently used entry, which is the correct
+    eviction for a UI where the user cycles through chips.
+    """
+    flood = flood_for_wind(wind_kmph)
+    graph = build_road_graph()
+    return frozenset(flooded_edges(graph, flood.frames[-1].geometry))
 
 
 def flood_for_scenario(ctx: ScenarioContext) -> FloodResult:
@@ -1458,11 +1474,13 @@ def routes(
     allocation = allocation_for_scenario(ctx)
     shelter, assigned = _shelter_for(locality, allocation, shelters_for_scenario(ctx))
 
+    wind = ctx.wind_kmph(registry().get(ctx.cyclone_id))
     route = safe_route(
         build_road_graph(),
         flood.frames[-1].geometry,
         (locality.lon, locality.lat),
         (shelter.lon, shelter.lat),
+        blocked=set(_blocked_edges_for_wind(wind)),
     )
     if not route.reachable:
         route = _diagnose_unreachable(route, locality, shelter, flood)

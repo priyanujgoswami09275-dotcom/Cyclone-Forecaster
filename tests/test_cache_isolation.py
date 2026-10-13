@@ -155,6 +155,7 @@ WIND_KEYED_CACHES = {
     "populations_for_wind",
     "shelters_for_wind",
     "allocation_for_wind",
+    "_blocked_edges_for_wind",
 }
 
 

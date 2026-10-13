@@ -171,19 +171,24 @@ def safe_route(
     flood,
     origin: tuple[float, float],
     destination: tuple[float, float],
+    blocked: set | None = None,
 ) -> Route:
     """Shortest path from origin to destination avoiding flooded edges.
 
     Returns an unreachable Route (rather than raising) when the flood severs
     the two: for an evacuation tool, "no safe route exists" is a result the
     caller must act on, not an error to swallow.
+
+    `blocked` lets a caller that has already computed the blocked-edge set
+    (e.g. from a wind-keyed cache) pass it in, skipping the ~90k shapely
+    intersections. When None, the set is computed from `flood` as before.
+
+    The safe subgraph is a **view**, not a copy: `nx.subgraph_view` wraps
+    the original graph with an edge filter, so no 90k-node graph is
+    duplicated on any request.
     """
     o, d = _snap(origin), _snap(destination)
     if not graph.has_node(o):
-        # Snap to the nearest graph node so a coordinate that missed the
-        # network by a few metres — or a village centroid on a sparse island —
-        # still routes. Bounded by MAX_SNAP_M so nothing is connected across
-        # open water.
         nearest = min(graph.nodes, key=lambda n: _haversine_m(o, n), default=None)
         if nearest is None or _haversine_m(o, nearest) > MAX_SNAP_M:
             return Route(
@@ -198,10 +203,11 @@ def safe_route(
             )
         d = nearest
 
-    blocked = flooded_edges(graph, flood)
-    safe = graph.edge_subgraph(
-        [e for e in graph.edges() if (e[0], e[1]) not in blocked]
-    ).copy()
+    if blocked is None:
+        blocked = flooded_edges(graph, flood)
+    safe = nx.subgraph_view(
+        graph, filter_edge=lambda u, v: (u, v) not in blocked
+    )
 
     try:
         path = nx.shortest_path(safe, o, d, weight="length_m")
