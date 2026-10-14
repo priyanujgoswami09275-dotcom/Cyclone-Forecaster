@@ -37,7 +37,8 @@ def a_valid_advisory(localities: list[str]) -> DistrictAdvisory:
     """A plan that satisfies every rule `validate_advisory` checks."""
     return DistrictAdvisory(
         executive_summary=(
-            "Conditions over the delta. Shelter capacity figures are "
+            "Simulation of conditions over the delta — a what-if at that "
+            "strength, not a forecast. Shelter capacity figures are "
             "provisional placeholders, not surveyed."
         ),
         evacuation_plan=[

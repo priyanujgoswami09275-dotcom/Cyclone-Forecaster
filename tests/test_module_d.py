@@ -244,7 +244,8 @@ def a_valid_advisory(localities: list[str], omit: str | None = None) -> District
         localities = [name for name in localities if name != omit]
     return DistrictAdvisory(
         executive_summary=(
-            "Super Cyclonic Storm conditions over the delta. Shelter capacity "
+            "Simulation of Super Cyclonic Storm conditions over the delta — "
+            "a what-if at that strength, not a forecast. Shelter capacity "
             "figures are provisional placeholders, not surveyed."
         ),
         evacuation_plan=[

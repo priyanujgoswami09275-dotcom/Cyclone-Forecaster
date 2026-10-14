@@ -125,6 +125,16 @@ the structured data given. Rules, non-negotiable:
    never tells anyone to leave. Do not merge two localities into one entry
    and do not write "and surrounding areas" — one row, one locality name, the
    exact string as given in the allocation list.
+10. For a HYPOTHETICAL SIMULATION scenario (the prompt says so), the
+   executive_summary and sms_dispatch_draft must say plainly that it is a
+   simulation. Never call it a forecast or an alert for the named storm.
+   Never write that the storm "will" or is "expected to" do anything.
+   Never attribute the what-if wind to the storm as its own wind — the
+   storm's observed peak is stated in the prompt; quote that instead.
+11. Every evacuation_plan reasoning must cite at least one figure from
+   LOCALITY FACTS for that locality, or say "no figure available".
+   Do not describe terrain, coastline, inland position, embankments or
+   any geography that is not in the data.
 
 """ + VERIFIED_HISTORICAL_POOL + \
 "\n\n" + VERIFIED_EMERGENCY_CONTACTS
@@ -152,6 +162,26 @@ def build_prompt(
         if peak is not None:
             suffix = f" across {fixes} track fixes" if fixes else ""
             storm_lines.append(f"observed peak: {peak} kmph{suffix}")
+        # The scenario type block: a band scenario is a what-if, and the
+        # advisory must never present it as what the storm will do.
+        kind = cyclone.get("scenario_kind")
+        if kind and kind != "observed":
+            wind = cyclone.get("scenario_wind_kmph")
+            imd = cyclone.get("scenario_imd_category", "")
+            # 310 of 610 catalogue storms have no reported peak wind; for
+            # those, quoting {peak} would render the literal "None".
+            peak_note = (
+                f"The storm's observed peak was {peak} kmph."
+                if peak is not None
+                else "The storm has no reported observed peak wind."
+            )
+            storm_lines.append(
+                f"SCENARIO TYPE: HYPOTHETICAL SIMULATION. This is a what-if "
+                f"at {imd} wind ({wind} kmph). It is NOT an observation or "
+                f"forecast of {name}. {peak_note}"
+            )
+        elif kind == "observed":
+            storm_lines.append(f"SCENARIO TYPE: OBSERVED WIND of {name}.")
         storm = "\n".join(storm_lines) + "\n\n"
     prompt = (
         f"{storm}=== COMPUTED FIGURES ===\n"
@@ -168,6 +198,20 @@ def build_prompt(
         f"SHELTER STATUS: {allocation['shelter_status']}\n"
         f"CAPACITY BASIS: {allocation['capacity_basis']}\n"
     )
+    # Per-locality facts from the allocation, so the model's reasoning cites
+    # real figures rather than inventing geography it was never given.
+    facts_lines = ["\n=== LOCALITY FACTS (estimates) ==="]
+    for row in allocation.get("allocation", []):
+        node = row.get("node", "?")
+        pop = row.get("population", "?")
+        assignments = row.get("assignments") or []
+        shelter = assignments[0].get("shelter", "?") if assignments else "?"
+        dist = assignments[0].get("distance_km", "?") if assignments else "?"
+        facts_lines.append(
+            f"- {node}: estimated exposed people {pop} (estimate), "
+            f"assigned {shelter}, {dist} km (straight line)"
+        )
+    prompt += "\n".join(facts_lines) + "\n"
     if context:
         prompt += f"\n=== REQUESTING LOCALITY ===\n{context}\n"
     if corrections:
@@ -325,7 +369,10 @@ def _find_bad_numbers(text: str) -> list[str]:
 
 
 def validate_advisory(
-    advisory: DistrictAdvisory, allocation: dict, origin: str | None = None
+    advisory: DistrictAdvisory,
+    allocation: dict,
+    origin: str | None = None,
+    scenario_kind: str | None = None,
 ) -> list[str]:
     """Post-hoc honesty checks, not just schema shape.
 
@@ -381,6 +428,26 @@ def validate_advisory(
             f"emergency number '{num}' is not from the verified contacts pool "
             f"(only 112 is permitted); remove it or use 112"
         )
+
+    # Rule 10: a hypothetical simulation must say so, and must not read as
+    # a forecast or alert. Only fires when the caller passes a non-observed
+    # scenario_kind — the observed scenario is the storm's own wind, and
+    # calling it a simulation would be equally wrong.
+    if scenario_kind is not None and scenario_kind != "observed":
+        joined = (advisory.executive_summary + " " + advisory.sms_dispatch_draft).lower()
+        if "simulat" not in joined:
+            violations.append(
+                "executive_summary or sms_dispatch_draft must say this is a "
+                "simulation (a what-if at this strength, not a forecast)"
+            )
+        sms = advisory.sms_dispatch_draft.lower()
+        for word in ("expected", "forecast", "will make landfall"):
+            if word in sms:
+                violations.append(
+                    f"sms_dispatch_draft says '{word}' — a hypothetical "
+                    "simulation must not use forecast language; say it is a "
+                    "simulation instead"
+                )
     return violations
 
 # ==========================================================================

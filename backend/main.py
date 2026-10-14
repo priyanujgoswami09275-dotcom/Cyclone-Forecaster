@@ -1932,7 +1932,11 @@ def advisory(
     # resolve to the same wind (cat5 and a hypothetical equal-wind observed
     # storm) share one entry.
     scenario = ctx.resolve(registry().get(ctx.cyclone_id))
-    cache_key = (ctx.cyclone_id, scenario.wind_kmph, origin, ADVISORY_MODEL)
+    # Cache key: the scenario kind is part of the key because the advisory
+    # text now depends on it — a band scenario says "HYPOTHETICAL SIMULATION"
+    # and an observed scenario says "OBSERVED WIND", and serving one for the
+    # other would be exactly the mislabel this fix exists to prevent.
+    cache_key = (ctx.cyclone_id, scenario.wind_kmph, origin, ADVISORY_MODEL, scenario.kind)
     cached = _advisory_cache.get(cache_key)
     if cached is not None:
         # The stored body already carries the original generated_at; it is
@@ -1967,10 +1971,21 @@ def advisory(
     facts = _origin_facts(ctx, locality)
     context = _origin_context(facts)
 
+    # The scenario block: a band scenario is a what-if, and the advisory
+    # must never present the band wind as what the storm will do. The
+    # cyclone dict gains the scenario's own kind, wind and class so
+    # build_prompt can label it. The observed peak is already in the dict.
+    # (`scenario` was resolved above, before the cache lookup.)
+    cyclone_dict = _cyclone_block(registry().get(ctx.cyclone_id))
+    if cyclone_dict is not None:
+        cyclone_dict["scenario_kind"] = scenario.kind
+        cyclone_dict["scenario_wind_kmph"] = scenario.wind_kmph
+        cyclone_dict["scenario_imd_category"] = scenario.imd_category
+
     try:
         result, gemini_calls = _generate_with_capacity_retry(
             surge_payload, exposure_payload, allocation_payload, context=context,
-            cyclone=_cyclone_block(registry().get(ctx.cyclone_id)),
+            cyclone=cyclone_dict,
         )
     except GeminiQuotaError as exc:
         # Before the capacity handler and the blanket `except Exception`. A
@@ -2006,7 +2021,7 @@ def advisory(
     # requesting locality for not being in the allocation data.
     result = _ensure_origin_in_plan(result, facts, allocation_payload)
 
-    violations = validate_advisory(result, allocation_payload, locality.name)
+    violations = validate_advisory(result, allocation_payload, locality.name, scenario_kind=scenario.kind)
     attempts = 1
     if violations:
         # One retry, feeding the violations back as corrections. A schema-shaped
@@ -2022,7 +2037,7 @@ def advisory(
                 allocation_payload,
                 context=context,
                 corrections="\n".join(f"- {v}" for v in violations),
-                cyclone=_cyclone_block(registry().get(ctx.cyclone_id)),
+                cyclone=cyclone_dict,
             )
             gemini_calls += correction_calls
         except GeminiQuotaError as exc:
@@ -2054,7 +2069,7 @@ def advisory(
         # to go back in. Missed this once and the guarantee silently lapsed only
         # on the retry path, which is exactly when it is hardest to notice.
         result = _ensure_origin_in_plan(result, facts, allocation_payload)
-        violations = validate_advisory(result, allocation_payload, locality.name)
+        violations = validate_advisory(result, allocation_payload, locality.name, scenario_kind=scenario.kind)
 
     if violations:
         # Still wrong after the retry. Returning it would mean shipping prose

@@ -71,9 +71,9 @@ def make_valid_advisory(allocation: dict) -> DistrictAdvisory:
         for name in localities
     ]
     return DistrictAdvisory(
-        executive_summary="Provisional advisory based on placeholder shelter data.",
+        executive_summary="Provisional simulation advisory based on placeholder shelter data.",
         evacuation_plan=plan,
-        sms_dispatch_draft="Evacuate to provisional shelters. Placeholder data.",
+        sms_dispatch_draft="SIMULATION: evacuate to provisional shelters.",
         post_landfall_risks="Freshwater flooding and salinization expected.",
         historical_context="Wind and surge comparable to Cyclone Amphan 2020.",
     )
@@ -141,13 +141,17 @@ class TestAdvisoryCacheHit:
         assert r1.json()["generated_for"]["scenario_id"] == "cat6"
         assert r1.json()["generated_for"]["category"] == 6
 
-        # Patch the stored key's wind from 222 (cat6) to 194 (cat5)
-        # so the next request with cat5 finds the same entry.
+        # Patch the stored key's wind AND kind to match what cat5 resolves to,
+        # so the next request with cat5 finds the same entry. cat6 has
+        # kind="category" and wind=222; cat5 has kind="band_midpoint" and
+        # wind=194. Both must match for the cache lookup to hit.
         cache = fresh_cache[0]
         old_key = list(cache._store.keys())[0]
         entry = cache._store.pop(old_key)
         cache._order.remove(old_key)
-        new_key = (old_key[0], 194.0, old_key[2], old_key[3])
+        # Determine cat5's kind by looking at what the /advisory endpoint
+        # would resolve it to. Cat5 has an upper bound → band_midpoint.
+        new_key = (*old_key[:1], 194.0, *old_key[2:4], "band_midpoint")
         cache._store[new_key] = entry
         cache._order.append(new_key)
 
