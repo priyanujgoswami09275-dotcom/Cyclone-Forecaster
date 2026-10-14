@@ -4668,3 +4668,16 @@ Result: node --test 400 pass / 0 fail; tsc clean; NOT VERIFIED visually.
 T5-Impact (feat/app-shell, items 1-4 of the approved-with-changes table): Fact label "IMD classification"→"Storm class (IMD)"; tile label "Roads"→"Road segments" over the approved caption ROADS_HONEST_LABEL "touched, not proven impassable" (roads test rewritten: exact caption + /not proven/ + never km + never "flooded roads"; the two ROADS_DISCLOSURE tooltip tests untouched); failed-exposure note = EXPOSURE_FAILED_NOTE one-liner + a 44px "Try again" button (bumps exposureRetry state added to the exposure effect deps — same-chip tap is a no-op per handler read: setChipId(identical) never re-runs the effect, so the old "pick the strength again" advised an impossible action); empty note = the user's approved text via EXPOSURE_EMPTY_NOTE; overlayClearancePx doc notes the 84px measurement predates the 12px floor.
 Files: mobile/webViewModel.ts, mobile/tests/webViewModel.test.mjs, mobile/components/MapScreen.web.tsx (3, D5 pattern).
 Result: node --test 402 pass / 0 fail (exposureFailed render-chain guard 4/4); tsc clean; NOT VERIFIED visually. Item 5 (Reference-vs-Observed labelling of 115 km/h / 1.2 m places) tableed for approval, NOT implemented.
+
+### 2026-10-15 — Backend honesty batches A–D1, one commit each
+
+What changed since the last entry, hash by hash:
+
+- `c1fd9d1` — population cos(lat) fix (about 8% lower populations).
+- `0118695` — /comparison surge_m matches /exposure (same raw value, no rounding drift).
+- `90a5a02` — advisory cache with generated_at and served_from_cache (6 h, per process).
+- `e40ac75` — 502 no longer returns exception text (fixed plain-language detail; the error is logged server-side).
+- `a71bc3d` — routes cache for blocked edges per wind (same wind-keyed pattern as flood_for_wind; the road graph is no longer copied per request).
+- `ca916cd` — phone-number check (only 112 allowed; other digit sequences near call/dial/ring/helpline/hotline/toll-free wording are flagged).
+- `a0e7ce0` — advisory labels what-if scenarios as simulations and grounds localities in data (SCENARIO TYPE block + rules 10/11; scenario kind is part of the cache key).
+- `0ff5aed` — Bangladeshi locality exclusion: osm-7488876257 (মুন্সীগঞ্জ) and osm-2481969300 (শ্যামনগর), both in Satkhira District, Bangladesh, denied through DISTRICT_DENY by stable osm-id — localities 45→43, excluded 32→34, cat6 demand nodes 21→19. The stale counts in README.md, Architecture.md and mobile comments were corrected in the docs commit carrying this entry.

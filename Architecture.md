@@ -152,7 +152,7 @@ defaulting to the case study when omitted.
 | GET | `/live-cyclone` | Live ATCF probe, or explicit `live_unavailable` with statuses |
 | GET | `/comparison` | Two scenarios side by side, with the delta |
 | GET | `/track` | The Remal case-study track (no query params — takes the default) |
-| GET | `/localities` | Locality list (45 in, 32 excluded by scoping) |
+| GET | `/localities` | Locality list (43 in, 34 excluded by scoping) |
 | GET | `/surge-zone?category={0-6}` | Surge height, method, anchor, flood polygon |
 | GET | `/exposure?category={0-6}[&cyclone_id=&scenario_id=]` | Submerged hospitals/substations/roads |
 | GET | `/routes?category={0-6}&origin={id}[&cyclone_id=&scenario_id=]` | Safe route + assigned shelter |

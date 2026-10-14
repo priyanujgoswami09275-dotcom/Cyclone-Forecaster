@@ -424,7 +424,7 @@ Base URL `http://localhost:8000` (or the deployed
 | `GET /live-cyclone` | Live ATCF probe, or an explicit `live_unavailable` with per-endpoint statuses |
 | `GET /comparison` | Two scenarios side by side, with the delta between them |
 | `GET /track` | **40** IBTrACS fixes for Remal, with wind provenance |
-| `GET /localities` | 45 origin candidates (32 excluded by scoping) |
+| `GET /localities` | 43 origin candidates (34 excluded by scoping) |
 | `GET /basemap/basemap.png` | **Not served** — 404 by design. The basemap ships inside the Web bundle; see "The Web build" |
 | `GET /surge-zone?category=N` | Surge height, method, anchor, flood polygon |
 | `GET /exposure?category=N[&cyclone_id=&scenario_id=]` | Submerged hospitals and substations, cut-off roads |

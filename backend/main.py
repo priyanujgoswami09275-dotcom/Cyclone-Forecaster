@@ -2406,10 +2406,11 @@ def shelters_for_wind(wind_kmph: float) -> tuple[Shelter, ...]:
     capacities **derived from the estimated exposed population** rather than
     left at their arbitrary Module B values.
 
-    Why derive them: the placeholder set totals 5,100 places against ~129,000
-    estimated exposed people, so the LP is infeasible and returns no
-    assignment at all — which hides the algorithm the PRD asks for. Scaling to
-    CAPACITY_HEADROOM x demand makes the LP feasible while keeping individual
+    Why derive them: the placeholder set totals 5,100 places against about
+    157,000 estimated exposed people at the time of writing (cat6), so the LP
+    is infeasible and returns no assignment at all — which hides the
+    algorithm the PRD asks for. Scaling to CAPACITY_HEADROOM x demand makes
+    the LP feasible while keeping individual
     shelter capacities binding, so it still has to trade distance against
     capacity across the district rather than trivially sending everyone to
     the nearest one.

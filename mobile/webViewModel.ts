@@ -644,7 +644,8 @@ export function searchableLocalities(
     .slice(0, limit);
 }
 
-/** How many localities match, for the "showing N of 45" line. */
+/** How many localities match, for the "N of M localities" line (M is every
+ * in-scope locality the API returned). */
 export function localityMatchCount(
   response: LocalitiesResponse | null,
   query: string,

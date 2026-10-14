@@ -6,9 +6,8 @@
  * The previous Web build took `localities.slice(0, 10)` — an arbitrary prefix
  * of whatever order the API returned. That is not a subset anyone chose, and
  * it hid Sagar Island, the case study's actual landfall, whenever the API's
- * ordering happened to put it eleventh. The backend scopes the study area to
- * **45** localities and every one of them is a legal `origin` for `/routes` and
- * `/advisory`, so all 45 belong in the control.
+ * ordering happened to put it eleventh. Every in-scope locality is a legal
+ * `origin` for `/routes` and `/advisory`, so all of them belong in the control.
  *
  * The list is sorted by `radius_km` descending, which is the backend's own
  * search radius — ordering by the field that decides whether a place is

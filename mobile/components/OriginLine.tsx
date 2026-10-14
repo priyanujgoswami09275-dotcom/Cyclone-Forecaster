@@ -9,9 +9,10 @@ import type { Locality } from '../api';
  * "From: Sagar · change" — the advisory's origin, in one line.
  *
  * **A disclosure, not a control.** Before this the origin was a whole card with
- * a heading and a 45-item horizontal chip row, sitting between the exposure
- * numbers and the button. It was the largest thing in the panel for a decision
- * most viewers make once, and it pushed the counts off the screen. Now it is one
+ * a heading and a horizontal chip row of every in-scope locality, sitting between
+ * the exposure numbers and the button. It was the largest thing in the panel
+ * for a decision most viewers make once, and it pushed the counts off the
+ * screen. Now it is one
  * line that opens the *same* picker — no new component, no new dependency, and
  * the full list is still one tap away.
  *

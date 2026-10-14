@@ -4,6 +4,15 @@ Project context and integration plan for the team. Google Code for Communities
 Hackathon 2nd Edition — **Track 5: Cyclone Impact & Infrastructure
 Vulnerability Forecaster**.
 
+## Recent changes
+
+**2026-10-15 — backend honesty batches A–D1, one commit each**: population
+cos(latitude) fix, /comparison surge parity, the advisory cache, 502 no-leak,
+per-wind blocked-edge cache, the 112-only phone check, simulation labelling
+with per-locality facts, and the Bangladeshi locality exclusion (study area
+45→43 localities). The commit hashes and what each fixed are in the dated
+2026-10-15 entry at the end of the MEMORY.md session log.
+
 ## Problem statement (as given)
 
 Build an AI-powered predictive risk/vulnerability platform using Google
