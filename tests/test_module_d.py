@@ -236,7 +236,7 @@ def a_valid_advisory(localities: list[str], omit: str | None = None) -> District
     guarantee has to *arrange* for the model to omit it. Building the plan from
     the allocation's own node list used to arrange that implicitly, back when
     the requesting locality had no allocation row. It no longer does: at
-    category 6 the allocation carries 21 rows including Sagar, so a plan built
+    category 6 the allocation carries 19 rows including Sagar, so a plan built
     from those names mentions the origin and the code path is never reached.
     Pass `omit` explicitly instead of relying on which rows happen to exist.
     """
@@ -589,8 +589,9 @@ class TestOriginAlwaysPresent:
     fixture below does that for whichever origin the test requests. They used
     to get that for free, because a plan built from the allocation's node names
     could not name a locality that had no allocation row. That stopped being
-    true when the category unit fix landed: at category 6 the allocation has 21
-    rows and Sagar is one of them, so the free version of the arrangement
+    true when the category unit fix landed: at category 6 the allocation names
+    Sagar as one of its rows (21 then, 19 since the Bangladesh locality
+    exclusions), so the free version of the arrangement
     quietly stopped exercising the code path, and five of these tests went red
     without the product changing at all. Every one of them asserts on
     `evacuation_plan[0]` being the code-built entry, and `a_valid_advisory`'s

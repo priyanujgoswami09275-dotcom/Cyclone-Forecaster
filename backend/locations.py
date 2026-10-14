@@ -83,6 +83,18 @@ STUDY_AREA_DISTRICTS = ("South 24 Parganas", "North 24 Parganas", "Sagar Island"
 # `BORDER_CLUSTER` below are genuinely undecided rather than confirmed.
 DISTRICT_DENY: dict[str, str] = {
     "Tamluk": "Purba Medinipur (Haldia subdivision)",
+    # Two Bengali-script places east of the border in Satkhira District,
+    # Bangladesh, that survived scoping (bbox + latitude cut + this list
+    # cannot detect a country) and reached the cat6 allocation with ~67k
+    # estimated exposed people between them. Found by the Batch C
+    # investigation, 2026-10-14.
+    #
+    # Keyed by the stable osm-id form, not the display name: a hand-copied
+    # Bengali string cannot be reviewed the way a latin one can, and the id
+    # pins exactly one OSM node even where names repeat (the extract has
+    # several places called Shyamnagar; only this one is in Bangladesh).
+    "osm-7488876257": "Bangladesh (Satkhira district); outside the West Bengal authority this app speaks for",
+    "osm-2481969300": "Bangladesh (Satkhira district); outside the West Bengal authority this app speaks for",
 }
 
 # **Unresolved, deliberately NOT denied.** `data/places.geojson` has no
@@ -197,6 +209,20 @@ def all_localities() -> tuple[Locality, ...]:
     return tuple(sorted(selected, key=lambda loc: loc.name))
 
 
+def _deny_reason(locality: Locality) -> str | None:
+    """The `DISTRICT_DENY` entry for a locality, or None if it is not denied.
+
+    Keys may be a place name (the original form, e.g. "Tamluk") or a stable
+    `osm-{id}` — the form Bengali-script names fall back to, chosen because
+    a hand-copied Bengali string cannot be reviewed the way a latin one can.
+    One lookup, so the check, the reported reason and the audit cannot drift
+    apart on the two key forms.
+    """
+    if locality.id in DISTRICT_DENY:
+        return DISTRICT_DENY[locality.id]
+    return DISTRICT_DENY.get(locality.name)
+
+
 def in_study_area(locality: Locality) -> bool:
     """Whether `locality` belongs in the study area.
 
@@ -204,14 +230,15 @@ def in_study_area(locality: Locality) -> bool:
     cut cannot detect a wrong-district place south of the line, so a name in
     `DISTRICT_DENY` has to be rejected regardless of where it falls.
     """
-    if locality.name in DISTRICT_DENY:
+    if _deny_reason(locality) is not None:
         return False
     return locality.lat <= STUDY_AREA_MAX_LAT
 
 
 def _exclusion_reason(locality: Locality) -> str:
-    if locality.name in DISTRICT_DENY:
-        return f"out of district: {DISTRICT_DENY[locality.name]}"
+    reason = _deny_reason(locality)
+    if reason is not None:
+        return f"out of district: {reason}"
     return f"north of the {STUDY_AREA_MAX_LAT} study-area cut"
 
 
@@ -222,8 +249,11 @@ def _deny_list_audit() -> dict:
     A typo in a deny-list key fails open: the place is still served, still
     reaches the prompt, and the list looks like it is working. Cheap to check,
     so it is checked rather than trusted.
+
+    Keys may be place names or `osm-{id}` ids, so "present" means matching
+    either form.
     """
-    present = {loc.name for loc in all_localities()}
+    present = {loc.name for loc in all_localities()} | {loc.id for loc in all_localities()}
     return {
         "not_in_extract": sorted(set(DISTRICT_DENY) - present),
         "excluded": sorted(name for name in DISTRICT_DENY if name in present),
@@ -252,12 +282,12 @@ def scoping() -> dict:
     """
     in_area = len(localities())
     excluded = [loc for loc in all_localities() if not in_study_area(loc)]
-    denied = [loc for loc in excluded if loc.name in DISTRICT_DENY]
+    denied = [loc for loc in excluded if _deny_reason(loc) is not None]
     audit = _deny_list_audit()
     return {
         "study_area_districts": list(STUDY_AREA_DISTRICTS),
         "out_of_district_excluded": {
-            loc.name: DISTRICT_DENY[loc.name] for loc in denied
+            loc.name: _deny_reason(loc) for loc in denied
         },
         "out_of_district_excluded_count": len(denied),
         # A name in here that is not in the extract means the deny list has a
