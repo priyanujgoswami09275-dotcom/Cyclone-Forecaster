@@ -19,6 +19,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  comparisonDeltaSentence,
+  comparisonFooterShort,
   comparisonFooterText,
   exposureText,
   liveBannerText,
@@ -44,6 +46,67 @@ test('an unavailable live feed renders the reason and never a storm name', () =>
 
 test('the comparison sheet always shows the surge method', () => {
   assert.match(comparisonFooterText(), /anchored quadratic scaling/i);
+});
+
+test('the short footer names the method and what it is scaled from', () => {
+  const short = comparisonFooterShort();
+  assert.match(short, /scaling/);
+  assert.match(short, /not a forecast/);
+  // "A simple scaling law" does not say what the law is scaled from; the
+  // anchor is the whole honest claim — one observed storm.
+  assert.match(short, /one observed storm/);
+});
+
+// ---------------------------------------------------------------------------
+// The delta sentence.
+//
+// The old line summed the three exposure types and read "+137 hospitals,
+// substations and road segments reached" — a reader parses that as 137 of
+// each. The sentence now carries each type's own delta, prints zero as zero,
+// and pluralises correctly.
+// ---------------------------------------------------------------------------
+
+test('the delta sentence names each type — never the summed phrase', () => {
+  const sentence = comparisonDeltaSentence({
+    label: 'From Extremely Severe Cyclonic Storm to the observed storm',
+    surge_delta_m: -2.29,
+    hospitals_delta: -5,
+    substations_delta: -10,
+    roads_delta: -122,
+  });
+  assert.ok(
+    !sentence.includes('hospitals, substations and road segments reached'),
+    `the summed phrase must be gone; got: ${sentence}`,
+  );
+  assert.match(sentence, /-2\.29 m surge/);
+  assert.match(sentence, /-5 hospitals/);
+  assert.match(sentence, /-10 substations/);
+  assert.match(sentence, /-122 road segments reached/);
+});
+
+test('the delta sentence prints zero as zero and pluralises correctly', () => {
+  const sentence = comparisonDeltaSentence({
+    label: 'From cat4 to cat5',
+    surge_delta_m: 0,
+    hospitals_delta: 1,
+    substations_delta: 0,
+    roads_delta: 2,
+  });
+  assert.match(sentence, /\+0\.00 m surge/);
+  assert.match(sentence, /\+1 hospital,/);
+  assert.ok(!sentence.includes('1 hospitals'), `singular stays singular: ${sentence}`);
+  assert.match(sentence, /\+0 substations/);
+  assert.match(sentence, /\+2 road segments/);
+
+  const minusOne = comparisonDeltaSentence({
+    label: 'From cat5 to cat4',
+    surge_delta_m: 1.58,
+    hospitals_delta: -1,
+    substations_delta: 3,
+    roads_delta: 0,
+  });
+  assert.match(minusOne, /-1 hospital,/);
+  assert.ok(!minusOne.includes('-1 hospitals'), `a minus one is still singular: ${minusOne}`);
 });
 
 // ---------------------------------------------------------------------------

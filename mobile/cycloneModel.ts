@@ -420,6 +420,13 @@ export function mlEstimateLabel(estimate: {
  * at one scenario (`Remal 2024 → Dana 2023`). Labelling by scenario when the
  * scenarios are equal would print `cat5 → cat5`, which is not a comparison.
  *
+ * **Per-type counts, never one sum.** The rows may carry `hospitals`,
+ * `substations` and `roads` separately; when they do, the deltas come back
+ * per type (`hospitals_delta` and friends) alongside the summed
+ * `exposed_delta`, which is kept for callers that still read it. When a row
+ * has no per-type counts the per-type deltas are **absent, not zero** — an
+ * unknown count must not read as "nothing changed".
+ *
  * Rounded to 4 dp, the same precision the backend rounds to: `3.41 - 1.83` is
  * `1.5800000000000003` in binary floating point, and a strict-equality test
  * against `1.58` is exactly the kind of failure that teaches a team to stop
@@ -435,21 +442,57 @@ export function comparisonDeltas(
     scenario_id: string;
     surge_m: number;
     exposed: number;
+    /** Per-type exposure counts. Optional: a caller with only the sum omits
+     *  them and the per-type deltas come back undefined. */
+    hospitals?: number;
+    substations?: number;
+    roads?: number;
     name?: string | null;
+    /** For the plain label: the IMD class name, e.g. "Very Severe Cyclonic Storm". */
+    imd_category?: string;
+    /** For the plain label: `'observed'` maps to "the observed storm". */
+    scenario_kind?: string;
   }[],
-): { label: string; surge_delta_m: number; exposed_delta: number }[] {
-  const out: { label: string; surge_delta_m: number; exposed_delta: number }[] = [];
+): {
+  label: string;
+  surge_delta_m: number;
+  exposed_delta: number;
+  hospitals_delta?: number;
+  substations_delta?: number;
+  roads_delta?: number;
+}[] {
+  /**
+   * The plain name for one row of the comparison — the same mapping the
+   * panel's `scenarioLabel` uses, kept beside the function that needs it
+   * so the delta label and the card labels cannot drift apart.
+   */
+  const plainName = (row: { scenario_id: string; imd_category?: string; scenario_kind?: string }): string => {
+    if (row.scenario_kind === 'observed') return 'the observed storm';
+    return row.imd_category ?? row.scenario_id;
+  };
+
+  const out: {
+    label: string;
+    surge_delta_m: number;
+    exposed_delta: number;
+    hospitals_delta?: number;
+    substations_delta?: number;
+    roads_delta?: number;
+  }[] = [];
   for (let i = 1; i < rows.length; i += 1) {
     const left = rows[i - 1];
     const right = rows[i];
     const label =
       left.scenario_id !== right.scenario_id
-        ? `${left.scenario_id} → ${right.scenario_id}`
-        : `${left.name ?? left.cyclone_id} → ${right.name ?? right.cyclone_id}`;
+        ? `From ${plainName(left)} to ${plainName(right)}`
+        : `From ${left.name ?? left.cyclone_id} to ${right.name ?? right.cyclone_id}`;
     out.push({
       label,
       surge_delta_m: round4(right.surge_m - left.surge_m),
       exposed_delta: right.exposed - left.exposed,
+      hospitals_delta: optDelta(left.hospitals, right.hospitals),
+      substations_delta: optDelta(left.substations, right.substations),
+      roads_delta: optDelta(left.roads, right.roads),
     });
   }
   return out;
@@ -458,4 +501,14 @@ export function comparisonDeltas(
 /** Round to 4 dp, the backend's own precision for a delta. */
 function round4(value: number): number {
   return Math.round(value * 10_000) / 10_000;
+}
+
+/**
+ * Right minus left for optional counts. Absent on either side is unknown,
+ * not zero: a caller that never supplied per-type figures must not see a
+ * "no change" delta it never earned.
+ */
+function optDelta(left: number | undefined, right: number | undefined): number | undefined {
+  if (left === undefined || right === undefined) return undefined;
+  return right - left;
 }

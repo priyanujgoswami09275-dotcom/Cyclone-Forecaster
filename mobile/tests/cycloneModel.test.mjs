@@ -124,12 +124,64 @@ test('an ml estimate that actually beat the gate may say so', () => {
   assert.match(mlEstimateLabel({ beats_baseline: true }), /estimate/i);
 });
 
-test('deltas name the two scenarios being compared', () => {
+test('deltas name the two scenarios being compared — plain names when the payload provides them', () => {
+  const rows = comparisonDeltas([
+    { cyclone_id: 'A', scenario_id: 'cat5', surge_m: 3.41, exposed: 137,
+      imd_category: 'Extremely Severe Cyclonic Storm', scenario_kind: 'band_midpoint' },
+    { cyclone_id: 'A', scenario_id: 'observed', surge_m: 1.12, exposed: 0,
+      imd_category: 'Severe Cyclonic Storm', scenario_kind: 'observed' },
+  ]);
+  assert.equal(rows[0].label, 'From Extremely Severe Cyclonic Storm to the observed storm');
+  assert.equal(rows[0].surge_delta_m, -2.29);
+  assert.equal(rows[0].exposed_delta, -137);
+});
+
+test('deltas work in both orders — the sign follows the direction', () => {
+  // Order 1: band first, observed second → negative deltas (going down)
+  const down = comparisonDeltas([
+    { cyclone_id: 'A', scenario_id: 'cat5', surge_m: 3.41, exposed: 137,
+      imd_category: 'Extremely Severe Cyclonic Storm', scenario_kind: 'band_midpoint' },
+    { cyclone_id: 'A', scenario_id: 'observed', surge_m: 1.12, exposed: 0,
+      imd_category: 'Severe Cyclonic Storm', scenario_kind: 'observed' },
+  ]);
+  assert.equal(down[0].label, 'From Extremely Severe Cyclonic Storm to the observed storm');
+  assert.equal(down[0].surge_delta_m, -2.29);
+  assert.equal(down[0].exposed_delta, -137);
+
+  // Order 2: observed first, band second → positive deltas (going up)
+  const up = comparisonDeltas([
+    { cyclone_id: 'A', scenario_id: 'observed', surge_m: 1.12, exposed: 0,
+      imd_category: 'Severe Cyclonic Storm', scenario_kind: 'observed' },
+    { cyclone_id: 'A', scenario_id: 'cat5', surge_m: 3.41, exposed: 137,
+      imd_category: 'Extremely Severe Cyclonic Storm', scenario_kind: 'band_midpoint' },
+  ]);
+  assert.equal(up[0].label, 'From the observed storm to Extremely Severe Cyclonic Storm');
+  assert.equal(up[0].surge_delta_m, 2.29);
+  assert.equal(up[0].exposed_delta, 137);
+});
+
+test('deltas use storm names when the scenario is the same across storms', () => {
+  const rows = comparisonDeltas([
+    { cyclone_id: '2024145N14087', scenario_id: 'cat6', surge_m: 4.47, exposed: 285,
+      name: 'REMAL', imd_category: 'Super Cyclonic Storm', scenario_kind: 'category' },
+    { cyclone_id: '2023301N12000', scenario_id: 'cat6', surge_m: 4.47, exposed: 285,
+      name: 'BIPARJOY', imd_category: 'Super Cyclonic Storm', scenario_kind: 'category' },
+  ]);
+  assert.equal(rows[0].label, 'From REMAL to BIPARJOY');
+  // At the same scenario the figures are identical — a zero delta is a
+  // fact, not a gap (the same rule as `exposureText`).
+  assert.equal(rows[0].surge_delta_m, 0);
+  assert.equal(rows[0].exposed_delta, 0);
+});
+
+test('deltas fall back to scenario ids when the payload provides no class name', () => {
+  // Native callers that haven't been updated to pass imd_category still
+  // get a working label — the raw id, same as before the plain-name change.
   const rows = comparisonDeltas([
     { cyclone_id: 'A', scenario_id: 'cat4', surge_m: 1.83, exposed: 0 },
     { cyclone_id: 'A', scenario_id: 'cat5', surge_m: 3.41, exposed: 137 },
   ]);
-  assert.equal(rows[0].label, 'cat4 → cat5');
+  assert.equal(rows[0].label, 'From cat4 to cat5');
   assert.equal(rows[0].surge_delta_m, 1.58);
 });
 
@@ -139,4 +191,63 @@ test('a delta between one row and nothing is not a delta', () => {
     [],
     'one row has nothing to be compared against, so there is no delta to show',
   );
+});
+
+// ---------------------------------------------------------------------------
+// Per-type deltas.
+//
+// The old line summed hospitals + substations + road segments into one number
+// and printed "N hospitals, substations and road segments reached", which a
+// reader parses as N of each. The counts are now carried separately, with the
+// same sign convention as the surge (right minus left, matching the arrow).
+// ---------------------------------------------------------------------------
+
+test('per-type deltas name each exposure type — cat5 vs observed gives -5, -10, -122', () => {
+  // The real figures: cat5 exposes 5 hospitals / 10 substations / 122 road
+  // segments; the observed storm exposes none.
+  const rows = comparisonDeltas([
+    { cyclone_id: 'A', scenario_id: 'cat5', surge_m: 3.41, exposed: 137,
+      hospitals: 5, substations: 10, roads: 122,
+      imd_category: 'Extremely Severe Cyclonic Storm', scenario_kind: 'band_midpoint' },
+    { cyclone_id: 'A', scenario_id: 'observed', surge_m: 1.12, exposed: 0,
+      hospitals: 0, substations: 0, roads: 0,
+      imd_category: 'Severe Cyclonic Storm', scenario_kind: 'observed' },
+  ]);
+  assert.equal(rows[0].hospitals_delta, -5);
+  assert.equal(rows[0].substations_delta, -10);
+  assert.equal(rows[0].roads_delta, -122);
+  // The summed contract still holds alongside the per-type figures.
+  assert.equal(rows[0].exposed_delta, -137);
+  assert.equal(rows[0].surge_delta_m, -2.29);
+});
+
+test('per-type deltas follow the direction — both orders', () => {
+  const cat5 = { cyclone_id: 'A', scenario_id: 'cat5', surge_m: 3.41, exposed: 137,
+    hospitals: 5, substations: 10, roads: 122,
+    imd_category: 'Extremely Severe Cyclonic Storm', scenario_kind: 'band_midpoint' };
+  const observed = { cyclone_id: 'A', scenario_id: 'observed', surge_m: 1.12, exposed: 0,
+    hospitals: 0, substations: 0, roads: 0,
+    imd_category: 'Severe Cyclonic Storm', scenario_kind: 'observed' };
+  const down = comparisonDeltas([cat5, observed]);
+  assert.equal(down[0].hospitals_delta, -5);
+  assert.equal(down[0].substations_delta, -10);
+  assert.equal(down[0].roads_delta, -122);
+  const up = comparisonDeltas([observed, cat5]);
+  assert.equal(up[0].hospitals_delta, 5);
+  assert.equal(up[0].substations_delta, 10);
+  assert.equal(up[0].roads_delta, 122);
+});
+
+test('rows with only the summed field keep it working — per-type stays unknown, not zero', () => {
+  // A regression guard on the old contract: callers that pass only `exposed`
+  // still get `exposed_delta`, and the per-type deltas are ABSENT — an
+  // unknown count must not read as "no change".
+  const rows = comparisonDeltas([
+    { cyclone_id: 'A', scenario_id: 'cat4', surge_m: 1.83, exposed: 0 },
+    { cyclone_id: 'A', scenario_id: 'cat5', surge_m: 3.41, exposed: 137 },
+  ]);
+  assert.equal(rows[0].exposed_delta, 137);
+  assert.equal(rows[0].hospitals_delta, undefined);
+  assert.equal(rows[0].substations_delta, undefined);
+  assert.equal(rows[0].roads_delta, undefined);
 });

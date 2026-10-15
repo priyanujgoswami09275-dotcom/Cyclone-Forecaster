@@ -4,7 +4,7 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { theme } from '../theme';
 import type { ApiError } from '../api';
 import type { ComparisonEntry } from '../cycloneModel';
-import { comparisonDeltas, exposureText, comparisonFooterText } from '../scenarioCompare.ts';
+import { comparisonDeltas, comparisonDeltaSentence, exposureText, comparisonFooterShort } from '../scenarioCompare.ts';
 
 /**
  * The comparison sheet — the same scenario applied to several cyclones, side by
@@ -38,7 +38,11 @@ export interface ScenarioComparePanelProps {
   stackedCards?: boolean;
 }
 
-/** Total exposed assets, the figure the delta is taken on. */
+/**
+ * Total exposed assets. Kept as the `exposed` input so the summed
+ * `exposed_delta` contract still holds; the panel prints the per-type
+ * deltas, never this sum.
+ */
 function exposed(entry: ComparisonEntry): number {
   return entry.hospitals_exposed + entry.substations_exposed + entry.roads_cut_off;
 }
@@ -114,6 +118,11 @@ export function ScenarioComparePanel({
       scenario_id: r.scenario_id,
       surge_m: r.surge_m,
       exposed: exposed(r),
+      hospitals: r.hospitals_exposed,
+      substations: r.substations_exposed,
+      roads: r.roads_cut_off,
+      imd_category: r.imd_category,
+      scenario_kind: r.scenario_kind,
     })),
   );
 
@@ -135,8 +144,10 @@ export function ScenarioComparePanel({
       ) : (
         /*
           The original table layout (native default). Each row is one
-          scenario; the cells are name, scenario_id, wind, surge, area,
-          and the total exposed count.
+          scenario; the cells are name, scenario_id, wind, surge, area, and
+          the three exposure counts as hospitals / substations / road
+          segments — labelled for screen readers, never a bare sum a reader
+          would parse as "137 of each".
         */
         <View style={styles.table}>
           {rows.map((entry) => (
@@ -148,7 +159,12 @@ export function ScenarioComparePanel({
               <Text style={styles.cell}>{`${entry.wind_kmph.toFixed(0)} km/h`}</Text>
               <Text style={styles.cell}>{`${entry.surge_m.toFixed(2)} m`}</Text>
               <Text style={styles.cell}>{exposureText({ flooded_km2: entry.flood_area_km2 })}</Text>
-              <Text style={styles.cell}>{String(exposed(entry))}</Text>
+              <Text
+                style={styles.cell}
+                accessibilityLabel={`${entry.hospitals_exposed} hospitals, ${entry.substations_exposed} substations, ${entry.roads_cut_off} road segments reached`}
+              >
+                {`${entry.hospitals_exposed} / ${entry.substations_exposed} / ${entry.roads_cut_off}`}
+              </Text>
             </View>
           ))}
         </View>
@@ -158,15 +174,13 @@ export function ScenarioComparePanel({
         <View style={styles.deltas}>
           {deltas.map((d) => (
             <Text key={d.label} style={styles.delta}>
-              {d.label}: {d.surge_delta_m >= 0 ? '+' : ''}
-              {d.surge_delta_m.toFixed(2)} m surge, {d.exposed_delta >= 0 ? '+' : ''}
-              {d.exposed_delta} exposed
+              {comparisonDeltaSentence(d)}
             </Text>
           ))}
         </View>
       ) : null}
 
-      <Text style={styles.footer}>{comparisonFooterText()}</Text>
+      <Text style={styles.footer}>{comparisonFooterShort()}</Text>
     </View>
   );
 }

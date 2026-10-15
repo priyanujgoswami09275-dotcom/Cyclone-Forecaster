@@ -144,3 +144,52 @@ export function comparisonFooterText(): string {
     'its own gate, is not a prediction, and is not the surge figure.'
   );
 }
+
+/**
+ * The short footer the comparison panel shows — the one-sentence honesty
+ * that stays in the primary UI. The full paragraph above
+ * (`comparisonFooterText`) moves to the T6 info sheet, where the scaling
+ * law and the ML baseline get the space they deserve; this line carries
+ * the essential claim a reader must see before they take a number away.
+ *
+ * It names the anchor, not just "a scaling law": what the law is scaled
+ * from (one observed storm) is the part a reader needs to weigh it.
+ */
+export function comparisonFooterShort(): string {
+  return 'Screening estimates from an anchored scaling law of one observed storm, not a forecast.';
+}
+
+/**
+ * One delta, rendered as the sentence the comparison sheet prints.
+ *
+ * **Every count is named separately.** The earlier line summed hospitals,
+ * substations and road segments into one number — "+137 hospitals,
+ * substations and road segments reached" — which a reader parses as 137 of
+ * each. Each type now carries its own delta; a zero is printed as zero (a
+ * measurement, not a gap), and a count of one is singular in either sign.
+ *
+ * A per-type delta that is `undefined` (the caller had only the summed
+ * `exposed` figure) is omitted — unknown is not "no change" — and "reached"
+ * trails the last printed count, so it never attaches itself to the surge.
+ */
+export function comparisonDeltaSentence(d: {
+  label: string;
+  surge_delta_m: number;
+  hospitals_delta?: number;
+  substations_delta?: number;
+  roads_delta?: number;
+}): string {
+  const counted = (n: number, singular: string): string =>
+    `${n >= 0 ? '+' : ''}${n} ${Math.abs(n) === 1 ? singular : `${singular}s`}`;
+  const clauses: string[] = [
+    `${d.surge_delta_m >= 0 ? '+' : ''}${d.surge_delta_m.toFixed(2)} m surge`,
+  ];
+  if (d.hospitals_delta !== undefined) clauses.push(counted(d.hospitals_delta, 'hospital'));
+  if (d.substations_delta !== undefined) clauses.push(counted(d.substations_delta, 'substation'));
+  if (d.roads_delta !== undefined) clauses.push(counted(d.roads_delta, 'road segment'));
+  const anyCount =
+    d.hospitals_delta !== undefined ||
+    d.substations_delta !== undefined ||
+    d.roads_delta !== undefined;
+  return `${d.label}: ${clauses.join(', ')}${anyCount ? ' reached' : ''}`;
+}
