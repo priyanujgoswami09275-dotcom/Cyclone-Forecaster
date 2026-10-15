@@ -44,6 +44,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import threading
 import time
 import copy
 import logging
@@ -1727,6 +1728,14 @@ class AdvisoryCache:
     **Per-process:** on Vercel each function instance has its own cache, so
     this reduces repeat Gemini calls but does not guarantee fewer. A cold
     instance starts empty.
+
+    **Thread-safe:** FastAPI serves requests from a thread pool, so `get` and
+    `put` can interleave. Both mutate `_store` and `_order` in multi-step
+    read-modify-write sequences — check-then-delete on TTL expiry,
+    contains-then-remove on re-put, pop-then-delete on eviction — and two
+    threads inside the same sequence is how a `KeyError` (double delete) or a
+    `ValueError` (remove of a just-removed key) happens. Every sequence runs
+    under one lock, so the steps cannot interleave.
     """
 
     def __init__(self, ttl_seconds: float = 6 * 3600, max_entries: int = 128,
@@ -1736,25 +1745,33 @@ class AdvisoryCache:
         self._clock = clock or time.monotonic
         self._store: dict = {}  # key -> {"time": float, "body": dict}
         self._order: list = []  # insertion order, oldest first, for eviction
+        self._lock = threading.Lock()
 
     def get(self, key: tuple) -> dict | None:
-        entry = self._store.get(key)
-        if entry is None:
-            return None
-        if self._clock() - entry["time"] > self._ttl:
-            del self._store[key]
-            self._order.remove(key)
-            return None
-        return entry["body"]
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                return None
+            if self._clock() - entry["time"] > self._ttl:
+                # The expiry delete is two structures, so it is inside the
+                # lock too: a concurrent get of the same expired key must not
+                # also pass the check and delete a second time.
+                del self._store[key]
+                self._order.remove(key)
+                return None
+            return entry["body"]
 
     def put(self, key: tuple, body: dict) -> None:
-        if key in self._store:
-            self._order.remove(key)
-        self._store[key] = {"time": self._clock(), "body": body}
-        self._order.append(key)
-        while len(self._order) > self._max:
-            oldest = self._order.pop(0)
-            del self._store[oldest]
+        with self._lock:
+            if key in self._store:
+                self._order.remove(key)
+            self._store[key] = {"time": self._clock(), "body": body}
+            self._order.append(key)
+            # Eviction pops from _order and deletes from _store — the same
+            # two-structure step, so it is inside the lock as well.
+            while len(self._order) > self._max:
+                oldest = self._order.pop(0)
+                del self._store[oldest]
 
 
 _advisory_cache = AdvisoryCache()

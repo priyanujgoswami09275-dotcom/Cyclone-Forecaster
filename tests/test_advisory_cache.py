@@ -17,6 +17,9 @@ the endpoint is public. These tests patch the Gemini generation function
 
 from __future__ import annotations
 
+import sys
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -43,6 +46,24 @@ class FakeClock:
 
     def advance(self, seconds: float):
         self.now += seconds
+
+
+class TickingClock:
+    """A clock that advances `step` on every read.
+
+    With `step` greater than the TTL, every entry is already expired by the
+    next read — the concurrency test uses this to force the TTL-expiry
+    delete path to run on essentially every `get`, rather than once per
+    six hours of wall clock.
+    """
+
+    def __init__(self, start: float = 1000.0, step: float = 0.0):
+        self.now = start
+        self.step = step
+
+    def __call__(self) -> float:
+        self.now += self.step
+        return self.now
 
 
 @pytest.fixture
@@ -324,3 +345,57 @@ class TestQuota429Untouched:
         r = client.post(f"/advisory?category={CATEGORY}&origin={ORIGIN}")
         assert r.status_code == 429
         assert "retry-after" not in {k.lower() for k in r.headers}
+
+
+class TestConcurrency:
+    """FastAPI serves requests on a thread pool, so the cache is shared.
+
+    Every mutation is a multi-step read-modify-write over `_store` and
+    `_order`: TTL expiry is a check-then-delete pair, re-put is a
+    contains-then-remove pair, and eviction pops from one structure and
+    deletes from the other. Unserialised, two threads expiring the same
+    entry both pass the check and the second `del` raises KeyError; two
+    re-puts of a just-removed key raise ValueError from `_order.remove`.
+    The lock makes each whole sequence atomic.
+    """
+
+    def test_hammering_one_key_from_many_threads_never_raises(self):
+        # Every read of the clock steps past the TTL, so each get walks the
+        # expiry-delete path and each put the re-insert path — the two racy
+        # sequences — on essentially every call. A distinct per-worker key
+        # every 10th iteration keeps the eviction path running too.
+        #
+        # The switch interval is dropped for the duration: with CPython's
+        # default 5 ms a CPU-bound thread can run its whole timeslice without
+        # a preemption landing inside the two-or-three-bytecode window between
+        # the containment check and the delete, and the race goes unfired.
+        # A microsecond interval makes switches frequent enough that they do.
+        clock = TickingClock(step=6 * 3600 + 1)
+        cache = main.AdvisoryCache(max_entries=2, clock=clock)
+        errors: list[BaseException] = []
+        saved_interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)
+
+        def hammer(worker: int) -> None:
+            primary = ("2024145N14087", 222.0, "kakdwip", "model", "category")
+            secondary = ("2024145N14087", float(worker), "kakdwip", "model", "category")
+            try:
+                for i in range(1500):
+                    if i % 3 == worker % 3:
+                        cache.put(primary, {"worker": worker, "i": i})
+                    else:
+                        cache.get(primary)
+                    if i % 10 == 0:
+                        cache.put(secondary, {"worker": worker})
+            except BaseException as exc:  # noqa: BLE001 — the assert names them
+                errors.append(exc)
+
+        threads = [threading.Thread(target=hammer, args=(w,)) for w in range(12)]
+        try:
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        finally:
+            sys.setswitchinterval(saved_interval)
+        assert errors == [], f"raised under concurrency: {errors!r}"

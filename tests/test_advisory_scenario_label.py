@@ -145,6 +145,28 @@ class TestValidatorScenarioKind:
         scenario_violations = [v for v in violations if "simulat" in v.lower()]
         assert scenario_violations == []
 
+    def test_negated_forecast_words_pass_for_band(self):
+        """Saying "this is not a forecast" is the honest label rule 10 asks
+        for — flagging it would punish the model for complying."""
+        for sms in (
+            "SIMULATION: not a forecast; a what-if at this strength.",
+            "SIMULATION. No forecast has been issued for this storm.",
+            "SIMULATION — real landfall damage is not expected to match this.",
+        ):
+            adv = advisory_with(sms=sms)
+            violations = validate_advisory(adv, allocation(), scenario_kind="category")
+            word_violations = [v for v in violations if "forecast" in v or "expected" in v]
+            assert word_violations == [], (sms, word_violations)
+
+    def test_unnegated_forecast_words_still_flagged_for_band(self):
+        for sms in (
+            "SIMULATION. The forecast says 194 kmph winds.",
+            "SIMULATION. Landfall winds are expected near 194 kmph.",
+        ):
+            adv = advisory_with(sms=sms)
+            violations = validate_advisory(adv, allocation(), scenario_kind="category")
+            assert any("forecast language" in v for v in violations), (sms, violations)
+
 
 class TestCacheKeyIncludesScenarioKind:
     def test_band_and_observed_do_not_share_a_cache_entry(self, monkeypatch):

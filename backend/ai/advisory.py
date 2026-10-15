@@ -326,18 +326,34 @@ _ALLOWED_NUMBERS = {"112"}
 # but "call the district officials about 250 families" (25+ chars) is not.
 #
 # Lookahead: the run must not be followed by another digit (so "10700"
-# is a 5-digit number, not "1070" + a stray zero), and must not be
+# is a 5-digit number, not "1070" + a stray zero), must not be
 # followed by a comma + exactly 3 digits (which is a number-format
-# pattern: "call 1200,345" is one figure, not a helpline + a count).
+# pattern: "call 1200,345" is one figure, not a helpline + a count),
+# and must not be followed by a counted-population word — "call to move
+# 1200 families", "ring 2500 homes", "hotline for 2000 households" are
+# figures the sentence is reporting, not numbers a reader should dial.
+# families/people/homes/households/residents are the words evacuation
+# prose actually counts.
 _PHONE_AFTER_WORD = re.compile(
     r'\b(?:call|dial|ring|helpline|hotline|toll[-\s]?free)\b'
-    r'[^0-9]{0,15}(\d{3,4})(?!\d)(?!,\d{3}\b)',
+    r'[^0-9]{0,15}(\d{3,4})(?!\d)(?!,\d{3}\b)'
+    r'(?!\s+(?:families|people|homes|households|residents)\b)',
     re.IGNORECASE,
 )
 
-# A 10-digit mobile number, optionally with +91 or 0 prefix, spaces or hyphens.
+# A 10-digit mobile number, optionally with a +91 or 0 prefix, spaces
+# between the two 5-digit groups or none at all.
+#
+# **A hyphen is deliberately NOT a separator, and the edges are pinned to
+# digits.** A hyphen between two 5-digit groups is how prose writes a
+# numeric range — "10000-20000 people" — and every such range in an
+# evacuation advisory is a population bound, never a phone number. The
+# digit lookarounds stop the pattern matching a 5-digit slice of a longer
+# number ("100000-200000"). The cost, accepted: a mobile written with an
+# internal hyphen ("98765-43210") is no longer caught — the forms the
+# model actually writes ("+91 98765 43210", "9876543210") still are.
 _TEN_DIGIT = re.compile(
-    r'(?:\+?91[\s\-]?)?\d{5}[\s\-]?\d{5}'
+    r'(?<!\d)(?:\+?91[\s]?)?\d{5}[\s]?\d{5}(?!\d)'
     r'|\b0\d{10}\b'
 )
 
@@ -441,13 +457,31 @@ def validate_advisory(
                 "simulation (a what-if at this strength, not a forecast)"
             )
         sms = advisory.sms_dispatch_draft.lower()
-        for word in ("expected", "forecast", "will make landfall"):
-            if word in sms:
-                violations.append(
-                    f"sms_dispatch_draft says '{word}' — a hypothetical "
-                    "simulation must not use forecast language; say it is a "
-                    "simulation instead"
-                )
+        # "not a forecast", "no forecast", "not expected" are the advisory
+        # complying with this very rule — the honest label — so a negated
+        # mention is not a violation. The negator is searched in a short
+        # window before the word rather than as a fixed lookbehind, so
+        # "not be expected" and "certainly not a forecast" are also spared.
+        # "will make landfall" is always a violation: there is no honest way
+        # to negate it in a sentence a reader might act on.
+        flagged_words = set()
+        for m in re.finditer(r"\b(forecast|expected)\b", sms):
+            prefix = sms[max(0, m.start() - 16):m.start()]
+            if re.search(r"\b(?:no|not)\s+(?:a\s+|be\s+)?$", prefix):
+                continue
+            flagged_words.add(m.group(1))
+        for word in sorted(flagged_words):
+            violations.append(
+                f"sms_dispatch_draft says '{word}' — a hypothetical "
+                "simulation must not use forecast language; say it is a "
+                "simulation instead"
+            )
+        if "will make landfall" in sms:
+            violations.append(
+                "sms_dispatch_draft says 'will make landfall' — a hypothetical "
+                "simulation must not use forecast language; say it is a "
+                "simulation instead"
+            )
     return violations
 
 # ==========================================================================

@@ -138,9 +138,43 @@ class TestTightenedMustFlag:
         ("+91 98300 12345", "98300"),
         ("toll-free 1070", "1070"),
         ("hotline: 1070", "1070"),
+        # Range and count boundaries must not over-correct: these are still
+        # invented phone numbers, written the way a model actually writes them.
+        ("dial 1800 123 456", "1800"),
+        ("+91 98765 43210", "98765"),
     ])
     def test_still_flagged(self, text, expected):
         violations = validate_advisory(advisory_with(text), allocation())
         assert any(expected in v for v in violations), (
             f"'{text}' must produce a violation naming {expected}; got: {violations}"
+        )
+
+
+class TestRangesAndCountsAllowed:
+    """Population ranges and relocation counts are figures, not helplines.
+
+    Two shapes that the old patterns caught:
+
+    - a hyphenated numeric range, "10000-20000", which is a population
+      bound, not a 10-digit mobile split across a hyphen;
+    - a 3-4 digit figure after a call word that belongs to the families,
+      people, homes, households or residents it counts ("call to move
+      1200 families"), not to a helpline number.
+    """
+
+    @pytest.mark.parametrize("text", [
+        "call to move 1200 families",
+        "call 112",
+        "10000-20000 people are within the flood zone",
+        "sheltering 10000-20000 residents",
+        "ring 2500 homes before the surge rises",
+        "hotline for 2000 households in the block",
+        "call about 8000 residents by evening",
+        "100000-200000 people live in the district",
+    ])
+    def test_no_phone_violation(self, text):
+        violations = validate_advisory(advisory_with(text), allocation())
+        phone = [v for v in violations if "verified contacts pool" in v]
+        assert phone == [], (
+            f"'{text}' must not produce a phone-number violation; got: {phone}"
         )
