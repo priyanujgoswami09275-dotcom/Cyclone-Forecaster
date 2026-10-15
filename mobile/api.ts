@@ -548,6 +548,17 @@ export interface AdvisoryResponse {
     origin_entry_added_in_code: boolean;
   };
   model: string;
+  /**
+   * ISO 8601 UTC, present since the advisory cache landed (the backend
+   * stamps every 200, cached or fresh). Absent on older backends and on
+   * bundled captures taken before the field existed.
+   */
+  generated_at?: string;
+  /**
+   * True when the backend served this from its per-process cache for the
+   * same inputs — no new model call was made. Absent on older backends.
+   */
+  served_from_cache?: boolean;
   /** Always true on a 200. The backend withholds rather than return a 502. */
   validated: true;
   validation: {
@@ -848,36 +859,71 @@ export async function request<T>(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  let response: Response;
+  // The timer is cleared in the OUTER finally below, so it stays armed
+  // through the body download and the JSON parse — a response that arrives
+  // as headers and then trickles (or never finishes) is still a request the
+  // caller gave up on, not one the client silently reads forever.
+  const timeoutMessage = () =>
+    `No response from the backend within ${Math.round(timeoutMs / 1000)}s. ` +
+    'It may still be working — do not retry immediately if this is the ' +
+    'advisory, because that spends more quota.';
+
   try {
-    response = await fetch(`${API_BASE_URL}${path}`, {
-      ...init,
-      signal: controller.signal,
-    });
-  } catch (err) {
-    // `fetch` rejects with an AbortError when OUR controller fires, and with
-    // a TypeError when the request never reached the server. The distinction
-    // matters: one is "the backend is slow", the other is "there is no
-    // backend".
-    const aborted = err instanceof Error && err.name === 'AbortError';
-    throw new ApiError({
-      kind: aborted ? 'timeout' : 'network',
-      status: 0,
-      message: aborted
-        ? `No response from the backend within ${Math.round(timeoutMs / 1000)}s. ` +
-          'It may still be working — do not retry immediately if this is the ' +
-          'advisory, because that spends more quota.'
-        : `Could not reach ${API_BASE_URL}. Check the device is on the same ` +
-          'network as the backend and that the URL is right.',
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${API_BASE_URL}${path}`, {
+        ...init,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      // `fetch` rejects with an AbortError when OUR controller fires, and with
+      // a TypeError when the request never reached the server. The distinction
+      // matters: one is "the backend is slow", the other is "there is no
+      // backend".
+      const aborted = err instanceof Error && err.name === 'AbortError';
+      throw new ApiError({
+        kind: aborted ? 'timeout' : 'network',
+        status: 0,
+        message: aborted
+          ? timeoutMessage()
+          : `Could not reach ${API_BASE_URL}. Check the device is on the same ` +
+            'network as the backend and that the URL is right.',
+      });
+    }
+
+    if (!response.ok) {
+      throw await toApiError(response);
+    }
+
+    // A 2xx whose body is not JSON is an upstream failure the taxonomy has
+    // a kind for. Letting the raw SyntaxError escape would hand the UI an
+    // error with no `kind` at all — the one thing the taxonomy exists to
+    // prevent.
+    try {
+      return (await response.json()) as T;
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        // Our own timer fired while the body was still downloading: the
+        // taxonomy's word for "we gave up waiting" is a timeout, not an
+        // unreadable body.
+        throw new ApiError({
+          kind: 'timeout',
+          status: 0,
+          message: timeoutMessage(),
+        });
+      }
+      throw new ApiError({
+        kind: 'upstream',
+        status: response.status,
+        message:
+          `The server returned an unreadable body (HTTP ${response.status}). ` +
+          'The response arrived but could not be parsed as JSON.',
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
   } finally {
     clearTimeout(timer);
   }
-
-  if (!response.ok) {
-    throw await toApiError(response);
-  }
-  return (await response.json()) as T;
 }
 
 /**
@@ -967,6 +1013,36 @@ export async function toApiError(response: Response): Promise<ApiError> {
     message: detail || `Request failed with HTTP ${status}.`,
     detail,
     retryAfterSeconds: retry,
+  });
+}
+
+/**
+ * Whatever a promise chain rejected with, as an ApiError.
+ *
+ * The screens' catch blocks used to cast (`err as ApiError`), which
+ * typechecks and then hands the UI an error with no `kind` the moment
+ * anything outside `request()` throws — a renderer inside `.then`, a
+ * polyfill, a future refactor. This keeps the taxonomy's guarantee from
+ * the UI's side: there is always a `kind` to branch on.
+ *
+ * Non-ApiError rejections map by what they carry: something with a numeric
+ * `status` is an HTTP-shaped failure ('http'); everything else never
+ * finished an HTTP exchange, which is 'network' — the same reading
+ * `request()` gives a fetch that never reached the server.
+ */
+export function asApiError(err: unknown): ApiError {
+  if (err instanceof ApiError) return err;
+  const carried = (err as { status?: unknown } | null | undefined)?.status;
+  const status = typeof carried === 'number' && Number.isFinite(carried) ? carried : 0;
+  const message = err instanceof Error ? err.message : String(err);
+  return new ApiError({
+    kind: status > 0 ? 'http' : 'network',
+    status,
+    message:
+      (status > 0
+        ? `The request failed with HTTP ${status}. `
+        : 'The request failed before a response arrived. ') + message,
+    detail: message,
   });
 }
 

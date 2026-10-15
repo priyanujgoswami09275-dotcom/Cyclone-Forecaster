@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import {
   ApiError,
+  asApiError,
   getAllocation,
   getCategories,
   getExposure,
@@ -506,7 +507,7 @@ export function MapScreen() {
       setCompareLoading(false);
     })().catch((err) => {
       setCompareRows(null);
-      setCompareError(err as ApiError);
+      setCompareError(asApiError(err));
       setCompareLoading(false);
     });
   }, [selectedCycloneId, requestCategory, chipId]);
@@ -521,11 +522,14 @@ export function MapScreen() {
    * The same gate `onGenerateAdvisory` sits behind: this spends Gemini quota,
    * so it is never reached from a chip press or a slider drag. The request
    * carries the current cyclone, scenario and origin, so the prose and the map
-   * are describing the same thing.
+   * are describing the same thing. The `riskLoading` guard is the gate's
+   * second half: a second press while one analysis is in flight would send
+   * a second POST behind a spinner the reader cannot distinguish from the
+   * first.
    */
   const onGenerateRisk = useCallback(() => {
     const category = requestCategory;
-    if (category === null) return;
+    if (riskLoading || category === null) return;
     setShowRisk(true);
     setRiskLoading(true);
     setRiskError(null);
@@ -541,10 +545,10 @@ export function MapScreen() {
       })
       .catch((err) => {
         setRiskResult(null);
-        setRiskError(err as ApiError);
+        setRiskError(asApiError(err));
         setRiskLoading(false);
       });
-  }, [requestCategory, selectedCycloneId, chipId, originId]);
+  }, [riskLoading, requestCategory, selectedCycloneId, chipId, originId]);
 
   const onCloseRisk = useCallback(() => {
     setShowRisk(false);
@@ -708,7 +712,7 @@ export function MapScreen() {
         setAdvisory({ status: 'ready', response, capturedAt: null });
       })
       .catch((err: unknown) => {
-        const error = err as ApiError;
+        const error = asApiError(err);
         setAdvisory({
           status: 'failed',
           failure: describeAdvisoryError(error),
@@ -720,7 +724,7 @@ export function MapScreen() {
       .finally(() => {
         setAdvisoryBusy(false);
       });
-  }, [advisoryBusy, requestCategory, originId]);
+  }, [advisoryBusy, requestCategory, originId, selectedCycloneId, chipId]);
 
   /**
    * Swap a failed live advisory for the bundled capture.
@@ -883,10 +887,15 @@ export function MapScreen() {
             */}
             <View style={styles.secondaryActions}>
               <GhostButton label="Compare scenarios" onPress={onOpenCompare} disabled={!canGenerate} />
+              {/*
+                Disabled while an analysis is in flight for the same reason
+                the callback guards on riskLoading: a queued second press is
+                a second POST the reader cannot see being queued.
+              */}
               <GhostButton
                 label="Generate analysis"
                 onPress={onGenerateRisk}
-                disabled={!canGenerate}
+                disabled={!canGenerate || riskLoading}
               />
             </View>
 

@@ -55,6 +55,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View, useWi
 
 import {
   ApiError,
+  asApiError,
   getAllocation,
   getCategories,
   getExposure,
@@ -481,7 +482,7 @@ export function MapScreen() {
       setCompareLoading(false);
     })().catch((err) => {
       setCompareRows(null);
-      setCompareError(err as ApiError);
+      setCompareError(asApiError(err));
       setCompareLoading(false);
     });
   }, [selectedCycloneId, requestCategory, chipId]);
@@ -493,10 +494,13 @@ export function MapScreen() {
   /**
    * The risk analyst, behind its own explicit press — the same gate
    * `onGenerateAdvisory` sits behind, because this spends Gemini quota.
+   * The `riskLoading` guard is that gate's second half: a second press
+   * while one analysis is in flight would send a second POST behind a
+   * spinner the reader cannot distinguish from the first.
    */
   const onGenerateRisk = useCallback(() => {
     const category = requestCategory;
-    if (category === null) return;
+    if (riskLoading || category === null) return;
     setShowRisk(true);
     setRiskLoading(true);
     setRiskError(null);
@@ -512,10 +516,10 @@ export function MapScreen() {
       })
       .catch((err) => {
         setRiskResult(null);
-        setRiskError(err as ApiError);
+        setRiskError(asApiError(err));
         setRiskLoading(false);
       });
-  }, [requestCategory, selectedCycloneId, chipId, originId]);
+  }, [riskLoading, requestCategory, selectedCycloneId, chipId, originId]);
 
   const onCloseRisk = useCallback(() => {
     setShowRisk(false);
@@ -533,7 +537,7 @@ export function MapScreen() {
     postAdvisory(requestCategory, originId, selectedCycloneId ?? undefined, scenarioForChip(chipId))
       .then((response) => setAdvisory({ status: 'ready', response, capturedAt: null }))
       .catch((err: unknown) => {
-        const error = err as ApiError;
+        const error = asApiError(err);
         // `describeAdvisoryError` is the shared taxonomy: a 503 capacity block
         // and a 429 spent quota read differently, because they need different
         // things from the reader.
@@ -546,7 +550,7 @@ export function MapScreen() {
         });
       })
       .finally(() => setAdvisoryBusy(false));
-  }, [advisoryBusy, requestCategory, originId]);
+  }, [advisoryBusy, requestCategory, originId, selectedCycloneId, chipId]);
 
   const onLoadCachedAdvisory = useCallback(() => {
     if (!SAMPLE_ADVISORY) return;
@@ -1023,17 +1027,18 @@ export function MapScreen() {
   /**
    * The Generate analysis action — explicit press only, it spends Gemini
    * quota. Lives beside Compare on the wide layout, alone in the Advisory
-   * tab on compact.
+   * tab on compact. Disabled while an analysis is in flight for the same
+   * reason the callback guards: a queued second press is a second POST.
    */
   const analysisAction = (
     <Pressable
       onPress={onGenerateRisk}
-      disabled={!canGenerate}
+      disabled={!canGenerate || riskLoading}
       accessibilityRole="button"
       accessibilityLabel="Generate analysis"
       style={({ pressed }) => [
         styles.secondary,
-        !canGenerate && styles.generateDisabled,
+        (!canGenerate || riskLoading) && styles.generateDisabled,
         pressed && canGenerate && styles.pressed,
       ]}
     >

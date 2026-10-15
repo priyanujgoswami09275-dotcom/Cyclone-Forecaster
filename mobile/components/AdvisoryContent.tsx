@@ -4,6 +4,7 @@ import * as Clipboard from 'expo-clipboard';
 
 import type { AdvisoryResponse, CachedAdvisory } from '../api';
 import {
+  advisoryProvenanceLine,
   cachedBannerText,
   cachedSampleOffer,
   describeAdvisoryError,
@@ -185,6 +186,11 @@ function AdvisoryBody({
 }) {
   const { advisory, generated_for: forWhom } = response;
   const isDemo = sheltersAreDemoData(shelterStatus);
+  // Server-cache provenance, live responses only. A bundled capture has its
+  // own "not live" banner, and a "Generated just now." line on a stored
+  // capture would contradict it — so `capturedAt` gates this, and captures
+  // (which predate the cache fields anyway) render nothing here.
+  const cacheLine = capturedAt === null ? advisoryProvenanceLine(response, new Date()) : null;
 
   return (
     <View style={styles.block}>
@@ -204,6 +210,16 @@ function AdvisoryBody({
         {forWhom.imd_category} · {forWhom.wind_kmph} kmph · written for{' '}
         {forWhom.origin.name}
       </Text>
+
+      {/*
+        Whether this text was generated for this exact press or reused from
+        the server's cache — a cached answer is identical for identical
+        inputs, and a reader trusting its freshness deserves to know which.
+        Null (fields absent) renders nothing; there is no honest fallback.
+      */}
+      {cacheLine === null ? null : (
+        <Text style={styles.provenance}>{cacheLine}</Text>
+      )}
 
       {/*
         The disclosure, placed above the advice rather than in a footer. It has

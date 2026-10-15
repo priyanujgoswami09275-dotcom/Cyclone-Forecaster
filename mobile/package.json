@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "main": "index.ts",
+  "scripts": {
+    "lint": "eslint ."
+  },
   "allowScripts": {
     "@expo-google-fonts/inter": true,
     "@expo-google-fonts/roboto-slab": true
@@ -22,7 +25,10 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.4",
+    "eslint": "^10.12.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "jsdom": "^30.1.1",
-    "typescript": "~6.0.3"
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.2"
   }
 }

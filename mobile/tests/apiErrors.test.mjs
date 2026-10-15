@@ -17,7 +17,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { ApiError, toApiError } from '../api.ts';
+// `request()` reads EXPO_PUBLIC_API_URL at module load, and ESM hoists static
+// imports above any assignment — so the import below is dynamic, and the env
+// line above it is load-bearing rather than a style choice. Every test in
+// this file that does not stub fetch still works: they call `toApiError`
+// directly, which never reads the base URL.
+process.env.EXPO_PUBLIC_API_URL = 'http://api.test';
+const { ApiError, asApiError, request, toApiError } = await import('../api.ts');
 
 /** A minimal Response stand-in: only what `toApiError` actually reads. */
 function responseWith(status, { detail = 'detail text', headers = {} } = {}) {
@@ -112,4 +118,110 @@ test('ApiError defaults are safe when a caller omits the optional fields', () =>
   assert.deepEqual(error.violations, []);
   assert.equal(error.detail, 'boom');
   assert.ok(error instanceof Error);
+});
+
+// ---------------------------------------------------------------------------
+// The 2xx body, and what can escape the taxonomy.
+//
+// `request()` used to clear its abort timer the moment the response HEADERS
+// arrived, so a body that arrived slowly was never aborted and a body that
+// did not parse crashed the caller as a raw SyntaxError. Both are now
+// classified errors instead — the UI never sees a non-ApiError from a
+// completed HTTP exchange.
+// ---------------------------------------------------------------------------
+
+/** Replace global fetch for one call; restore it whatever happens. */
+async function withFetch(stub, run) {
+  const saved = globalThis.fetch;
+  globalThis.fetch = stub;
+  try {
+    await run();
+  } finally {
+    globalThis.fetch = saved;
+  }
+}
+
+test('a 2xx body that does not parse is an upstream error, not a raw crash', async () => {
+  await withFetch(
+    async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => {
+        throw new SyntaxError('Unexpected token < in JSON');
+      },
+    }),
+    async () => {
+      await assert.rejects(
+        request('/advisory?category=6', { method: 'POST' }, 1000),
+        (err) =>
+          err instanceof ApiError &&
+          err.kind === 'upstream' &&
+          err.status === 200 &&
+          /unreadable/i.test(err.message),
+      );
+    },
+  );
+});
+
+test('the abort timer covers the body download, not just the headers', async () => {
+  // fetch answers instantly with a body that never finishes arriving. The
+  // timer must still fire while the body is being read, and the rejection
+  // must read as a timeout — the taxonomy's word for "we gave up waiting".
+  await withFetch(
+    async (_url, init) => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: () =>
+        new Promise((_, reject) => {
+          init.signal.addEventListener('abort', () => {
+            const e = new Error('aborted');
+            e.name = 'AbortError';
+            reject(e);
+          });
+        }),
+    }),
+    async () => {
+      const pending = request('/surge-zone?category=6', { method: 'GET' }, 40);
+      const never = new Promise((_, fail) =>
+        setTimeout(
+          () => fail(new Error('the timer never fired — it was cleared before the body was read')),
+          1500,
+        ),
+      );
+      await assert.rejects(
+        Promise.race([pending, never]),
+        (err) => err instanceof ApiError && err.kind === 'timeout',
+      );
+    },
+  );
+});
+
+test('asApiError passes an ApiError through untouched', () => {
+  const original = new ApiError({ kind: 'quota', status: 429, message: 'spent' });
+  assert.equal(asApiError(original), original);
+});
+
+test('asApiError turns a plain Error into a network error', () => {
+  const error = asApiError(new TypeError('fetch failed'));
+  assert.ok(error instanceof ApiError);
+  assert.equal(error.kind, 'network');
+  assert.equal(error.status, 0);
+  assert.match(error.message, /fetch failed/);
+});
+
+test('asApiError turns a thrown status into an http error', () => {
+  const error = asApiError({ status: 502, message: 'bad gateway' });
+  assert.ok(error instanceof ApiError);
+  assert.equal(error.kind, 'http');
+  assert.equal(error.status, 502);
+});
+
+test('asApiError stringifies a rejection reason that is not an Error', () => {
+  const error = asApiError('the request died');
+  assert.ok(error instanceof ApiError);
+  assert.equal(error.kind, 'network');
+  assert.equal(error.status, 0);
+  assert.match(error.message, /the request died/);
 });

@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import { ApiError } from '../api.ts';
 import {
   advisoryKey,
+  advisoryProvenanceLine,
   cachedBannerText,
   cachedSampleOffer,
   describeAdvisoryError,
@@ -139,6 +140,14 @@ test('timeout says the quota is already spent, and offers no button', () => {
   const failure = describeAdvisoryError(err('timeout', { status: 0 }));
   assert.notEqual(failure.action.type, 'retry');
   assert.match(failure.body, /spent Gemini quota|already spent/i);
+});
+
+test('the timeout copy says a retry may be answered from the server cache', () => {
+  // Since the advisory cache landed, a retry after a COMPLETED call is
+  // served from the server's cache for the same inputs and spends no new
+  // quota — the copy must not claim every retry double-spends.
+  const failure = describeAdvisoryError(err('timeout', { status: 0 }));
+  assert.match(failure.body, /cache/i);
 });
 
 test('config is a build problem, so the action is reload rather than retry', () => {
@@ -320,4 +329,78 @@ test('the banner is not dismissable phrasing — no "hide" or "dismiss"', () => 
   // Weakly enforced (it is a string), but it catches the specific regression
   // of adding a close affordance to the banner's copy.
   assert.doesNotMatch(cachedBannerText('T'), /dismiss|hide|close/i);
+});
+
+// ---------------------------------------------------------------------------
+// The server-cache provenance line.
+//
+// `/advisory` now reports `generated_at` and `served_from_cache`. A cached
+// advisory is the SAME text for the SAME inputs, reused without a new model
+// call — and a reader must be told both, because "reused" alone invites the
+// reading that it is stale, and silence invites the reading that it is fresh.
+// ---------------------------------------------------------------------------
+
+/** A fixed clock, so the "N ago" arithmetic is asserted, not flaky. */
+const PROVENANCE_NOW = new Date('2026-10-15T10:00:00Z');
+const MIN = 60_000;
+
+function provenanceResponse({ ageMin = 0, cached = true, generatedAt = undefined } = {}) {
+  const base = responseFor(6, 'sagar');
+  return {
+    ...base,
+    generated_at: generatedAt ?? new Date(PROVENANCE_NOW.getTime() - ageMin * MIN).toISOString(),
+    served_from_cache: cached,
+  };
+}
+
+test('a cached advisory says it was reused, how old it is, and that no model call was made', () => {
+  const line = advisoryProvenanceLine(provenanceResponse({ ageMin: 5 }), PROVENANCE_NOW);
+  assert.equal(
+    line,
+    'Reused from an earlier request, generated 5 min ago. Same inputs, no new model call.',
+  );
+});
+
+test('a cached advisory under a minute old still names a whole minute', () => {
+  // "0 min ago" reads as a bug; rounding up to 1 min never understates.
+  const line = advisoryProvenanceLine(provenanceResponse({ ageMin: 0.5 }), PROVENANCE_NOW);
+  assert.equal(
+    line,
+    'Reused from an earlier request, generated 1 min ago. Same inputs, no new model call.',
+  );
+});
+
+test('a cached advisory hours old switches to hours, rounded to the nearest', () => {
+  const ninetyMin = advisoryProvenanceLine(provenanceResponse({ ageMin: 90 }), PROVENANCE_NOW);
+  assert.match(ninetyMin ?? '', /generated 2 h ago/);
+  const sixH = advisoryProvenanceLine(provenanceResponse({ ageMin: 360 }), PROVENANCE_NOW);
+  assert.match(sixH ?? '', /generated 6 h ago/);
+});
+
+test('a fresh advisory says it was generated just now', () => {
+  const line = advisoryProvenanceLine(provenanceResponse({ cached: false }), PROVENANCE_NOW);
+  assert.equal(line, 'Generated just now.');
+});
+
+test('a response that does not report its cache fields gets no line, not a guess', () => {
+  // Old backends and bundled captures predate both fields; silence is honest
+  // there, a fabricated "just now" is not.
+  const neither = responseFor(6, 'sagar');
+  assert.equal(advisoryProvenanceLine(neither, PROVENANCE_NOW), null);
+
+  const onlyDate = provenanceResponse();
+  delete onlyDate.generated_at;
+  assert.equal(advisoryProvenanceLine(onlyDate, PROVENANCE_NOW), null);
+
+  const onlyFlag = provenanceResponse();
+  delete onlyFlag.served_from_cache;
+  assert.equal(advisoryProvenanceLine(onlyFlag, PROVENANCE_NOW), null);
+});
+
+test('an unparseable generated_at gets no line rather than a NaN age', () => {
+  const line = advisoryProvenanceLine(
+    provenanceResponse({ generatedAt: 'not-a-timestamp' }),
+    PROVENANCE_NOW,
+  );
+  assert.equal(line, null);
 });

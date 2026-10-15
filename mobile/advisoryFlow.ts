@@ -86,9 +86,12 @@ export function describeAdvisoryError(error: ApiError): AdvisoryFailure {
         body:
           'The request was given 120 seconds and the model did not answer in ' +
           'time. It may still be running on the server, and the call has ' +
-          'already spent Gemini quota either way — so sending the same ' +
-          'request again immediately can double-spend a scarce daily limit ' +
-          'for nothing.',
+          'already spent Gemini quota either way. One thing has changed with ' +
+          'the server-side cache: if the first call finishes after this ' +
+          'screen gave up, its answer is kept, and the same request sent ' +
+          'again may be served from the cache — same inputs, no new model ' +
+          'call. If it never finished, the retry is a new call and spends ' +
+          'quota again.',
         action: {
           type: 'wait',
           label: 'Wait a few minutes, then reload if you still need it.',
@@ -334,4 +337,45 @@ export function smsLengthStatus(draft: string): SmsLengthStatus {
     over: length > SMS_LIMIT,
     label: `${length}/${SMS_LIMIT}`,
   };
+}
+
+/**
+ * The server-cache provenance line for a live advisory, or null.
+ *
+ * `/advisory` reports `generated_at` and `served_from_cache`; this turns the
+ * pair into the one sentence a reader needs before trusting the text's
+ * freshness. A cached advisory is the SAME text for the SAME inputs, reused
+ * without a new model call — "reused" alone would read as stale, silence
+ * would read as fresh, and neither is the truth.
+ *
+ * The clock is injected so the "N ago" arithmetic can be asserted against a
+ * fixed `now` rather than against whatever the test runner's clock says.
+ *
+ * **Either field absent returns null.** An old backend or a bundled capture
+ * predates the pair, and silence is honest there; a guessed "just now" is
+ * not. An unparseable `generated_at` also returns null rather than a
+ * "NaN minutes ago" line.
+ *
+ * Rounding never makes a cached advisory look fresher than it is: under an
+ * hour the age rounds UP to whole minutes (never "0 min ago"), and past an
+ * hour it rounds to the nearest hour.
+ */
+export function advisoryProvenanceLine(
+  response: AdvisoryResponse,
+  now: Date,
+): string | null {
+  const generatedAt = response.generated_at;
+  const cached = response.served_from_cache;
+  if (typeof generatedAt !== 'string' || typeof cached !== 'boolean') return null;
+
+  if (!cached) return 'Generated just now.';
+
+  const generatedMs = Date.parse(generatedAt);
+  if (Number.isNaN(generatedMs)) return null;
+  const ageMin = (now.getTime() - generatedMs) / 60_000;
+  const age =
+    ageMin < 60
+      ? `${Math.max(1, Math.ceil(ageMin))} min`
+      : `${Math.round(ageMin / 60)} h`;
+  return `Reused from an earlier request, generated ${age} ago. Same inputs, no new model call.`;
 }
