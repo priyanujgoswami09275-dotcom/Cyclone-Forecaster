@@ -142,6 +142,9 @@ class TestTightenedMustFlag:
         # invented phone numbers, written the way a model actually writes them.
         ("dial 1800 123 456", "1800"),
         ("+91 98765 43210", "98765"),
+        # The separator gate keys on the Indian mobile prefix (6-9), so the
+        # hyphen-written mobile is a violation while "10000-20000" is not.
+        ("98765-43210", "98765"),
     ])
     def test_still_flagged(self, text, expected):
         violations = validate_advisory(advisory_with(text), allocation())

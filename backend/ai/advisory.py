@@ -341,19 +341,25 @@ _PHONE_AFTER_WORD = re.compile(
     re.IGNORECASE,
 )
 
-# A 10-digit mobile number, optionally with a +91 or 0 prefix, spaces
-# between the two 5-digit groups or none at all.
+# A 10-digit mobile number, with an optional +91 prefix (or the 11-digit
+# leading-zero landline form), the two 5-digit groups separated by a space,
+# a hyphen or nothing at all.
 #
-# **A hyphen is deliberately NOT a separator, and the edges are pinned to
-# digits.** A hyphen between two 5-digit groups is how prose writes a
-# numeric range — "10000-20000 people" — and every such range in an
-# evacuation advisory is a population bound, never a phone number. The
-# digit lookarounds stop the pattern matching a 5-digit slice of a longer
-# number ("100000-200000"). The cost, accepted: a mobile written with an
-# internal hyphen ("98765-43210") is no longer caught — the forms the
-# model actually writes ("+91 98765 43210", "9876543210") still are.
+# **The separator is gated on the Indian mobile prefix.** A space or hyphen
+# between two 5-digit groups is allowed only when the first group starts
+# with 6-9 — the leading digit of every Indian mobile — so the hyphen is a
+# separator exactly where it is one ("98765-43210") and a range mark exactly
+# where prose writes ranges: population bounds start on other digits
+# ("10000-20000 people"), which do not match. The contiguous form carries
+# the same gate, which is simply the Indian mobile rule.
+#
+# The digit lookarounds stay: no match may start inside a longer number, so
+# a 5-digit slice of "100000-200000" cannot begin one. Residual cost,
+# accepted: a range whose lower bound itself starts with 6-9
+# ("60000-70000 people") still matches — a prefix rule cannot admit
+# "98765-43210" and exclude that too.
 _TEN_DIGIT = re.compile(
-    r'(?<!\d)(?:\+?91[\s]?)?\d{5}[\s]?\d{5}(?!\d)'
+    r'(?<!\d)(?:\+?91[\s\-]?)?[6-9]\d{4}[\s\-]?\d{5}(?!\d)'
     r'|\b0\d{10}\b'
 )
 
