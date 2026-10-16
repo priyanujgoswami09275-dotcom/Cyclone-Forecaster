@@ -128,6 +128,20 @@ type Boot =
       live: LiveCycloneState | null;
     };
 
+/**
+ * Module-level empties for the pre-boot fallbacks below, not inline `[]`s.
+ *
+ * A `[]` written in the render body is a new array identity on every render,
+ * so the `useMemo` deps that carry `categories` and `overlayIndex` would churn
+ * every render and the memo would never hold. One shared identity per payload
+ * type fixes that. They are deliberately not `Object.freeze`d: the shared
+ * helpers (`resolveChip`, `nearestCategory`) take mutable arrays, and a frozen
+ * array would force a readonly-to-mutable cast at every use — nothing in this
+ * file mutates either list, and growing one would leak state between renders.
+ */
+const NO_CATEGORIES: CategoriesResponse['categories'] = [];
+const NO_OVERLAYS: OverlayEntry[] = [];
+
 export function MapScreen() {
   const [boot, setBoot] = useState<Boot>({ status: 'loading' });
 
@@ -255,7 +269,9 @@ export function MapScreen() {
   useEffect(() => {
     let cancelled = false;
     // Category 0 is the cheapest valid input and the flag does not vary with
-    // it. Uses `originId` so this never disagrees with what is on screen.
+    // it. Uses `originId` so this never disagrees with what is on screen —
+    // switching origins refetches, so the notice always belongs to the
+    // origin on screen.
     getAllocation(0, originId)
       .then((allocation) => {
         if (!cancelled) setShelterStatus(allocation.shelter_status);
@@ -266,7 +282,7 @@ export function MapScreen() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [originId]);
 
   // --- boot --------------------------------------------------------------
   useEffect(() => {
@@ -319,8 +335,9 @@ export function MapScreen() {
     };
   }, []);
 
-  const categories = boot.status === 'ready' ? boot.categories.categories : [];
-  const overlayIndex = boot.status === 'ready' ? boot.overlayIndex : [];
+  const categories =
+    boot.status === 'ready' ? boot.categories.categories : NO_CATEGORIES;
+  const overlayIndex = boot.status === 'ready' ? boot.overlayIndex : NO_OVERLAYS;
   const localities = boot.status === 'ready' ? boot.localities : [];
 
   /**
