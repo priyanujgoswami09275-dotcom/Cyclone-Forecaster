@@ -309,6 +309,38 @@ to the same bbox, 30m scale, exported via `getDownloadURL`.
   `tests/test_storm_peak_intensity.py` recomputes `LANDFALL_MAX_KM = 1463.0`
   from the CSV. Logged under "Flagged for review" in MEMORY.md rather than
   silently followed — the plan is wrong here, the data is not.
+- **The flood engine is not clipped at the India–Bangladesh border, and the
+  repo has no boundary dataset to clip it with.** Verified 2026-10-16: no
+  admin- or country-boundary geometry exists anywhere in `data/` or
+  `backend/` (`places.geojson` carries no `admin_level` tags; the only
+  country handling is the name-based `DISTRICT_DENY` list), so every number
+  below was measured against a **provisional proxy line at lon 89.0** — a DEM
+  cell counts as east when its **center** is at or east of 89.0. Measured at
+  full resolution on the real raster (the engine's own cell-count convention,
+  not the display PNGs): flooded **land** east of 89.0 is **72.2 of 327.6 km²
+  (22.0%) at observed Remal** (111.1 km/h → 1.12 m), **79.8 of 359.2 km²
+  (22.2%) at cat4**, **320.2 of 1,709.6 km² (18.7%) at cat5**, **447.7 of
+  2,680.2 km² (16.7%) at cat6**; sea-included shares sit at 16.5–16.8% for
+  every scenario. Facilities counted by `/exposure` with a representative
+  point east of 89.0 (**centroid for hospitals/substations, first vertex for
+  roads**): **0** at observed and cat4 (exposure counts are 0 of each at
+  those winds); at cat5 **1 of 5 hospitals** (Friendship Hospital Shyamnagar,
+  lon 89.08) and **8 of 122 roads**; at cat6 **1 of 12 hospitals** (the same
+  one) and **11 of 251 roads** — all of them Vatkhali Road, Z7609,
+  Shyamnagar-Munshiganj Road or "Shyamnagar to Munshiganj Road" ways;
+  **0 substations at every scenario**. Localities and allocation demand
+  nodes are clean: **0 of 43** served localities and **0 of 0/0/7/19** demand
+  nodes (observed/cat4/cat5/cat6) lie east of 89.0 — all six extract places
+  east of the line are excluded, two via `DISTRICT_DENY` (মুন্সীগঞ্জ, শ্যামনগর)
+  and four via the northern cut (আশাশুনি ×2, কালীগঞ্জ, পারুলিয়া), which is
+  latitude doing the work, not country detection. The disclosure sentence —
+  "The flood extent is not clipped at the national border, so part of the
+  flooded area and some listed facilities east of about 89 degrees E lie in
+  Bangladesh." — ships in `AboutSheet.tsx`'s flood-limitation block, pinned
+  by `mobile/tests/aboutSheet.test.mjs`. **Note where that sheet renders:**
+  `AboutSheet.tsx` is mounted by the native `MapScreen.tsx` only; the web
+  screen shows its own provenance block (backend disclosure strings verbatim)
+  and never mounts the sheet, so today the sentence is native-only.
 
 ## Open research items
 

@@ -27,6 +27,10 @@ import { theme } from '../theme';
  *      because it qualifies a *number*, and the tiles now show the counts
  *      without it.
  *   3. **The track source**, and specifically the wind-unit discrepancy.
+ *   4. **The flood-limitation block** — the algorithm's ~0.5 km spread cap,
+ *      and the national-border disclosure: the flood extent is not clipped
+ *      at the border, so part of it and some listed facilities east of about
+ *      89°E lie in Bangladesh.
  *
  * **The JTWC note is the important one, and it is a real disagreement in the
  * source data rather than a caveat we invented.** The committed track's wind
@@ -127,6 +131,18 @@ export function AboutSheet({
               The flood model spreads water at most about 0.5 km inland from the
               water's edge, a limit of the algorithm it follows, so flooded area
               and exposure counts are likely understated.
+            </Text>
+            {/*
+              The engine runs over the DEM bbox, which reaches 89.2°E — into
+              Bangladesh — and nothing clips the extent at the border. The
+              measured numbers behind this sentence (against a provisional
+              lon 89.0 proxy; the repo has no boundary dataset) are in
+              CLAUDE.md's gotchas. Pinned by tests/aboutSheet.test.mjs.
+            */}
+            <Text style={styles.para}>
+              The flood extent is not clipped at the national border, so part of
+              the flooded area and some listed facilities east of about 89
+              degrees E lie in Bangladesh.
             </Text>
           </Block>
 
