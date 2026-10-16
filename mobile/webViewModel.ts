@@ -2,18 +2,23 @@
  * The Web screen's view model — every string, number and disclosure the judge
  * sees, derived from live API payloads.
  *
- * **Imports nothing but types**, for the same reason `mapProjection.ts` does:
- * `node --test` loads this file directly, and a value import of `theme` or
- * `api.ts` would be an extensionless specifier Node's ESM resolver refuses to
- * follow. Keeping the derivation here and the JSX in the component is what
- * makes it testable without a renderer — and the derivation is where the
- * honesty rules live, so it is the part that most needs testing.
+ * **Imports nothing but types, with one exception.** `node --test` loads this
+ * file directly, and a value import of `theme` or `api.ts` would be an
+ * extensionless specifier Node's ESM resolver refuses to follow. The one
+ * exception is `disclosures.ts` — imported WITH its `.ts` extension, the
+ * same way `api.ts` imports `cycloneModel.ts` — because it is the shared
+ * border-disclosure constant both the native sheet and the Impact tab
+ * render, and a copy of it here would be exactly the drift this step exists
+ * to remove. Keeping the derivation here and the JSX in the component is
+ * what makes it testable without a renderer — and the derivation is where
+ * the honesty rules live, so it is the part that most needs testing.
  *
  * Nothing here invents a figure. Every number is read off a payload the
  * backend produced, and where a value is missing the result is `null` — which
  * the UI renders as `—`, never as `0`.
  */
 
+import { BORDER_DISCLOSURE } from './disclosures.ts';
 import type {
   AdvisoryResponse,
   AllocationResponse,
@@ -122,6 +127,23 @@ export function areaLabel(km2: Figure): string {
   if (km2 === null) return '—';
   if (km2 < 1) return `${km2.toFixed(2)} km²`;
   return `${Math.round(km2).toLocaleString('en-US')} km²`;
+}
+
+/**
+ * The muted note the Impact tab shows under the flooded-land figure.
+ *
+ * Why a helper for a constant: the tab renders view-model values for every
+ * figure and label, and this note is one of them — routing it through here
+ * keeps copy out of the component and lets the tests pin that what the tab
+ * shows is the one shared sentence (`BORDER_DISCLOSURE`), byte-identical to
+ * the native About sheet's. It takes no arguments for the same reason the
+ * sentence carries no numbers: the disclosure is a fact about the model's
+ * spatial coverage, not about any one scenario's figure, so it stays on
+ * screen whatever the load state — the same text beside `—` as beside
+ * `2,680 km²`.
+ */
+export function floodedAreaNote(): string {
+  return BORDER_DISCLOSURE;
 }
 
 /**

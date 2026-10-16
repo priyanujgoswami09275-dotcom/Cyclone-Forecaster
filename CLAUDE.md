@@ -336,11 +336,16 @@ to the same bbox, 30m scale, exported via `getDownloadURL`.
   latitude doing the work, not country detection. The disclosure sentence —
   "The flood extent is not clipped at the national border, so part of the
   flooded area and some listed facilities east of about 89 degrees E lie in
-  Bangladesh." — ships in `AboutSheet.tsx`'s flood-limitation block, pinned
-  by `mobile/tests/aboutSheet.test.mjs`. **Note where that sheet renders:**
-  `AboutSheet.tsx` is mounted by the native `MapScreen.tsx` only; the web
-  screen shows its own provenance block (backend disclosure strings verbatim)
-  and never mounts the sheet, so today the sentence is native-only.
+  Bangladesh." — lives in ONE shared constant, `mobile/disclosures.ts`
+  (`BORDER_DISCLOSURE`, a pure module with no react-native imports), and is
+  rendered twice: by the native About sheet's flood-limitation block, and by
+  the web Impact tab directly under the flooded-land figure, on the tab
+  itself rather than behind a provenance view. Pinned by
+  `mobile/tests/aboutSheet.test.mjs` and `mobile/tests/disclosures.test.mjs`.
+  The web view-model exposes it through the pure helper `floodedAreaNote()`;
+  `webViewModel.ts` otherwise imports types only, and this is its one value
+  import, written with the explicit `.ts` extension Node's ESM resolver
+  requires.
 
 ## Open research items
 

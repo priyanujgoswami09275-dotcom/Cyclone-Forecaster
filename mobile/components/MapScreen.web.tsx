@@ -115,6 +115,7 @@ import {
   caseStudyLine,
   countLabel,
   countUnit,
+  floodedAreaNote,
   isCompactViewport,
   observedWindNote,
   personKmLabel,
@@ -837,6 +838,17 @@ export function MapScreen() {
         <Fact label="Flooded land" value={areaLabel(figures.floodedKm2)} note="model" />
         <Fact label="Storm class (IMD)" value={figures.bandLabel || '—'} small />
       </View>
+
+      {/*
+        The national-border disclosure, directly under the flooded-land
+        figure it qualifies: the blue extent is not clipped at the border, so
+        part of it lies in Bangladesh. Always shown, whatever the load state —
+        it is a fact about the model's coverage, not about this scenario's
+        number. The same sentence the native About sheet carries, from one
+        shared constant (`disclosures.ts`, via the view-model helper), so the
+        two surfaces cannot drift apart.
+      */}
+      <Text style={styles.borderNote}>{floodedAreaNote()}</Text>
 
       <View style={styles.tiles}>
         <Tile
@@ -1888,6 +1900,16 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.caption,
     color: theme.colors.textMuted,
     marginTop: 10,
+  },
+  // The border disclosure under the Impact tab's fact grid: small, muted —
+  // a footnote to the flooded-land figure, same 12 px floor as every other
+  // note in this file (the app's own legibility rule, not a styling whim).
+  borderNote: {
+    fontFamily: theme.fonts.body,
+    fontSize: theme.typography.caption,
+    lineHeight: 16,
+    color: theme.colors.textMuted,
+    marginTop: 6,
   },
   emptyNote: {
     fontFamily: theme.fonts.body,

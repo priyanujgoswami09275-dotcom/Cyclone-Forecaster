@@ -1,5 +1,5 @@
 /**
- * Pins the national-border disclosure sentence in the About sheet.
+ * Pins the national-border disclosure in the About sheet.
  *
  *   cd mobile && node --test tests/aboutSheet.test.mjs
  *
@@ -16,9 +16,17 @@
  * convention), roughly a fifth of the flooded land at every scenario lies
  * east of it, and a handful of counted roads plus one hospital do too.
  *
- * Placement is pinned as well as presence: the sentence belongs next to the
- * existing flood-model limitation ("about 0.5 km inland"), because the two
- * are the same kind of claim — limits of what the map's blue layer means.
+ * **Where the sentence lives now.** Step 2 of the border-honesty work moved
+ * it from literal copy in this component into the one shared constant in
+ * `disclosures.ts`, so the native sheet and the web Impact tab render
+ * byte-identical text and cannot drift apart. This file therefore pins two
+ * things, which together are the same guarantee the original literal pin
+ * gave: the constant's content, verbatim, and that the sheet renders that
+ * constant — not some local string — inside the flood-limitation block,
+ * next to the "about 0.5 km inland" claim, because the two are the same
+ * kind of statement: limits of what the map's blue layer means. (The web
+ * surface is pinned by `tests/disclosures.test.mjs`.)
+ *
  * Whitespace is normalised before matching, because JSX text wraps across
  * lines and the wrap point is not part of the claim.
  */
@@ -28,6 +36,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+
+import { BORDER_DISCLOSURE } from '../disclosures.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SOURCE = resolve(HERE, '..', 'components', 'AboutSheet.tsx');
@@ -48,11 +58,12 @@ const normalise = (text) => text.replace(/\s+/g, ' ');
 describe('AboutSheet border disclosure', () => {
   const norm = normalise(readFileSync(SOURCE, 'utf8'));
 
-  it('carries the border sentence verbatim', () => {
-    assert.ok(norm.includes(BORDER_SENTENCE), (
-      'AboutSheet.tsx must carry the national-border disclosure sentence ' +
-      'verbatim. It is the one place a reader learns the flood extent is ' +
-      'not clipped at the border.'
+  it('renders the shared constant, which carries the sentence verbatim', () => {
+    assert.equal(BORDER_DISCLOSURE, BORDER_SENTENCE);
+    assert.ok(norm.includes('{BORDER_DISCLOSURE}'), (
+      'AboutSheet.tsx must render the shared BORDER_DISCLOSURE constant, ' +
+      'not a component-local string — a local copy is where the native and ' +
+      'web surfaces would drift apart.'
     ));
   });
 
@@ -65,12 +76,12 @@ describe('AboutSheet border disclosure', () => {
 
   it('places the sentence inside the flood-limitation block', () => {
     const heading = norm.indexOf(FLOOD_HEADING);
-    const sentence = norm.indexOf(BORDER_SENTENCE);
+    const use = norm.indexOf('{BORDER_DISCLOSURE}');
     const next = norm.indexOf(NEXT_HEADING);
     assert.ok(heading >= 0, `missing the ${JSON.stringify(FLOOD_HEADING)} block`);
     assert.ok(next > heading, `missing the ${JSON.stringify(NEXT_HEADING)} block`);
     assert.ok(
-      sentence > heading && sentence < next,
+      use > heading && use < next,
       'the border sentence belongs next to the flood-model limitation ' +
       'text, not in another block of the sheet',
     );

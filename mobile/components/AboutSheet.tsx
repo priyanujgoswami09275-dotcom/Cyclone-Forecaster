@@ -9,6 +9,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 
+import { BORDER_DISCLOSURE } from '../disclosures';
 import { theme } from '../theme';
 
 /**
@@ -137,13 +138,11 @@ export function AboutSheet({
               Bangladesh — and nothing clips the extent at the border. The
               measured numbers behind this sentence (against a provisional
               lon 89.0 proxy; the repo has no boundary dataset) are in
-              CLAUDE.md's gotchas. Pinned by tests/aboutSheet.test.mjs.
+              CLAUDE.md's gotchas. One shared constant — the web Impact tab
+              renders the same sentence next to its flooded-land figure.
+              Pinned by tests/aboutSheet.test.mjs and tests/disclosures.test.mjs.
             */}
-            <Text style={styles.para}>
-              The flood extent is not clipped at the national border, so part of
-              the flooded area and some listed facilities east of about 89
-              degrees E lie in Bangladesh.
-            </Text>
+            <Text style={styles.para}>{BORDER_DISCLOSURE}</Text>
           </Block>
 
           <Block heading="The storm path">
