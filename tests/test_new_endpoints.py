@@ -345,9 +345,13 @@ def test_existing_endpoints_still_work():
 
 def test_exposure_defaults_are_unchanged_after_the_rekey():
     body = client.get("/exposure", params={"category": 6}).json()
-    assert body["hospitals"]["count"] == 12
+    # Re-pinned 2026-10-17: the flood engine now subtracts the committed OSM
+    # Bangladesh polygon (cell-centre rule), so the one Bangladeshi clinic
+    # and the Bangladeshi road segments drop out of these counts. Un-clipped
+    # figures were hospitals 12, roads 251.
+    assert body["hospitals"]["count"] == 11
     assert body["substations"]["count"] == 22
-    assert body["roads_cut_off"]["count"] == 251
+    assert body["roads_cut_off"]["count"] == 239
     assert body["surge"]["surge_m"] == pytest.approx(4.4719, abs=1e-4)
 
 

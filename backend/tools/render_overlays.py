@@ -170,13 +170,17 @@ def render_category(wind_kmph: float, label: str, slug: str, dem=None) -> dict:
     # whole point of a raster overlay is to show the *unfiltered* extent —
     # including the sub-MIN_PART_KM2 fragments the polygon path drops, which
     # at low surge are most of what there is.
-    from backend.simulation.flood import simulate_flood_propagation
+    from backend.simulation.flood import bangladesh_cells, simulate_flood_propagation
 
     ocean = dem.ocean_mask()
     frames = simulate_flood_propagation(
         elevation=dem.elevation, ocean_mask=ocean, target_surge=surge_m
     )
-    land_mask = frames[-1] & (~dem.nodata_mask) & ~ocean
+    # The same Bangladesh exclusion the engine applies to its reported masks:
+    # the display raster must show what the figures count, or the picture and
+    # the number disagree (the exact drift this file's disclosure warns
+    # about). Subtracted, not clipped — see flood.py.
+    land_mask = frames[-1] & (~dem.nodata_mask) & ~ocean & ~bangladesh_cells(dem)
 
     # Depth of standing water = peak surge minus ground elevation, floored at 0.
     depth = np.where(land_mask, np.maximum(0.0, surge_m - dem.elevation), 0.0)

@@ -195,10 +195,10 @@
       },
       "width_px": 1000,
       "height_px": 930,
-      "png_bytes": 26588,
-      "flooded_pixels": 16052,
-      "flooded_fraction_of_raster": 0.01726,
-      "final_land_area_km2": 359.23,
+      "png_bytes": 22951,
+      "flooded_pixels": 12727,
+      "flooded_fraction_of_raster": 0.013685,
+      "final_land_area_km2": 283.74,
       "drawn_area_km2": 0.0,
       "depth_classes_m": [
         {
@@ -236,11 +236,11 @@
       },
       "width_px": 1000,
       "height_px": 930,
-      "png_bytes": 89721,
-      "flooded_pixels": 76327,
-      "flooded_fraction_of_raster": 0.082072,
-      "final_land_area_km2": 1709.57,
-      "drawn_area_km2": 749.28,
+      "png_bytes": 78401,
+      "flooded_pixels": 62872,
+      "flooded_fraction_of_raster": 0.067604,
+      "final_land_area_km2": 1407.37,
+      "drawn_area_km2": 558.1,
       "depth_classes_m": [
         {
           "upper": 0.5,
@@ -277,11 +277,11 @@
       },
       "width_px": 1000,
       "height_px": 930,
-      "png_bytes": 126552,
-      "flooded_pixels": 119406,
-      "flooded_fraction_of_raster": 0.128394,
-      "final_land_area_km2": 2680.22,
-      "drawn_area_km2": 1678.54,
+      "png_bytes": 112389,
+      "flooded_pixels": 100617,
+      "flooded_fraction_of_raster": 0.10819,
+      "final_land_area_km2": 2258.47,
+      "drawn_area_km2": 1360.63,
       "depth_classes_m": [
         {
           "upper": 0.5,
@@ -318,10 +318,10 @@
       },
       "width_px": 1000,
       "height_px": 930,
-      "png_bytes": 25146,
-      "flooded_pixels": 14657,
-      "flooded_fraction_of_raster": 0.01576,
-      "final_land_area_km2": 327.64,
+      "png_bytes": 21738,
+      "flooded_pixels": 11647,
+      "flooded_fraction_of_raster": 0.012524,
+      "final_land_area_km2": 259.31,
       "drawn_area_km2": 0.0,
       "depth_classes_m": [
         {

@@ -260,8 +260,11 @@ def test_the_case_study_payload_is_unchanged_by_any_of_this() -> None:
     assert body["scenario_id"] == "cat6"
     # The numbers this project pins in CLAUDE.md. Nested under `count`, and
     # `roads_cut_off` is a count of cut roads, not a connectivity measure.
-    assert body["hospitals"]["count"] == 12
+    # Re-pinned 2026-10-17: the engine subtracts the committed OSM Bangladesh
+    # polygon (cell-centre rule). The un-clipped figures were hospitals 12,
+    # roads 251, land 2680.22 km².
+    assert body["hospitals"]["count"] == 11
     assert body["substations"]["count"] == 22
-    assert body["roads_cut_off"]["count"] == 251
-    assert body["final_land_area_km2"] == pytest.approx(2680.22, abs=0.01)
+    assert body["roads_cut_off"]["count"] == 239
+    assert body["final_land_area_km2"] == pytest.approx(2258.47, abs=0.01)
     assert body["surge_m"] == pytest.approx(4.4719, abs=0.0001)

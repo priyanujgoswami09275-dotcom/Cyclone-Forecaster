@@ -10,7 +10,7 @@ polygon, as Architecture.md's /surge-zone contract requires):
    elevation is at or below the current water level.
 4. Frames accumulate, so frame k is the flooded set at step k.
 
-Two departures from the bare reference code, both load-bearing:
+Three departures from the bare reference code, all load-bearing:
 
 **Ocean connectivity is enforced.** The reference BFS seeds from the ocean and
 only ever moves to low ground, so every flooded cell is ocean-connected by
@@ -25,18 +25,33 @@ treated as barriers, not terrain. Filling them with the minimum real elevation
 unmeasured areas. `dem.py` fills them low for arithmetic safety, so this
 module masks them back out at the end.
 
+**Bangladesh is subtracted.** The DEM bbox reaches 89.2E — into Bangladesh —
+and nothing about the terrain cares where the border is. The committed OSM
+country polygon (`data/bangladesh_boundary.geojson`) is rasterised once onto
+the DEM grid at cell centres (`bangladesh_cells`, cached) and subtracted
+from every reported mask before any area is computed or any polygon built.
+Subtraction rather than clipping to West Bengal, because the OSM-vs-DEM
+coastline mismatch would delete real coastal WB cells under a clip, and the
+flood is only ~0.5 km wide. The BFS still floods those cells — the physics
+is untouched; only what the figures may count changes. See
+`backend/data_pipeline/fetch_osm_boundary.py` for provenance.
+
 The surge level is the model's output and is an ESTIMATE (see surge.py); the
 frames are a scenario, not a forecast, and every API response must say so.
 """
 
 from __future__ import annotations
 
+import json
 from collections import deque
 from dataclasses import dataclass, replace
+from functools import lru_cache
+from pathlib import Path
 
 import numpy as np
 from scipy import ndimage
 from shapely.geometry import mapping, shape
+from shapely.ops import unary_union
 from rasterio import features
 
 from .dem import Dem, load_dem
@@ -50,6 +65,89 @@ DEFAULT_STEPS = 10
 # corner — that over-floods relative to the reference algorithm, so the
 # cross-shaped footprint is load-bearing, not cosmetic.
 FOUR_CONNECTED = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=bool)
+
+# --- Bangladesh exclusion (border honesty, 2026-10-17) ---------------------
+#
+# The DEM bbox reaches 89.2E — into Bangladesh — and until 2026-10-17 the
+# flood extent ran over that foreign land unclipped: measured against a
+# provisional lon 89.0 proxy, 16.7-22.2% of every "flooded land" figure was
+# Bangladeshi territory (see CLAUDE.md's gotchas for the numbers). The fix
+# is SUBTRACTION, not clipping to West Bengal: the OSM-vs-DEM coastline
+# mismatch would delete real coastal WB cells under a clip-to-WB approach,
+# and the flood is only ~0.5 km wide, so an over-precise clip is the more
+# dangerous error. Subtraction can only remove cells OSM says are
+# Bangladesh — it cannot eat the WB coast.
+#
+# The BFS itself still floods those cells (unchanged — nothing about the
+# physics claims water stops at a border); only the reported masks, areas
+# and downstream polygon exclude them, so every figure the API serves
+# counts the study country alone.
+#
+# This module stays network-free (Rules.md): the polygon is a committed
+# artefact, data/bangladesh_boundary.geojson — fetched once by
+# backend/data_pipeline/fetch_osm_boundary.py from the OSM country relation
+# (admin_level=2, ISO3166-1=BD; boundary (c) OpenStreetMap contributors,
+# ODbL) and read from disk here, never fetched.
+
+BOUNDARY_PATH = (
+    Path(__file__).resolve().parents[2] / "data" / "bangladesh_boundary.geojson"
+)
+
+
+@lru_cache(maxsize=4)
+def _bangladesh_cells(
+    grid_shape: tuple[int, int],
+    transform_key: tuple[float, float, float, float, float, float],
+) -> np.ndarray:
+    """Rasterise the committed polygon onto one DEM grid, cached.
+
+    Keyed on the grid alone — same shape and transform always yield the
+    same cells, so re-rasterising would be pure waste. The affine's six
+    coefficients form the hashable key (Affine objects are not relied on
+    to be hashable; the coefficients are).
+    """
+    from rasterio.transform import Affine
+
+    if not BOUNDARY_PATH.exists():
+        raise FileNotFoundError(
+            f"{BOUNDARY_PATH} not found. It is a committed input by design "
+            "(Rules.md: no live fetches) — regenerate it with "
+            "backend/data_pipeline/fetch_osm_boundary.py, never by hand. "
+            "The engine refuses to run rather than silently counting "
+            "Bangladeshi land as flooded again."
+        )
+    fc = json.loads(BOUNDARY_PATH.read_text())
+    geometries = [
+        shape(feature["geometry"])
+        for feature in fc.get("features", [])
+        if feature.get("geometry")
+    ]
+    if not geometries:
+        raise ValueError("boundary file carries no geometry")
+    geom = geometries[0] if len(geometries) == 1 else unary_union(geometries)
+    # all_touched=False is the cell-CENTRE rule: a cell is Bangladesh only
+    # if its centre falls inside the polygon. Cell edges straddling the
+    # border are the polygon's business, not the rasteriser's guesswork.
+    raster = features.rasterize(
+        [(geom, 1)],
+        out_shape=grid_shape,
+        transform=Affine(*transform_key),
+        fill=0,
+        all_touched=False,
+        dtype="uint8",
+    )
+    return raster.astype(bool)
+
+
+def bangladesh_cells(dem: Dem) -> np.ndarray:
+    """Boolean mask of `dem`'s cells whose centre lies inside Bangladesh.
+
+    READ-ONLY by convention: the array is shared through the cache across
+    every caller in the process, so an in-place mutation would corrupt all
+    subsequent results. Callers use it in fresh boolean expressions and
+    never assign into it.
+    """
+    return _bangladesh_cells(dem.shape, tuple(dem.transform)[:6])
 
 # Client-payload tuning for the polygonised flood extent. Both are LOSSY and
 # the loss is reported per frame as `dropped_detail_km2`; neither affects the
@@ -68,8 +166,8 @@ class FloodFrame:
 
     step: int
     water_level_m: float
-    area_km2: float  # total flooded area, sea included
-    land_area_km2: float  # flooded land only (excludes permanent ocean)
+    area_km2: float  # total flooded area, sea included, Bangladesh excluded
+    land_area_km2: float  # flooded land only (excludes ocean and Bangladesh)
     new_land_area_km2: float  # land inundated *at this step*
     geometry: dict  # GeoJSON polygon of the land newly inundated at this step
     dropped_detail_km2: float = 0.0  # area omitted from `geometry` for rendering
@@ -276,6 +374,8 @@ def run_flood_model(
 
     cell_km2 = dem.cell_area_km2()
     ocean = dem.ocean_mask()
+    # The border mask, not the BFS, decides what the figures may count.
+    bd_cells = bangladesh_cells(dem)
     frames = simulate_flood_propagation(
         elevation=dem.elevation,
         ocean_mask=ocean,
@@ -287,8 +387,11 @@ def run_flood_model(
     previous = np.zeros_like(ocean, dtype=bool)
     for i, mask in enumerate(frames, start=1):
         # Nodata is filled low in dem.py; exclude it so the flood extent only
-        # covers genuinely-measured terrain.
-        effective = mask & (~dem.nodata_mask)
+        # covers genuinely-measured terrain. Bangladesh cells are excluded the
+        # same way and for the same reason: the water may physically be there,
+        # but no reported figure may count territory outside the study
+        # country.
+        effective = mask & (~dem.nodata_mask) & (~bd_cells)
         delta = effective & ~ocean & ~previous
         result_frames.append(
             FloodFrame(
@@ -303,7 +406,9 @@ def run_flood_model(
         previous = effective
 
     # Cumulative land inundation at peak surge — the single drawable extent.
-    final_land = frames[-1] & (~dem.nodata_mask) & ~ocean
+    # Bangladesh is subtracted BEFORE polygonising, so the geometry a client
+    # draws can never disagree with the areas it is shown.
+    final_land = frames[-1] & (~dem.nodata_mask) & ~ocean & (~bd_cells)
     geometry, dropped_km2 = _mask_to_geometry(final_land, dem.transform, cell_km2)
     result_frames[-1] = replace(
         result_frames[-1], geometry=geometry, dropped_detail_km2=dropped_km2
