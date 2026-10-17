@@ -13,20 +13,20 @@
 /**
  * The national-border disclosure.
  *
- * The flood engine runs over the DEM bbox, which reaches 89.2°E — into
- * Bangladesh — and nothing clips the extent at the border. The repo has no
- * boundary dataset to clip it with (verified 2026-10-16; see CLAUDE.md's
- * gotchas), so the sentence deliberately carries no number: the measured
- * shares behind it (roughly a fifth of the flooded land at every scenario,
- * plus a handful of counted roads and one hospital) were taken against a
- * provisional lon 89.0 proxy line and would go stale as a hardcoded figure.
- * The sentence is copy; the numbers are documentation.
+ * Since 2026-10-17 the flood engine subtracts the committed OpenStreetMap
+ * Bangladesh polygon (cell-centre rule) from every reported mask, so the
+ * figures leave Bangladeshi land out. The sentence says the two things a
+ * reader needs: what was left out, and the honest limit of that cut — the
+ * OSM border is a line drawn where rivers and coastlines move, so a cell
+ * near it can fall either side. It deliberately carries no numbers; the
+ * measured effect of the subtraction lives in CLAUDE.md's gotchas as
+ * documentation, where it can be re-measured without a copy change.
  *
  * Rendered by the native About sheet's flood-limitation block and by the
  * web Impact tab next to the flooded-area figure — pinned verbatim by
  * `tests/disclosures.test.mjs` and `tests/aboutSheet.test.mjs`.
  */
 export const BORDER_DISCLOSURE =
-  'The flood extent is not clipped at the national border, so part of the ' +
-  'flooded area and some listed facilities east of about 89 degrees E lie in ' +
-  'Bangladesh.';
+  "Flooded land inside Bangladesh is left out, using OpenStreetMap's " +
+  'border. The border is approximate at the coast and along rivers, so ' +
+  'figures near it can be slightly off.';

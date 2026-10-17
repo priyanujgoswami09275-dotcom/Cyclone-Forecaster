@@ -6,6 +6,14 @@ Vulnerability Forecaster**.
 
 ## Recent changes
 
+**2026-10-17 — Bangladesh subtraction in the flood engine**: every reported
+figure now excludes land inside the OSM Bangladesh polygon (see the gotchas
+entry for the method, guard and verified payload). The display overlays were
+regenerated to match, the border disclosure copy now says land is left out
+rather than "not clipped", and the payload pins in
+`test_new_endpoints.py` / `test_observed_scenario_flow.py` / mobile
+`overlay.test.mjs` were re-pinned to the clipped values.
+
 **2026-10-15 — backend honesty batches A–D1, one commit each**: population
 cos(latitude) fix, /comparison surge parity, the advisory cache, 502 no-leak,
 per-wind blocked-edge cache, the 112-only phone check, simulation labelling
@@ -309,43 +317,64 @@ to the same bbox, 30m scale, exported via `getDownloadURL`.
   `tests/test_storm_peak_intensity.py` recomputes `LANDFALL_MAX_KM = 1463.0`
   from the CSV. Logged under "Flagged for review" in MEMORY.md rather than
   silently followed — the plan is wrong here, the data is not.
-- **The flood engine is not clipped at the India–Bangladesh border, and the
-  repo has no boundary dataset to clip it with.** Verified 2026-10-16: no
-  admin- or country-boundary geometry exists anywhere in `data/` or
-  `backend/` (`places.geojson` carries no `admin_level` tags; the only
-  country handling is the name-based `DISTRICT_DENY` list), so every number
-  below was measured against a **provisional proxy line at lon 89.0** — a DEM
-  cell counts as east when its **center** is at or east of 89.0. Measured at
-  full resolution on the real raster (the engine's own cell-count convention,
-  not the display PNGs): flooded **land** east of 89.0 is **72.2 of 327.6 km²
-  (22.0%) at observed Remal** (111.1 km/h → 1.12 m), **79.8 of 359.2 km²
-  (22.2%) at cat4**, **320.2 of 1,709.6 km² (18.7%) at cat5**, **447.7 of
-  2,680.2 km² (16.7%) at cat6**; sea-included shares sit at 16.5–16.8% for
-  every scenario. Facilities counted by `/exposure` with a representative
-  point east of 89.0 (**centroid for hospitals/substations, first vertex for
-  roads**): **0** at observed and cat4 (exposure counts are 0 of each at
-  those winds); at cat5 **1 of 5 hospitals** (Friendship Hospital Shyamnagar,
-  lon 89.08) and **8 of 122 roads**; at cat6 **1 of 12 hospitals** (the same
-  one) and **11 of 251 roads** — all of them Vatkhali Road, Z7609,
-  Shyamnagar-Munshiganj Road or "Shyamnagar to Munshiganj Road" ways;
-  **0 substations at every scenario**. Localities and allocation demand
-  nodes are clean: **0 of 43** served localities and **0 of 0/0/7/19** demand
-  nodes (observed/cat4/cat5/cat6) lie east of 89.0 — all six extract places
-  east of the line are excluded, two via `DISTRICT_DENY` (মুন্সীগঞ্জ, শ্যামনগর)
-  and four via the northern cut (আশাশুনি ×2, কালীগঞ্জ, পারুলিয়া), which is
-  latitude doing the work, not country detection. The disclosure sentence —
-  "The flood extent is not clipped at the national border, so part of the
-  flooded area and some listed facilities east of about 89 degrees E lie in
-  Bangladesh." — lives in ONE shared constant, `mobile/disclosures.ts`
-  (`BORDER_DISCLOSURE`, a pure module with no react-native imports), and is
-  rendered twice: by the native About sheet's flood-limitation block, and by
-  the web Impact tab directly under the flooded-land figure, on the tab
-  itself rather than behind a provenance view. Pinned by
-  `mobile/tests/aboutSheet.test.mjs` and `mobile/tests/disclosures.test.mjs`.
-  The web view-model exposes it through the pure helper `floodedAreaNote()`;
-  `webViewModel.ts` otherwise imports types only, and this is its one value
-  import, written with the explicit `.ts` extension Node's ESM resolver
-  requires.
+- **The flood engine subtracts Bangladesh: flooded land and facilities
+  inside the country are excluded from every figure.** Since 2026-10-17 the
+  engine rasterises the committed OpenStreetMap Bangladesh polygon
+  (`data/bangladesh_boundary.geojson`, fetched once by
+  `backend/data_pipeline/fetch_osm_boundary.py` from the country relation
+  selected BY TAGS — `admin_level=2`, `ISO3166-1=BD`, never a hardcoded id —
+  clipped to the DEM bbox, simplified at 0.0003 deg; boundary (c)
+  OpenStreetMap contributors, ODbL v1.0, attribution also in README) onto
+  the DEM grid with the **cell-centre rule** (`rasterio.features.rasterize`,
+  `all_touched=False`, lru-cached) and subtracts those cells from the
+  per-frame effective mask and from `final_land`, before polygonising.
+  `render_overlays.py` subtracts the same mask, so the display rasters
+  match. The BFS still floods those cells — the physics is untouched; only
+  what the figures may count changed. It is SUBTRACTION, not clipping to a
+  West Bengal polygon: the OSM-vs-DEM coastline mismatch would delete real
+  coastal WB cells under a clip, and the flood is only ~0.5 km wide, so an
+  over-precise clip is the more dangerous error. Guard: the rasterised mask
+  must stay east of 88.90E (hard fail); the REAL border dips to
+  (88.9384, 22.5893) in the Ichamati river meander at the northern bbox
+  edge, so [88.90, 88.95) is a warning band, not a failure — Taki Rural
+  Hospital (88.928) and Matrisadan Nursing Home (88.916) sit just west of
+  it and are correctly outside. Sanity anchors are pinned in
+  `tests/test_bangladesh_boundary.py`: both `DISTRICT_DENY` places inside,
+  all 43 served localities outside, the seven east-of-89.0 clinics inside,
+  Barunhat Rural Hospital outside.
+  Verified payload (2026-10-17, full resolution, via the engine's own code
+  paths; `tests/test_new_endpoints.py` and
+  `tests/test_observed_scenario_flow.py` pin the cat6 row): observed
+  (111.1 km/h) **259.31 km²**, 0/0/0 facilities, 0 demand nodes; cat4 (142)
+  **283.74 km²**, 0/0/0, 0 nodes; cat5 (194) **1,407.37 km²**,
+  **5 hospitals / 10 substations / 110 road segments**, 7 nodes,
+  **59,924** exposed people; cat6 (222) **2,258.47 km²**,
+  **11 / 22 / 239**, 19 nodes, **156,809** exposed people. The /comparison
+  observed-pair `flood_area_km2_delta` moved from −20.03 to −15.78.
+  (Un-clipped figures for comparison: 327.64 / 359.23 / 1,709.57 /
+  2,680.22 km²; cat5 roads 122, cat6 hospitals 12 and roads 251. The
+  earlier provisional lon 89.0 proxy measurement — 16.7–22.2% of flooded
+  land, one hospital, 8–11 roads — is superseded by the polygon.)
+  **Pre-existing sensitivity, now visible:** exposure counts test the
+  *polygonised, simplified* extent, so a facility within ~170 m of the
+  flood edge can flip when the mask changes shape. Worked example: at cat5
+  the clip removed Friendship Hospital Shyamnagar (Bangladeshi, correct)
+  but Premashraya Palliative Care Unit entered (WB, 88.47E — its raster
+  cell was flooded before AND after), because the old simplified polygon
+  passed 0.1 m outside its point and the new one touches inside — net
+  5 → 5, not the expected 5 → 4. Same mechanism in allocation: exposed
+  people moved +13 (cat5) and +251 (cat6) — 0.02%/0.16% — because the
+  population estimate intersects the same lossy polygon, whose boundary
+  wiggles up to the simplification tolerance. The disclosure sentence —
+  "Flooded land inside Bangladesh is left out, using OpenStreetMap's
+  border. The border is approximate at the coast and along rivers, so
+  figures near it can be slightly off." — lives in `mobile/disclosures.ts`
+  (`BORDER_DISCLOSURE`, a pure module with no react-native imports),
+  rendered by the native About sheet's flood-limitation block and by the
+  web Impact tab directly under the flooded-land figure, pinned by
+  `mobile/tests/aboutSheet.test.mjs` and
+  `mobile/tests/disclosures.test.mjs`; the web view-model exposes it
+  through the pure helper `floodedAreaNote()`.
 
 ## Open research items
 

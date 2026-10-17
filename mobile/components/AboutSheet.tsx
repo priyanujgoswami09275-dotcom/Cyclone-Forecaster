@@ -29,9 +29,9 @@ import { theme } from '../theme';
  *      without it.
  *   3. **The track source**, and specifically the wind-unit discrepancy.
  *   4. **The flood-limitation block** — the algorithm's ~0.5 km spread cap,
- *      and the national-border disclosure: the flood extent is not clipped
- *      at the border, so part of it and some listed facilities east of about
- *      89°E lie in Bangladesh.
+ *      and the national-border disclosure: Bangladeshi land is left out of
+ *      the figures using OpenStreetMap's border, which is approximate at
+ *      the coast and along rivers.
  *
  * **The JTWC note is the important one, and it is a real disagreement in the
  * source data rather than a caveat we invented.** The committed track's wind
@@ -134,13 +134,13 @@ export function AboutSheet({
               and exposure counts are likely understated.
             </Text>
             {/*
-              The engine runs over the DEM bbox, which reaches 89.2°E — into
-              Bangladesh — and nothing clips the extent at the border. The
-              measured numbers behind this sentence (against a provisional
-              lon 89.0 proxy; the repo has no boundary dataset) are in
-              CLAUDE.md's gotchas. One shared constant — the web Impact tab
-              renders the same sentence next to its flooded-land figure.
-              Pinned by tests/aboutSheet.test.mjs and tests/disclosures.test.mjs.
+              The engine subtracts the committed OpenStreetMap Bangladesh
+              polygon (cell-centre rule) from every reported mask, so this
+              sheet's figures — like the web Impact tab's, which renders the
+              same shared constant — leave Bangladeshi land out. The border is
+              approximate at the coast and along rivers; the measured effect
+              of the subtraction is in CLAUDE.md's gotchas. Pinned by
+              tests/aboutSheet.test.mjs and tests/disclosures.test.mjs.
             */}
             <Text style={styles.para}>{BORDER_DISCLOSURE}</Text>
           </Block>

@@ -110,9 +110,13 @@ Live output from `GET /exposure?category=N` on the committed data:
 | 1 | Deep Depression | 55.5 | 0.28 | 0.00 | 0 | 0 | 0 |
 | 2 | Cyclonic Storm | 75 | 0.51 | 0.00 | 0 | 0 | 0 |
 | 3 | Severe Cyclonic Storm | 103 | 0.96 | 0.00 | 0 | 0 | 0 |
-| 4 | Very Severe Cyclonic Storm | 142 | 1.83 | 359.23 | 0 | 0 | 0 |
-| 5 | Extremely Severe Cyclonic Storm | 194 | 3.41 | 1,709.57 | 5 | 10 | 122 |
-| 6 | Super Cyclonic Storm | ≥222 | 4.47 | 2,680.22 | 12 | 22 | 251 |
+| 4 | Very Severe Cyclonic Storm | 142 | 1.83 | 283.74 | 0 | 0 | 0 |
+| 5 | Extremely Severe Cyclonic Storm | 194 | 3.41 | 1,407.37 | 5 | 10 | 110 |
+| 6 | Super Cyclonic Storm | ≥222 | 4.47 | 2,258.47 | 11 | 22 | 239 |
+
+Figures exclude land inside Bangladesh, using OpenStreetMap's border — the
+engine subtracts it before any area or exposure is computed (see the gotchas
+in CLAUDE.md for the method and its limits).
 
 Categories 0–3 flood nothing and 0–4 expose no infrastructure at all, which is
 why the app offers four chips rather than all seven bands. Category 6 has **no
@@ -139,6 +143,11 @@ Data is pre-fetched and committed (`data/`): IBTrACS track, OSM infrastructure,
 SRTM DEM, building footprints. **Nothing is fetched live from a request
 handler** — the public Overpass instance rate-limits at 2 concurrent
 requests/IP and a live call during a demo fails.
+
+The OSM-derived layers — hospitals, substations, roads, places, and the
+Bangladesh country boundary the flood engine subtracts — are ©
+OpenStreetMap contributors, available under the Open Database License
+(ODbL) v1.0.
 
 **Nor does any request read a raw upstream input.** The 27 MB IBTrACS archive the
 catalogue and the ML model were both derived from is *not* in git — it is a

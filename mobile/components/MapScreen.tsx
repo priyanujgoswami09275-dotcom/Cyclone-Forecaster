@@ -575,7 +575,7 @@ export function MapScreen() {
   //
   // Four memos, and the reason each exists is the same: `LeafletMap` turns each
   // prop into a command in a `useEffect`, so an object rebuilt on every render
-  // would re-issue that command on every render — which for 251 road polylines
+  // would re-issue that command on every render — which for 239 road polylines
   // means re-serialising and re-drawing the entire road layer on each keystroke
   // anywhere in the app. The dependencies are the payloads, so a command fires
   // exactly when the underlying data changes.

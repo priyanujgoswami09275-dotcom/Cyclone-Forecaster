@@ -42,9 +42,9 @@ const MOBILE = resolve(HERE, '..');
 
 /** The disclosure, verbatim — one sentence, no numbers, no jargon. */
 const SENTENCE =
-  'The flood extent is not clipped at the national border, so part of the ' +
-  'flooded area and some listed facilities east of about 89 degrees E lie in ' +
-  'Bangladesh.';
+  "Flooded land inside Bangladesh is left out, using OpenStreetMap's " +
+  'border. The border is approximate at the coast and along rivers, so ' +
+  'figures near it can be slightly off.';
 
 /** JSX text wraps across lines; the wrap point is not part of any claim. */
 const normalise = (text) => text.replace(/\s+/g, ' ');

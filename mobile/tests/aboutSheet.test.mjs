@@ -9,12 +9,13 @@
  * so it is checked as text, in the spirit of `webBundleSafety.test.mjs` and
  * `screenScenarioComposition.test.mjs`.
  *
- * **What the sentence is.** The flood engine runs over the DEM bbox, which
- * reaches 89.2°E — into Bangladesh — and nothing clips the extent at the
- * border. Measured against a provisional lon 89.0 proxy line (the repo has
- * no boundary dataset; see CLAUDE.md's gotchas for the numbers and the
- * convention), roughly a fifth of the flooded land at every scenario lies
- * east of it, and a handful of counted roads plus one hospital do too.
+ * **What the sentence is.** Since 2026-10-17 the flood engine subtracts
+ * the committed OpenStreetMap Bangladesh polygon (cell-centre rule) from
+ * every reported mask, so the figures leave Bangladeshi land out — and the
+ * sentence says so, with the honest limit of that cut: the OSM border is
+ * approximate at the coast and along rivers. The measured effect (a sixth
+ * to a fifth of the un-clipped land per scenario, one hospital, a dozen
+ * road segments) is documented in CLAUDE.md's gotchas, not in the copy.
  *
  * **Where the sentence lives now.** Step 2 of the border-honesty work moved
  * it from literal copy in this component into the one shared constant in
@@ -42,11 +43,11 @@ import { BORDER_DISCLOSURE } from '../disclosures.ts';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SOURCE = resolve(HERE, '..', 'components', 'AboutSheet.tsx');
 
-/** The disclosure, verbatim — the exact sentence the About sheet must carry. */
+/** The disclosure, verbatim — one sentence, no numbers, no jargon. */
 const BORDER_SENTENCE =
-  'The flood extent is not clipped at the national border, so part of the ' +
-  'flooded area and some listed facilities east of about 89 degrees E lie in ' +
-  'Bangladesh.';
+  "Flooded land inside Bangladesh is left out, using OpenStreetMap's " +
+  'border. The border is approximate at the coast and along rivers, so ' +
+  'figures near it can be slightly off.';
 
 /** The block the sentence lives in, and the one after it. */
 const FLOOD_HEADING = 'How wide the flood can spread';

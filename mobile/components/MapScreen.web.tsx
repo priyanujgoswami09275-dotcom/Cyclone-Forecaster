@@ -841,12 +841,13 @@ export function MapScreen() {
 
       {/*
         The national-border disclosure, directly under the flooded-land
-        figure it qualifies: the blue extent is not clipped at the border, so
-        part of it lies in Bangladesh. Always shown, whatever the load state —
-        it is a fact about the model's coverage, not about this scenario's
-        number. The same sentence the native About sheet carries, from one
-        shared constant (`disclosures.ts`, via the view-model helper), so the
-        two surfaces cannot drift apart.
+        figure it qualifies: Bangladeshi land is left out of the figures,
+        using OpenStreetMap's border — which is approximate at the coast and
+        along rivers. Always shown, whatever the load state — it is a fact
+        about the model's coverage, not about this scenario's number. The
+        same sentence the native About sheet carries, from one shared
+        constant (`disclosures.ts`, via the view-model helper), so the two
+        surfaces cannot drift apart.
       */}
       <Text style={styles.borderNote}>{floodedAreaNote()}</Text>
 

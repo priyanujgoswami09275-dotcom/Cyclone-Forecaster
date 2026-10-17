@@ -314,11 +314,11 @@ export function WebImpactMap({
   );
 
   /**
-   * Roads. `/exposure` is 349 KB at category 6 with 251 features, and this
+   * Roads. `/exposure` is 332 KB at category 6 with 239 features, and this
    * draws every one — the same rule the native screen follows, because a
    * capped layer would make the picture disagree with the count beside it.
    *
-   * At 251 `<path>` elements with round caps the browser handles this
+   * At 239 `<path>` elements with round caps the browser handles this
    * comfortably; it is the 180k-vertex *flood polygon* that was never
    * drawable, and that layer is a raster here instead.
    */
@@ -729,7 +729,7 @@ export function WebImpactMap({
 
       {/* The hover readout. Native maps get this from the platform's callout;
           SVG has no equivalent, so a single shared readout serves every
-          feature rather than 251 competing ones. */}
+          feature rather than 239 competing ones. */}
       {hovered !== null ? (
         <View style={styles.tooltip}>
           <Text style={styles.tooltipText}>{hovered.split(':').slice(1).join(':')}</Text>

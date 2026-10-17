@@ -16,9 +16,11 @@
  * water in them at all.
  *
  * The pixel counts below are the real committed ones from
- * `data/overlays/overlays.json`, not invented: 0, 0, 0, 0, 16052, 76327,
- * 119406, 14657. Four of the eight entries are zero, so "does this draw"
- * and "does this exist" are genuinely different questions.
+ * `data/overlays/overlays.json`, not invented: 0, 0, 0, 0, 12727, 62872,
+ * 100617, 11647. Four of the eight entries are zero, so "does this draw"
+ * and "does this exist" are genuinely different questions. (Re-measured
+ * 2026-10-17, after the engine began subtracting the OSM Bangladesh
+ * polygon — the un-clipped counts were 16052, 76327, 119406, 14657.)
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -27,7 +29,7 @@ import { shouldDrawOverlay } from '../api.ts';
 
 /** A committed overlay entry, with only the field the decision reads. */
 function entry(overrides = {}) {
-  return { id: 'cat4', image_url: '/overlays/flood_cat4.png', flooded_pixels: 16052, ...overrides };
+  return { id: 'cat4', image_url: '/overlays/flood_cat4.png', flooded_pixels: 12727, ...overrides };
 }
 
 test('an overlay with water is drawn', () => {
@@ -55,7 +57,7 @@ test('a missing or malformed count fails closed', () => {
   assert.equal(shouldDrawOverlay(entry({ flooded_pixels: undefined })), false);
   assert.equal(shouldDrawOverlay({ id: 'cat4' }), false);
   assert.equal(shouldDrawOverlay(entry({ flooded_pixels: null })), false);
-  assert.equal(shouldDrawOverlay(entry({ flooded_pixels: '16052' })), false);
+  assert.equal(shouldDrawOverlay(entry({ flooded_pixels: '12727' })), false);
   assert.equal(shouldDrawOverlay(entry({ flooded_pixels: Number.NaN })), false);
 });
 
@@ -72,7 +74,7 @@ test('the eight committed overlays split four and four', () => {
   // while still reporting flooded areas everywhere else.
   const committed = {
     cat0: 0, cat1: 0, cat2: 0, cat3: 0,
-    cat4: 16052, cat5: 76327, cat6: 119406, remal_observed: 14657,
+    cat4: 12727, cat5: 62872, cat6: 100617, remal_observed: 11647,
   };
   const drawn = Object.entries(committed).filter(([, px]) => px > 0);
   const blank = Object.entries(committed).filter(([, px]) => px === 0);
